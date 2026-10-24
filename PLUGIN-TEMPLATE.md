@@ -13,6 +13,9 @@ This will not include <last-commit>.
 
 Skipped 941b0f26949a2850e38c4630fce44eac4d49f054
 
+Skipped 7c017427c9ee2accc74be525e3cbf2ace5549b6c (already applied early, see `.gersemirc` below; its cherry-pick is
+empty)
+
 ## Deliberate divergences from the template (obs-playlister)
 
 Keep these when syncing a newer template commit; the template (master, 2025-12-09) still targets OBS 31
@@ -33,7 +36,12 @@ and the legacy install layout.
   commit 013ffca.
 - `CMakePresets.json`: Windows SDK `10.0.26100.0`.
 - `buildspec.json`: OBS 33.0.0 and obs-deps/Qt6 2026-10-23, Windows hashes only.
-- CI: macOS and Ubuntu jobs disabled with `if: false` and removed from the release job; Windows runner
-  `windows-2025`; ctest runs after the build; portable zip uses the OBS 33 `plugins/<name>/` layout.
+- CI: macOS and Ubuntu jobs disabled with `if: false` and removed from the release job; ctest runs after the
+  build; portable zip uses the OBS 33 `plugins/<name>/` layout. The Windows runner matches the template's
+  `windows-2022`; keep it (on 2026-10-24 the `windows-2025` label ran a VS 2026 image without VS 2022).
+- `.gersemirc` equals template commit 7c01742 ("CI: Remove invalid options from .gersemirc"), applied before a sync
+  because gersemi 0.21, which the CI format check installs, warns about `color`, `quiet` and `workers` and the check
+  counts that warning as a failure. gersemi 0.21 honors only `# gersemi: off` / `# gersemi: on` fences, not
+  `# cmake-format: off` (the root `CMakeLists.txt` lost such a fence for that reason).
 - `cmake/windows/resources/resource.rc.in`: the version resource keeps the original author's copyright.
 - Tests: `tests/` (CTest) is added by the root `CMakeLists.txt` behind `OBS_PLAYLISTER_BUILD_TESTS`.

@@ -255,7 +255,8 @@ jobs:
 
   windows-build:
     name: Build for Windows 🪟
-    runs-on: windows-2025
+    # VS 2022 toolchain (R-PLAT-6). On 2026-10-24 the windows-2025 label ran the windows-2025-vs2026 image (no VS 2022).
+    runs-on: windows-2022
     needs: check-event
     defaults:
       run:
