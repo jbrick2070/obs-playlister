@@ -15,6 +15,11 @@
 !CMakePresets.json
 !LICENSE
 !README.md
+!PLUGIN-TEMPLATE.md
+!REQUIREMENTS.md
+!PLAN.md
+!TESTING.md
+!/tests
 
 # Exclude lock files
 *.lock.json

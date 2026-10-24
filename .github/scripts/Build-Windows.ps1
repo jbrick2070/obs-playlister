@@ -76,7 +76,12 @@ function Build {
     Log-Group "Building ${ProductName}..."
     Invoke-External cmake @CmakeBuildArgs
 
+    Log-Group "Testing ${ProductName}..."
+    Invoke-External ctest --test-dir "build_${Target}" -C $Configuration --output-on-failure --no-tests=error
+
     Log-Group "Installing ${ProductName}..."
+    # Start from an empty stage so no file from an older layout or plugin name is packaged
+    Remove-Item -Path "${ProjectRoot}/release/${Configuration}" -Recurse -Force -ErrorAction SilentlyContinue
     Invoke-External cmake @CmakeInstallArgs
 
     Pop-Location -Stack BuildTemp

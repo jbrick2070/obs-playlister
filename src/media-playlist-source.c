@@ -1,6 +1,7 @@
 /*
-Media Playlist Source
+obs-playlister (based on Media Playlist Source)
 Copyright (C) 2023 Ian Rodriguez ianlemuelr@gmail.com
+Copyright (C) 2026 Jeffrey A. Brick
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -446,7 +447,7 @@ static bool refresh_filename_clicked(obs_properties_t *props, obs_property_t *pr
 static const char *mps_getname(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("MediaPlaylistSource");
+	return obs_module_text("OBSPlaylister");
 }
 
 static void free_files(struct darray *array)
@@ -774,19 +775,19 @@ static void *mps_create(obs_data_t *settings, obs_source_t *source)
 
 	mps->paused = false;
 
-	mps->play_pause_hotkey = obs_hotkey_register_source(source, "MediaPlaylistSource.PlayPause",
+	mps->play_pause_hotkey = obs_hotkey_register_source(source, "OBSPlaylister.PlayPause",
 							    obs_module_text("PlayPause"), play_pause_hotkey, mps);
 
-	mps->restart_hotkey = obs_hotkey_register_source(source, "MediaPlaylistSource.Restart",
-							 obs_module_text("Restart"), restart_hotkey, mps);
+	mps->restart_hotkey = obs_hotkey_register_source(source, "OBSPlaylister.Restart", obs_module_text("Restart"),
+							 restart_hotkey, mps);
 
-	mps->stop_hotkey = obs_hotkey_register_source(source, "MediaPlaylistSource.Stop", obs_module_text("Stop"),
-						      stop_hotkey, mps);
+	mps->stop_hotkey =
+		obs_hotkey_register_source(source, "OBSPlaylister.Stop", obs_module_text("Stop"), stop_hotkey, mps);
 
-	mps->next_hotkey = obs_hotkey_register_source(source, "MediaPlaylistSource.PlaylistNext",
+	mps->next_hotkey = obs_hotkey_register_source(source, "OBSPlaylister.PlaylistNext",
 						      obs_module_text("PlaylistNext"), next_hotkey, mps);
 
-	mps->prev_hotkey = obs_hotkey_register_source(source, "MediaPlaylistSource.PlaylistPrev",
+	mps->prev_hotkey = obs_hotkey_register_source(source, "OBSPlaylister.PlaylistPrev",
 						      obs_module_text("PlaylistPrev"), previous_hotkey, mps);
 
 	proc_handler_t *ph = obs_source_get_proc_handler(source);
@@ -960,6 +961,8 @@ static void mps_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_RESTART_BEHAVIOR, RESTART_BEHAVIOR_CURRENT_FILE);
 	obs_data_set_default_string(settings, S_CURRENT_FILE_NAME, " ");
 	obs_data_set_default_int(settings, S_SPEED, 100);
+	/* GPU decoding by default (operator decision D-11); upstream left it off */
+	obs_data_set_default_bool(settings, S_FFMPEG_HW_DECODE, true);
 }
 
 static void add_media_to_selection(obs_property_t *list, struct media_file_data *data)
@@ -1069,7 +1072,7 @@ static obs_properties_t *mps_properties(void *data)
 	obs_property_set_long_description(p, "Due to OBS limitations, this will only update if any settings"
 					     " are changed, the selected file is played, or the Properties "
 					     "window is reopened. It will not update when the video ends.");
-	obs_properties_add_button(props, S_REFRESH_FILENAME, T_REFRESH_FILENAME, refresh_filename_clicked);
+	obs_properties_add_button2(props, S_REFRESH_FILENAME, T_REFRESH_FILENAME, refresh_filename_clicked, mps);
 	//update_current_filename_property(mps, p);
 
 	p = obs_properties_add_list(props, S_SELECT_FILE, T_SELECT_FILE, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1080,7 +1083,7 @@ static obs_properties_t *mps_properties(void *data)
 		}
 	}
 
-	obs_properties_add_button(props, "play_selected", "Play Selected File", play_selected_clicked);
+	obs_properties_add_button2(props, "play_selected", "Play Selected File", play_selected_clicked, mps);
 
 	p = obs_properties_add_int_slider(props, S_SPEED, T_SPEED, 1, 200, 1);
 	obs_property_int_set_suffix(p, "%");

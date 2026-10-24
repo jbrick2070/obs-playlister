@@ -1,6 +1,7 @@
 /*
-Media Playlist Source
+obs-playlister (based on Media Playlist Source)
 Copyright (C) 2023 Ian Rodriguez ianlemuelr@gmail.com
+Copyright (C) 2026 Jeffrey A. Brick
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -171,13 +172,15 @@ bool shuffler_add(struct shuffler *s, struct media_file_data items[], size_t cou
 static void shuffler_select_index(struct shuffler *s, size_t index)
 {
 	struct media_file_data *selected = s->shuffled_files.array[index];
-	if (s->history && index >= s->history) {
+	/* the last cycle's history is [history, num): history == 0 is all of it and history == num none of
+	 * it, so a selection inside it always takes the item out and advances history, up to num (R-UP-75) */
+	if (index >= s->history) {
 		if (index > s->history) {
 			memmove(&s->shuffled_files.array[s->history + 1], &s->shuffled_files.array[s->history],
 				(index - s->history) * sizeof(selected));
 			index = s->history;
 		}
-		s->history = (s->history + 1) % s->shuffled_files.num;
+		s->history++;
 	}
 
 	if (index >= s->head) {
@@ -197,6 +200,9 @@ void shuffler_select(struct shuffler *s, const struct media_file_data *data)
 {
 	size_t idx = da_find(s->shuffled_files, &data, 0);
 	assert(idx != DARRAY_INVALID);
+	/* the assert is compiled out in release builds; never index with DARRAY_INVALID */
+	if (idx == DARRAY_INVALID)
+		return;
 	shuffler_select_index(s, idx);
 }
 
@@ -305,13 +311,14 @@ size_t find_media_index(struct darray *array, struct media_file_data *search_dat
 			 * In other words, don't break this code.
 			 */
 
-			if (strcmp(current_data->parent_id, search_data->parent_id) == 0) {
+			/* plain rows have no parent_id and folder items have no id */
+			if (current_data->parent_id && strcmp(current_data->parent_id, search_data->parent_id) == 0) {
 				int match = strcmp(search_data->filename, current_data->filename);
 				if (match == 0) {
 					return i;
 				}
 			}
-		} else if (strcmp(search_data->id, current_data->id) == 0) {
+		} else if (search_data->id && current_data->id && strcmp(search_data->id, current_data->id) == 0) {
 			return i;
 		}
 	}
@@ -349,13 +356,15 @@ void shuffler_update_files(struct shuffler *s, struct darray *array)
 			}
 			// history can never be lower than head, it represents the first
 			// element of the previous cycle history
-			for (size_t i = s->shuffled_files.num - 1; i >= s->history; i--) {
+			// (history can be 0, so the index must not wrap below it, and new_next must not
+			// drop below 0 when an item is missed by both loops)
+			for (size_t i = s->shuffled_files.num; i-- > s->history;) {
 				struct media_file_data *old_data = s->shuffled_files.array[i];
 				size_t new_idx = find_media_index(&shuffled_files.da, old_data, new_head);
 				if (new_idx != DARRAY_INVALID) {
 					da_swap(shuffled_files, --new_history, new_idx);
 				} else {
-					if (i < s->next)
+					if (i < s->next && new_next > 0)
 						new_next--;
 				}
 			}
@@ -423,6 +432,10 @@ static void ArrayDeepCopy(struct darray *src, struct darray *dst)
 		if (media->filename) {
 			media->filename = bstrdup(orig.array[i].filename);
 		}
+		/* the copy owns its id, so ArrayDestroy on the original cannot free it */
+		if (media->id) {
+			media->id = bstrdup(orig.array[i].id);
+		}
 		da_init(media->folder_items);
 		da_copy(media->folder_items, orig.array[i].folder_items);
 		for (size_t j = 0; j < media->folder_items.num; j++) {
@@ -430,6 +443,7 @@ static void ArrayDeepCopy(struct darray *src, struct darray *dst)
 			if (folder_item->filename) {
 				folder_item->filename = bstrdup(folder_item->filename);
 			}
+			folder_item->parent_id = media->id;
 		}
 	}
 	*dst = copy.da;
@@ -474,9 +488,10 @@ static void ArrayDestroy(struct darray *array)
 static bool media_equal(struct media_file_data *data1, struct media_file_data *data2)
 {
 	if (data1->parent_id) {
-		return strcmp(data1->parent_id, data2->parent_id) == 0 && strcmp(data1->filename, data2->filename) == 0;
+		return data2->parent_id && strcmp(data1->parent_id, data2->parent_id) == 0 &&
+		       strcmp(data1->filename, data2->filename) == 0;
 	} else {
-		return strcmp(data1->id, data2->id) == 0;
+		return data2->id && strcmp(data1->id, data2->id) == 0;
 	}
 }
 
@@ -1079,8 +1094,9 @@ static void test_has_prev_next_empty(void)
 
 	assert(!shuffler_has_prev(&shuffler));
 
-	/* there are always next items in loop mode */
-	assert(shuffler_has_next(&shuffler));
+	/* an empty shuffler has no next item, even in loop mode: shuffler_has_next() checks the
+	 * size first (the VLC original this test came from allowed it) */
+	assert(!shuffler_has_next(&shuffler));
 
 	shuffler_destroy(&shuffler);
 }

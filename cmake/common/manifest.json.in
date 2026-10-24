@@ -1,0 +1,16 @@
+{
+    "display_name": "@PLUGIN_DISPLAY_NAME@",
+    "id": "@CMAKE_PROJECT_NAME@",
+    "name": "@CMAKE_PROJECT_NAME@",
+    "version": "@PLUGIN_VERSION@",
+    "os_arch": "windows-x64",
+    "description": "Playlist source for OBS Studio: plays files and folders through OBS's media source.",
+    "long_description": "OBS Playlister plays a list of local files and folders through OBS's own media source, and editing the list does not restart the current clip. Based on Media Playlist Source by Ian Rodriguez.",
+    "urls": {
+        "repository": "@PLUGIN_WEBSITE@",
+        "website": "@PLUGIN_WEBSITE@",
+        "support": "@PLUGIN_WEBSITE@/issues"
+    },
+    "has_banner": false,
+    "has_icon": false
+}

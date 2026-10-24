@@ -1,6 +1,7 @@
 /*
-Media Playlist Source
+obs-playlister (based on Media Playlist Source)
 Copyright (C) 2023 Ian Rodriguez ianlemuelr@gmail.com
+Copyright (C) 2026 Jeffrey A. Brick
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -27,6 +28,18 @@ OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
 extern struct obs_source_info media_playlist_source_info;
+
+/* Shown by the OBS 33 Plugin Manager when data/manifest.json gives no display name. Keep both strings in sync
+ * with buildspec.json (displayName) and cmake/common/manifest.json.in (description). */
+const char *obs_module_name(void)
+{
+	return "OBS Playlister";
+}
+
+const char *obs_module_description(void)
+{
+	return "Playlist source for OBS Studio: plays files and folders through OBS's media source.";
+}
 
 bool obs_module_load(void)
 {

@@ -1,6 +1,7 @@
 /*
-Media Playlist Source
+obs-playlister (based on Media Playlist Source)
 Copyright (C) 2023 Ian Rodriguez ianlemuelr@gmail.com
+Copyright (C) 2026 Jeffrey A. Brick
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -155,7 +156,7 @@ static void add_file(struct darray *array, const char *path, const char *id);
 static void free_files(struct darray *array);
 
 struct obs_source_info media_playlist_source_info = {
-	.id = "media_playlist_source_codeyan",
+	.id = "obs_playlister_source",
 	.type = OBS_SOURCE_TYPE_INPUT,
 	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_AUDIO | OBS_SOURCE_CONTROLLABLE_MEDIA,
 	.get_name = mps_getname,

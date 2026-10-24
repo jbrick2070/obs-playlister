@@ -55,6 +55,7 @@ function Package {
         Path = @(
             "${ProjectRoot}/release/${ProductName}-*-windows-*.zip"
             "${ProjectRoot}/release/${ProductName}-*-windows-*.exe"
+            "${ProjectRoot}/release-portable/${ProductName}-*-windows-*.zip"
         )
     }
 
@@ -70,10 +71,12 @@ function Package {
     Compress-Archive -Force @CompressArgs
     Log-Group
 
+    # OBS 33 portable layout: <OBS root>\plugins\<name>\<name>.dll and <OBS root>\plugins\<name>\data
     Log-Group "Archiving Portable ${ProductName}..."
     tree /F "${ProjectRoot}/release/${Configuration}/${ProductName}"
-    Copy-Item -Path "${ProjectRoot}/release/${Configuration}/${ProductName}/data/locale" -Destination "${ProjectRoot}/release-portable/${Configuration}/data/obs-plugins/${ProductName}/locale" -Recurse
-    Copy-Item -Path "${ProjectRoot}/release/${Configuration}/${ProductName}/bin" -Destination "${ProjectRoot}/release-portable/${Configuration}/obs-plugins" -Recurse
+    Remove-Item -Path "${ProjectRoot}/release-portable/${Configuration}" -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path "${ProjectRoot}/release-portable/${Configuration}/plugins" | Out-Null
+    Copy-Item -Path "${ProjectRoot}/release/${Configuration}/${ProductName}" -Destination "${ProjectRoot}/release-portable/${Configuration}/plugins/${ProductName}" -Recurse
     tree /F "${ProjectRoot}/release-portable/${Configuration}"
 
     $CompressArgs = @{
@@ -95,6 +98,7 @@ function Package {
         Log-Information 'Creating InnoSetup installer...'
         Push-Location -Stack BuildTemp
         Ensure-Location -Path "${ProjectRoot}/release"
+        Remove-Item -Path Package -Recurse -Force -ErrorAction SilentlyContinue
         Copy-Item -Path "${Configuration}/${ProductName}" -Destination Package -Recurse
         Invoke-External iscc ${IsccFile} /O"${ProjectRoot}/release" /F"${OutputName}-Installer"
         Remove-Item -Path Package -Recurse

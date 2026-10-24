@@ -6,6 +6,7 @@ project(${_name} VERSION ${_version})
 
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
+option(OBS_PLAYLISTER_BUILD_TESTS "Build the CTest suite" ON)
 
 include(compilerconfig)
 include(defaults)
@@ -46,3 +47,8 @@ target_sources(
 # cmake-format: on
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+
+if(OBS_PLAYLISTER_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

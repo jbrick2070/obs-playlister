@@ -1,75 +1,113 @@
-# Media Playlist Source
+# OBS Playlister
 
-## Introduction
+A playlist source for OBS Studio 33 and later. It plays a list of local files,
+folders and URLs through OBS's own Media Source, and editing the list does not
+restart the clip that is playing.
 
-An OBS Plugin that serves as an alternative to VLC Video Source. It uses the
-Media Source internally.
+OBS Playlister is a fork of [Media Playlist Source](https://github.com/CodeYan01/media-playlist-source)
+by Ian Rodriguez, and it installs next to it without either one replacing the
+other. The plan is for it to also replace the Directory Sorter script (watched
+folders that keep themselves up to date) and to add remote playlists; see
+[PLAN.md](PLAN.md) and [REQUIREMENTS.md](REQUIREMENTS.md).
 
-## Features
+## Status
 
-- Allows editing the playlist without restarting the video, even if files are
-reordered.
-- Allows editing any setting without restarting the video.
-- Saves the currently playing file so it would be played when OBS restarts.
-- Allows selecting a file or folder item from the list to play.
-- Shuffling (Based on VLC 4's implementation)
-- - Allows adding/removing items from the playlist without the need to
-reshuffle. The shuffling order of already played items will be saved, so
-clicking Previous Item will still play the previous item. Selecting a file or
-folder item also does not break the history.
-- - Reshuffles when the last file in the playlist is played out, without
-affecting history.
-- Shows the filename of the current file in the Properties window.
-- Has an option to play the first file or the current file when the source is
-restarted.
+Version 0.2.0 (Phase 1): the original plugin renamed, built against OBS 33 in
+the OBS 33 plugin layout, with four shuffle crash fixes and hardware decoding
+on by default. Watched folders come in Phase 2; remote playlists in Phase 3.
+
+## Features (from Media Playlist Source)
+
+- Edit the playlist without restarting the video, even if files are reordered.
+- Edit any setting without restarting the video.
+- Remembers the current file, so it plays again when OBS restarts.
+- Play a chosen file or folder item from the list.
+- Shuffle (based on VLC 4's implementation): adding or removing items does not
+  reshuffle, Previous still works after you pick a file, and it reshuffles at
+  the end of a pass without losing history.
+- Shows the current file in the Properties window.
+- Restart behavior: replay the current file or start from the first.
+- Uses hardware (GPU) decoding when available, on by default.
+
+## Install
+
+Requires OBS Studio 33.0.0 or later on Windows x64. Older OBS versions do not
+load this layout.
+
+- **Zip:** unzip so that you get
+  `C:\ProgramData\obs-studio\plugins\obs-playlister\obs-playlister.dll` and
+  `C:\ProgramData\obs-studio\plugins\obs-playlister\data\`. Copying into
+  ProgramData may need administrator rights.
+- **Portable OBS:** unzip the portable zip into the OBS folder, giving
+  `<OBS folder>\plugins\obs-playlister\`.
+- **Installer:** run the `.exe`. It is not code-signed, so Windows SmartScreen
+  shows "Windows protected your PC / Unknown publisher"; choose
+  **More info, then Run anyway**. The zip installs without that prompt.
+
+The DLL is unsigned. It loads with Windows' default settings, but it would be
+refused if Smart App Control or a Windows Defender Application Control policy
+for user-mode code were turned on.
+
+In OBS, add a source of type **OBS Playlister**.
 
 ## Limitations
 
-- The Properties window will show the filename of the current file, but it can
-not be automatically updated when the video ends as it could cause OBS to crash
-when the video ends while interacting with the Properties window. Reopening the
-Properties window will refresh the shown current file.
-- While this plugin works with OBS 28 and up, it requires this change at 
-https://github.com/obsproject/obs-studio/pull/8051 that allows this plugin to
-save the index of the current file, so that restarting playback is not needed
-when editing the list. This change isn't merged yet as of OBS 29.1.3.
-A custom build with this PR is available
-[here](https://github.com/CodeYan01/obs-studio/releases).
-- Does not support audio track or subtitle selection yet.
-- Does not automatically refresh folder contents yet, but can be manually done
-by saving the settings again.
+- The Properties window shows the current file, but it cannot update by itself
+  when a video ends, because that can crash OBS while the window is open.
+  Reopen the window or press Refresh Filename.
+- No audio track or subtitle selection.
+- Folder contents refresh when the settings are saved again (automatic
+  watching arrives in Phase 2).
 
-## For Developers
-To find out the keys used in the source [settings](https://docs.obsproject.com/reference-sources#c.obs_source_get_settings),
-use [obs_data_get_json](https://docs.obsproject.com/reference-settings#c.obs_data_get_json)
-to view it, or check the scene collection json. You could also check
-[src/media-playlist-source.c](src/media-playlist-source.c)
+## For developers
 
-To select a file programmatically:
+The source id is `obs_playlister_source`. To see the setting keys, use
+[obs_data_get_json](https://docs.obsproject.com/reference-settings#c.obs_data_get_json)
+on the source's settings or look at the scene collection JSON.
+
+To select a file from a script or another plugin:
+
 ```c
 proc_handler_t *ph = obs_source_get_proc_handler(source);
 struct calldata cd = {0};
-calldata_set_int(&cd, "media_index", 3); // 4th file
-calldata_set_int(&cd, "folder_item_index", 3) // 4th folder item of the 4th file
+calldata_set_int(&cd, "media_index", 3);       // 4th row of the playlist
+calldata_set_int(&cd, "folder_item_index", 3); // 4th item of that row if it is a folder
 proc_handler_call(ph, "select_index", &cd);
 calldata_free(&cd);
 ```
-`media_index` - the 0-based index of the file in the playlist
 
-`folder_item_index` - the 0-based index of the folder item in the folder at `media_index`
+- `media_index`: 0-based row in the playlist. If it is past the end of the
+  list, the call does nothing (the original README said it falls back to 0; the
+  code never did).
+- `folder_item_index`: 0-based item in the folder at `media_index`. If it is
+  past the end of the folder, item 0 is played. It is ignored for rows that are
+  not folders.
 
-If the file at `media_index` is not a folder, the second parameter is ignored.
-If `media_index` is higher than the playlist item count, it will be set to 0.
-If `folder_item_index` is higher than the folder item count or `media_index`,
-it will be set to 0.
+## Building
 
-## Contact Me
-Although there is a Discussion tab in these forums, I would see your message
-faster if you ping me (@codeyan) in the [OBS Discord server](https://discord.gg/obsproject),
-in #plugins-and-tools. Please do report bugs or if there are features you'd like
-to be added.
+Windows 11 x64 with Visual Studio 2022 (or newer) C++ build tools, Windows SDK
+10.0.26100 and CMake 3.28 or newer. From the repository root:
 
-## Donations
-You can	donate to me through 
-[PayPal](https://www.paypal.com/donate/?hosted_button_id=S9WJDUDB8CK5S)
-to support my development. Thank you!
+```
+cmake --preset windows-x64
+cmake --build --preset windows-x64 --config RelWithDebInfo
+ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure --no-tests=error
+cmake --install build_x64 --config RelWithDebInfo --prefix release/RelWithDebInfo
+```
+
+The first configure downloads the OBS 33.0.0 source and the matching obs-deps
+into `.deps/` and builds libobs once. Manual OBS checks are listed in
+[TESTING.md](TESTING.md).
+
+## License and credits
+
+GPL-2.0-or-later (see [LICENSE](LICENSE)).
+
+- Media Playlist Source: Copyright (C) 2023 Ian Rodriguez. This project keeps
+  his notices; his original project is at
+  https://github.com/CodeYan01/media-playlist-source.
+- The shuffler is based on VLC's playlist randomizer.
+- obs-playlister changes: Copyright (C) 2026 Jeffrey A. Brick.
+- The folder-watching feature planned for Phase 2 is written from scratch. It
+  does not use code from the Directory Sorter for OBS script, which has no
+  license.
