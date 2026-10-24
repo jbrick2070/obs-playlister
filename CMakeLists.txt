@@ -42,8 +42,14 @@ target_sources(
     src/playlist.h
     src/media-playlist-source.h
     src/media-playlist-source.c
+    src/player.h
+    src/player.c
     src/shuffler.h
     src/shuffler.c
+    src/core/command-queue.h
+    src/core/command-queue.c
+    src/core/load-tracker.h
+    src/core/load-tracker.c
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

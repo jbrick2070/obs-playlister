@@ -6,6 +6,25 @@ Automated tests run with:
 ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure --no-tests=error
 ```
 
+## Runtime harness (automated, needs OBS)
+
+`tests/obs/run-harness.ps1` runs `tests/obs/playlister-harness.lua` inside a portable OBS 33 and drives one
+OBS Playlister source through: play, auto-advance at the end of a file, next and previous, stop (no advance),
+play after stop, pause, seek, restart, a speed change, hide and show (stop/restart and stop/play-next), end of
+the list with loop off, wrap-around with loop on, next then pause in a row, and removal. It needs a portable
+OBS 33 (with `portable_mode.txt`) and three local media files of different durations, and exits with 0 only
+when every check passed.
+
+```
+.\tests\obs\run-harness.ps1 -ObsRoot <portable OBS 33 folder> -Files <a.mp4>, <b.mp4>, <c.mp4>
+```
+
+| Date | OBS | Build | Result |
+|------|-----|-------|--------|
+| 2026-10-24 | 33.0.0 portable | Phase 2 step 1.2 | 23 passed, 0 failed, no memory leaks |
+
+## Manual checks
+
 This file lists what needs OBS itself. Each item names the expected
 `[obs-playlister]` log line where there is one (REQUIREMENTS R-TST-6). OBS logs
 are in `%APPDATA%\obs-studio\logs\`. Record the date, OBS version and result

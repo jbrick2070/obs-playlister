@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/deque.h>
 #include <plugin-support.h>
 #include "playlist.h"
+#include "player.h"
 #include "shuffler.h"
 
 /* clang-format off */
@@ -49,11 +50,13 @@ struct media_playlist_source {
 	obs_source_t *source;
 	obs_source_t *current_media_source;
 
+	struct pl_player player;
+	volatile bool save_dirty; /* set after an index change; video_tick saves at most once a second */
+	uint64_t last_save_ns;    /* video_tick only */
+
 	struct shuffler shuffler;
 	bool shuffle;
 	bool loop;
-	bool paused;
-	bool user_stopped;
 	bool use_hw_decoding;
 	bool close_when_inactive;
 	pthread_mutex_t mutex;

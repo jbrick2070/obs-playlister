@@ -26,9 +26,18 @@ foreach(_dir IN LISTS _test_dll_dirs)
 endforeach()
 message(STATUS "obs-playlister tests: DLL search dirs: ${_test_dll_dirs}")
 
+# One executable per suite: links only OBS::libobs and runs with the DLL directories above on its PATH
+function(obs_playlister_add_test name)
+  add_executable(${name} ${ARGN})
+  target_include_directories(${name} PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(${name} PRIVATE OBS::libobs)
+  add_test(NAME ${name} COMMAND ${name})
+  set_tests_properties(${name} PROPERTIES ENVIRONMENT_MODIFICATION "${_test_environment}")
+endfunction()
+
 # Upstream shuffler self-tests (shuffler.c TEST_SHUFFLER block) plus regression tests, see test-shuffler.c
-add_executable(test-shuffler test-shuffler.c)
-target_include_directories(test-shuffler PRIVATE "${CMAKE_SOURCE_DIR}/src")
-target_link_libraries(test-shuffler PRIVATE OBS::libobs)
-add_test(NAME test-shuffler COMMAND test-shuffler)
-set_tests_properties(test-shuffler PROPERTIES ENVIRONMENT_MODIFICATION "${_test_environment}")
+obs_playlister_add_test(test-shuffler test-shuffler.c)
+# The player's command FIFO
+obs_playlister_add_test(test-command-queue test-command-queue.c "${CMAKE_SOURCE_DIR}/src/core/command-queue.c")
+# Which end of the child may auto-advance
+obs_playlister_add_test(test-load-tracker test-load-tracker.c "${CMAKE_SOURCE_DIR}/src/core/load-tracker.c")

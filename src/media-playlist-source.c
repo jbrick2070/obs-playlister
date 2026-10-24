@@ -38,7 +38,7 @@ static void select_index_proc_(struct media_playlist_source *mps, size_t media_i
 
 static void select_index_proc(void *data, calldata_t *cd);
 static void play_folder_item_at_index(void *data, size_t index);
-static void play_media_at_index(void *data, size_t index, bool play_last_folder_item);
+static void play_media_at_index(void *data, size_t index, bool play_last_folder_item, bool backward);
 
 static size_t find_folder_item_index(struct darray *array, const char *filename);
 
@@ -139,13 +139,9 @@ struct obs_source_info media_playlist_source_info = {
 #define S_SPEED "speed_percent"
 #define S_REFRESH_FILENAME "refresh_filename"
 
-/* Media Source Settings */
-#define S_FFMPEG_LOCAL_FILE "local_file"
-#define S_FFMPEG_INPUT "input"
-#define S_FFMPEG_IS_LOCAL_FILE "is_local_file"
+/* Settings this source shares with the child media source, which player.c writes */
 #define S_FFMPEG_HW_DECODE "hw_decode"
 #define S_FFMPEG_CLOSE_WHEN_INACTIVE "close_when_inactive"
-#define S_FFMPEG_RESTART_ON_ACTIVATE "restart_on_activate"
 
 #define T_(text) obs_module_text(text)
 #define T_PLAYLIST T_("Playlist")
@@ -174,6 +170,12 @@ struct obs_source_info media_playlist_source_info = {
 #define T_STOP T_("Stop")
 #define T_PLAYLIST_NEXT T_("Next")
 #define T_PLAYLIST_PREV T_("Previous")
+
+/* The resume point is saved from video_tick, never under the list lock (R-UP-43, R-UP-62) */
+static inline void mark_save_dirty(struct media_playlist_source *mps)
+{
+	os_atomic_set_bool(&mps->save_dirty, true);
+}
 
 static inline void set_current_media_index(struct media_playlist_source *mps, size_t index)
 {
@@ -223,6 +225,12 @@ static inline void set_current_folder_item_index(struct media_playlist_source *m
 			return;
 		}
 
+		if (!mps->current_media->folder_items.num) {
+			/* R-UP-64: an empty folder row has no item to point at */
+			mps->current_folder_item_index = 0;
+			mps->actual_media = NULL;
+			return;
+		}
 		if (index < mps->current_media->folder_items.num) {
 			mps->current_folder_item_index = index;
 		} else {
@@ -286,17 +294,13 @@ static void update_current_filename_setting(struct media_playlist_source *mps, o
 
 /* Empties path selected in media source,
  * for when there is no item in the list
+ * (the player stops the child, not this source, R-UP-72)
  */
 static void clear_media_source(void *data)
 {
 	struct media_playlist_source *mps = data;
-	obs_data_t *settings = obs_data_create();
-	obs_data_set_bool(settings, S_FFMPEG_IS_LOCAL_FILE, true);
-	obs_data_set_string(settings, S_FFMPEG_INPUT, "");
-	obs_data_set_string(settings, S_FFMPEG_LOCAL_FILE, "");
-	obs_source_update(mps->current_media_source, settings);
-	obs_data_release(settings);
-	obs_source_media_stop(mps->source);
+	pl_player_clear(&mps->player);
+	mps->state = OBS_MEDIA_STATE_STOPPED;
 }
 
 /* Checks if the media source has to be updated, because updating its
@@ -311,8 +315,6 @@ static void clear_media_source(void *data)
 static void update_media_source(void *data, bool forced)
 {
 	struct media_playlist_source *mps = data;
-	obs_source_t *media_source = mps->current_media_source;
-	obs_data_t *settings = obs_source_get_settings(media_source);
 	if (mps->current_media->is_folder) {
 		assert(mps->current_folder_item_index < mps->current_media->folder_items.num);
 		mps->actual_media = &mps->current_media->folder_items.array[mps->current_folder_item_index];
@@ -321,41 +323,22 @@ static void update_media_source(void *data, bool forced)
 		mps->actual_media = mps->current_media;
 	}
 
-	// if path is same, we have to force restart it, otherwise it doesn't restart
-	bool old_is_url = !obs_data_get_bool(settings, S_FFMPEG_IS_LOCAL_FILE);
-	const char *old_path_setting = old_is_url ? S_FFMPEG_INPUT : S_FFMPEG_LOCAL_FILE;
-	const char *old_path = obs_data_get_string(settings, old_path_setting);
-	bool should_restart = strcmp(old_path, mps->actual_media->path) == 0;
-
-	//bool current_is_url =
-	//	!obs_data_get_bool(settings, S_FFMPEG_IS_LOCAL_FILE);
-	const char *path_setting = mps->actual_media->is_url ? S_FFMPEG_INPUT : S_FFMPEG_LOCAL_FILE;
-
-	/*forced = forced || current_is_url != mps->current_media->is_url;
-	if (!forced) {
-		const char *path = obs_data_get_string(settings, path_setting);
-		forced = strcmp(path, mps->current_media->path) != 0;
-	}*/
-
+	/* The player thread updates the child (R-THR-1). It writes the speed and the other child settings with the
+	 * path, and unloads first, so an unchanged path restarts too (upstream's should_restart). */
 	if (forced) {
-		obs_data_set_bool(settings, S_FFMPEG_IS_LOCAL_FILE, !mps->actual_media->is_url);
-		obs_data_set_string(settings, path_setting, mps->actual_media->path);
-		obs_data_set_int(settings, S_SPEED, mps->speed);
-		obs_source_update(media_source, settings);
-		mps->user_stopped = false;
-
-		if (should_restart) {
-			obs_source_media_restart(media_source);
-		}
+		pl_player_load(&mps->player, mps->actual_media->path, mps->actual_media->is_url);
+		mps->state = OBS_MEDIA_STATE_PLAYING;
 	}
-
-	obs_data_release(settings);
 }
 
 static void select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index)
 {
-	if (media_index < mps->files.num) {
-		pthread_mutex_lock(&mps->mutex);
+	pthread_mutex_lock(&mps->mutex);
+	if (media_index < mps->files.num && mps->files.array[media_index].is_folder &&
+	    !mps->files.array[media_index].folder_items.num) {
+		/* R-UP-64: nothing to play in an empty folder row; the current item keeps playing */
+		obs_log(LOG_INFO, "select_index: row %zu is an empty folder; ignored", media_index + 1);
+	} else if (media_index < mps->files.num) {
 		set_current_media_index(mps, media_index);
 		set_current_folder_item_index(mps, folder_item_index);
 		if (mps->actual_media) {
@@ -363,9 +346,10 @@ static void select_index_proc_(struct media_playlist_source *mps, size_t media_i
 			if (mps->shuffle) {
 				shuffler_select(&mps->shuffler, mps->actual_media);
 			}
+			mark_save_dirty(mps);
 		}
-		pthread_mutex_unlock(&mps->mutex);
 	}
+	pthread_mutex_unlock(&mps->mutex);
 }
 
 static void select_index_proc(void *data, calldata_t *cd)
@@ -387,40 +371,61 @@ static void play_folder_item_at_index(void *data, size_t index)
 		bfree(mps->current_media_filename);
 		mps->current_media_filename = bstrdup(mps->actual_media->filename);
 		update_media_source(mps, true);
-		obs_source_save(mps->source);
+		mark_save_dirty(mps);
 	}
 }
 
-static void play_media_at_index(void *data, size_t index, bool play_last_folder_item)
+/* R-UP-61: skips empty folder rows in the direction of travel, wrapping only with loop on. Upstream asked its own
+ * source for next/previous instead; on OBS 33 that only queues a media action (obs-source.c), which moved on one
+ * tick later, and with synchronous media calls it would have re-entered next/previous under the list lock.
+ * Returns files.num when no row qualifies. */
+static size_t skip_empty_folder_rows(struct media_playlist_source *mps, size_t index, bool backward)
+{
+	size_t num = mps->files.num;
+	for (size_t tries = 0; index < num && tries < num; tries++) {
+		struct media_file_data *row = &mps->files.array[index];
+		if (!row->is_folder || row->folder_items.num)
+			return index;
+		if (backward)
+			index = index > 0 ? index - 1 : (mps->loop ? num - 1 : num);
+		else
+			index = index + 1 < num ? index + 1 : (mps->loop ? 0 : num);
+	}
+	return num;
+}
+
+static void play_media_at_index(void *data, size_t index, bool play_last_folder_item, bool backward)
 {
 	struct media_playlist_source *mps = data;
+	index = skip_empty_folder_rows(mps, index, backward);
+	if (index >= mps->files.num) {
+		/* Nothing playable in that direction. With nothing playable at all, clear the child (R-UP-33); otherwise
+		 * leave the current item playing, as upstream did at the end of a list without loop. */
+		if (!get_total_file_count(mps)) {
+			set_current_media_index(mps, 0);
+			clear_media_source(mps);
+		}
+		return;
+	}
 	set_current_media_index(mps, index);
-	if (index >= mps->files.num || !mps->actual_media) {
+	if (!mps->actual_media) {
 		clear_media_source(mps);
 		return;
 	}
 
 	if (mps->current_media->is_folder) {
-		if (mps->current_media->folder_items.num) {
-			// when Previous Item is clicked to go back to a folder
-			if (play_last_folder_item) {
-				mps->current_folder_item_index = mps->current_media->folder_items.num - 1;
-			} else {
-				mps->current_folder_item_index = 0;
-			}
-
-			play_folder_item_at_index(mps, mps->current_folder_item_index);
+		// when Previous Item is clicked to go back to a folder
+		if (play_last_folder_item) {
+			mps->current_folder_item_index = mps->current_media->folder_items.num - 1;
 		} else {
-			if (play_last_folder_item) {
-				obs_source_media_previous(mps->source);
-			} else {
-				obs_source_media_next(mps->source);
-			}
+			mps->current_folder_item_index = 0;
 		}
+
+		play_folder_item_at_index(mps, mps->current_folder_item_index);
 		return;
 	}
 	update_media_source(mps, true);
-	obs_source_save(mps->source);
+	mark_save_dirty(mps);
 }
 
 static size_t find_folder_item_index(struct darray *array, const char *filename)
@@ -458,35 +463,30 @@ static enum obs_media_state mps_get_state(void *data)
 	return media_state;
 }
 
+/* Called from video_tick with no lock held; the parent's media_ended signal is emitted outside the lock */
 static void mps_end_reached(void *data)
 {
 	struct media_playlist_source *mps = data;
+	pthread_mutex_lock(&mps->mutex);
 	set_media_state(mps, OBS_MEDIA_STATE_ENDED);
+	/* back to the first playable row, so Play or Restart starts there; its folder position starts at item 1 */
+	size_t first = skip_empty_folder_rows(mps, 0, false);
+	set_current_media_index(mps, first < mps->files.num ? first : 0);
+	reset_folder_item_index(mps);
+	pthread_mutex_unlock(&mps->mutex);
 	obs_source_media_ended(mps->source);
-	set_current_media_index(mps, 0);
-	obs_source_save(mps->source);
+	mark_save_dirty(mps);
 }
 
+/* The child's media_ended handler takes no lock and only records the end (R-THR-1); video_tick decides what
+ * follows. Ends caused by our own stop, hide or reload never advance, because those requests withdraw the
+ * load's eligibility first (R-BEH-6). That replaces upstream's sticky user_stopped flag (R-UP-41): in OBS 33 a
+ * deactivate still reports ENDED (obs-ffmpeg-source.c media_stopped), and the flag could swallow a real end. */
 static void media_source_ended(void *data, calldata_t *cd)
 {
 	UNUSED_PARAMETER(cd);
 	struct media_playlist_source *mps = data;
-
-	/* In OBS 29.1.3 and below, stopping a currently playing media source triggers
-	 * both the STOPPED and ENDED signals. In the future, it should actually just
-	 * be STOPPED. TODO: Remove `user_stopped` if PR #9218 gets merged.
-	 *
-	 * EDIT: Tested in OBS 31, now problem is deactivate is sending an ENDED signal
-	 * rather than a STOPPED. So in mps_deactivate, we set user_stopped to true
-	 */
-	if (mps->user_stopped) {
-		mps->user_stopped = false;
-		return;
-	} else if (mps->current_media_index < mps->files.num - 1 || mps->loop) {
-		obs_source_media_next(mps->source);
-	} else {
-		mps_end_reached(mps);
-	}
+	pl_player_child_ended(&mps->player);
 }
 
 void mps_audio_callback(void *data, obs_source_t *source, const struct audio_data *audio_data, bool muted)
@@ -597,7 +597,26 @@ static void mps_set_time(void *data, int64_t ms)
 {
 	struct media_playlist_source *mps = data;
 
-	obs_source_media_set_time(mps->current_media_source, ms);
+	pl_player_set_time(&mps->player, ms);
+}
+
+static bool state_stopped(enum obs_media_state state)
+{
+	return state == OBS_MEDIA_STATE_STOPPED || state == OBS_MEDIA_STATE_ENDED || state == OBS_MEDIA_STATE_NONE;
+}
+
+/* Stopped by our own state, set when a request is made, or by the child's, set when it ran: the child applies
+ * queued actions a tick or more later, and reports PLAYING or PAUSED even for media it ignored */
+static bool playback_stopped(struct media_playlist_source *mps)
+{
+	return state_stopped(mps->state) || state_stopped(obs_source_media_get_state(mps->current_media_source));
+}
+
+/* The current row is a file, or a folder whose current item exists */
+static bool current_item_playable(struct media_playlist_source *mps)
+{
+	return mps->current_media && (!mps->current_media->is_folder ||
+				      mps->current_folder_item_index < mps->current_media->folder_items.num);
 }
 
 static void play_pause_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
@@ -608,7 +627,7 @@ static void play_pause_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey
 	struct media_playlist_source *mps = data;
 
 	if (pressed && obs_source_showing(mps->source))
-		obs_source_media_play_pause(mps->source, !mps->paused);
+		obs_source_media_play_pause(mps->source, mps->state == OBS_MEDIA_STATE_PLAYING);
 }
 
 static void restart_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
@@ -659,96 +678,112 @@ static void mps_play_pause(void *data, bool pause)
 {
 	struct media_playlist_source *mps = data;
 
-	obs_source_media_play_pause(mps->current_media_source, pause);
-	mps->paused = pause;
-
-	if (pause)
+	pthread_mutex_lock(&mps->mutex);
+	/* Play while stopped, ended or empty is a new load of the current item, as OBS's own media controls do with
+	 * restart: the child ignores an unpause once stopped, and a new load may auto-advance again (R-BEH-6). A pause
+	 * then would only make the child report PAUSED for media that cannot resume, so it is ignored. */
+	bool stopped = playback_stopped(mps);
+	if (!pause) {
+		if (!stopped) {
+			pl_player_play_pause(&mps->player, false);
+			set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
+		} else if (current_item_playable(mps)) {
+			update_media_source(mps, true);
+		}
+	} else if (!stopped) {
+		pl_player_play_pause(&mps->player, true);
 		set_media_state(mps, OBS_MEDIA_STATE_PAUSED);
-	else
-		set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
+	}
+	pthread_mutex_unlock(&mps->mutex);
 }
 
 static void mps_restart(void *data)
 {
 	struct media_playlist_source *mps = data;
 
-	mps->user_stopped = false;
-
+	pthread_mutex_lock(&mps->mutex);
+	/* RESTART is a new load (R-BEH-6); after the list ended, the current item is the first one, as upstream did.
+	 * The loads set the PLAYING state; nothing playable leaves it as it was. */
 	if (mps->restart_behavior == RESTART_BEHAVIOR_FIRST_FILE) {
-		play_media_at_index(mps, 0, false);
+		play_media_at_index(mps, 0, false, false);
 	} else if (mps->restart_behavior == RESTART_BEHAVIOR_CURRENT_FILE) {
-		if (mps->state == OBS_MEDIA_STATE_ENDED) {
-			// Make sure that the first file is selected
-			// We do it here, because updating a media source will restart it
+		if (current_item_playable(mps))
 			update_media_source(mps, true);
-		}
-		obs_source_media_restart(mps->current_media_source);
-		set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 	}
+	pthread_mutex_unlock(&mps->mutex);
 }
 
 static void mps_stop(void *data)
 {
 	struct media_playlist_source *mps = data;
 
-	mps->user_stopped = true;
-	obs_source_media_stop(mps->current_media_source);
+	/* the stop withdraws the load's eligibility before the child sees it, so the ENDED that may follow does not
+	 * advance (R-BEH-6) */
+	pthread_mutex_lock(&mps->mutex);
+	pl_player_stop(&mps->player);
 	set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
+	pthread_mutex_unlock(&mps->mutex);
+}
+
+/* Moves to the next item and queues its load, with the list lock held. Returns false when there is none: the end
+ * of the list without loop, only empty folder rows ahead, or the shuffle used up. That answer is also the
+ * end-of-list test for automatic advance (R-UP-63), so a folder row's remaining items and the shuffler count. */
+static bool playlist_next_locked(struct media_playlist_source *mps)
+{
+	if (!get_total_file_count(mps))
+		return false;
+
+	if (mps->shuffle) {
+		if (!shuffler_has_next(&mps->shuffler))
+			return false;
+		mps->actual_media = shuffler_next(&mps->shuffler);
+		bfree(mps->current_media_filename);
+		if (mps->actual_media->parent_id) {
+			mps->current_media = mps->actual_media->parent;
+			mps->current_media_filename = bstrdup(mps->actual_media->filename);
+			mps->current_folder_item_index = mps->actual_media->index;
+		} else {
+			mps->current_media = mps->actual_media;
+			mps->current_media_filename = NULL;
+			mps->current_folder_item_index = 0;
+		}
+		mps->current_media_index = mps->current_media->index;
+		update_media_source(mps, true);
+		mark_save_dirty(mps);
+		return true;
+	}
+
+	if (mps->current_media->is_folder && mps->current_media->folder_items.num > 0 &&
+	    mps->current_folder_item_index < mps->current_media->folder_items.num - 1) {
+		++mps->current_folder_item_index;
+		play_folder_item_at_index(mps, mps->current_folder_item_index);
+		return true;
+	}
+
+	size_t next;
+	if (mps->current_media_index < mps->files.num - 1) {
+		next = mps->current_media_index + 1;
+	} else if (mps->loop) {
+		next = 0;
+	} else {
+		return false;
+	}
+	/* the index moves only to a playable row; with only empty folder rows ahead and loop off, the current item
+	 * keeps playing, as at the end of the list */
+	next = skip_empty_folder_rows(mps, next, false);
+	if (next >= mps->files.num)
+		return false;
+	mps->current_media_index = next;
+	play_media_at_index(mps, next, false, false);
+	return true;
 }
 
 static void mps_playlist_next(void *data)
 {
 	struct media_playlist_source *mps = data;
-	bool last_folder_item_reached = false;
-
-	if (!get_total_file_count(mps))
-		return;
 
 	pthread_mutex_lock(&mps->mutex);
-	if (mps->shuffle) {
-		if (shuffler_has_next(&mps->shuffler)) {
-			mps->actual_media = shuffler_next(&mps->shuffler);
-			bfree(mps->current_media_filename);
-			if (mps->actual_media->parent_id) {
-				mps->current_media = mps->actual_media->parent;
-				mps->current_media_filename = bstrdup(mps->actual_media->filename);
-				mps->current_folder_item_index = mps->actual_media->index;
-			} else {
-				mps->current_media = mps->actual_media;
-				mps->current_media_filename = NULL;
-				mps->current_folder_item_index = 0;
-			}
-			mps->current_media_index = mps->current_media->index;
-			update_media_source(mps, true);
-			obs_source_save(mps->source);
-		}
-		goto end;
-	}
-
-	if (mps->current_media->is_folder) {
-		if (mps->current_media->folder_items.num > 0 &&
-		    mps->current_folder_item_index < mps->current_media->folder_items.num - 1) {
-			++mps->current_folder_item_index;
-			play_folder_item_at_index(mps, mps->current_folder_item_index);
-			goto end;
-		} else {
-			last_folder_item_reached = true;
-			mps->current_folder_item_index = 0;
-		}
-	}
-
-	if (!mps->current_media->is_folder || last_folder_item_reached) {
-		if (mps->current_media_index < mps->files.num - 1) {
-			++mps->current_media_index;
-		} else if (mps->loop) {
-			mps->current_media_index = 0;
-		} else {
-			goto end;
-		}
-		play_media_at_index(mps, mps->current_media_index, false);
-	}
-
-end:
+	playlist_next_locked(mps);
 	pthread_mutex_unlock(&mps->mutex);
 }
 
@@ -757,10 +792,10 @@ static void mps_playlist_prev(void *data)
 	struct media_playlist_source *mps = data;
 	bool is_first_folder_item = false;
 
-	if (!get_total_file_count(mps))
-		return;
-
 	pthread_mutex_lock(&mps->mutex);
+	if (!get_total_file_count(mps))
+		goto end;
+
 	if (mps->shuffle) {
 		if (shuffler_has_prev(&mps->shuffler)) {
 			mps->actual_media = shuffler_prev(&mps->shuffler);
@@ -776,7 +811,7 @@ static void mps_playlist_prev(void *data)
 			}
 			mps->current_media_index = mps->current_media->index;
 			update_media_source(mps, true);
-			obs_source_save(mps->source);
+			mark_save_dirty(mps);
 		}
 		goto end;
 	}
@@ -792,14 +827,19 @@ static void mps_playlist_prev(void *data)
 	}
 
 	if (!mps->current_media->is_folder || is_first_folder_item) {
+		size_t prev;
 		if (mps->current_media_index > 0) {
-			--mps->current_media_index;
+			prev = mps->current_media_index - 1;
 		} else if (mps->loop) {
-			mps->current_media_index = mps->files.num - 1;
+			prev = mps->files.num - 1;
 		} else {
 			goto end;
 		}
-		play_media_at_index(mps, mps->current_media_index, is_first_folder_item);
+		prev = skip_empty_folder_rows(mps, prev, true);
+		if (prev >= mps->files.num)
+			goto end;
+		mps->current_media_index = prev;
+		play_media_at_index(mps, prev, is_first_folder_item, true);
 	}
 
 end:
@@ -809,14 +849,24 @@ end:
 static void mps_activate(void *data)
 {
 	struct media_playlist_source *mps = data;
-	if (!get_total_file_count(mps))
+	pthread_mutex_lock(&mps->mutex);
+	bool has_files = get_total_file_count(mps) > 0;
+	pthread_mutex_unlock(&mps->mutex);
+	if (!has_files)
 		return;
 
-	mps->user_stopped = false;
 	if (mps->visibility_behavior == VISIBILITY_BEHAVIOR_STOP_RESTART) {
 		obs_source_media_restart(mps->source);
 	} else if (mps->visibility_behavior == VISIBILITY_BEHAVIOR_PAUSE_UNPAUSE) {
-		obs_source_media_play_pause(mps->source, false);
+		/* a plain unpause, as upstream: a source the user stopped stays stopped when it is shown again. Our own
+		 * state counts too, because the hide's pause may still be on its way to the child. */
+		pthread_mutex_lock(&mps->mutex);
+		if (mps->state == OBS_MEDIA_STATE_PAUSED ||
+		    obs_source_media_get_state(mps->current_media_source) == OBS_MEDIA_STATE_PAUSED) {
+			pl_player_play_pause(&mps->player, false);
+			set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
+		}
+		pthread_mutex_unlock(&mps->mutex);
 	} else if (mps->visibility_behavior == VISIBILITY_BEHAVIOR_STOP_PLAY_NEXT) {
 		// we only play next when the source is deactivated so we don't do anything here
 	}
@@ -826,13 +876,16 @@ static void mps_deactivate(void *data)
 {
 	struct media_playlist_source *mps = data;
 
+	/* A hide-stop withdraws auto-advance now, in this tick and before video_tick looks for an end: the child's own
+	 * deactivate stops its media and can report ENDED (obs-ffmpeg-source.c), while the stop below is a media action
+	 * that runs at this source's next tick (R-BEH-6) */
 	if (mps->visibility_behavior == VISIBILITY_BEHAVIOR_STOP_RESTART) {
-		mps->user_stopped = true;
+		pl_player_withdraw(&mps->player);
 		obs_source_media_stop(mps->source);
 	} else if (mps->visibility_behavior == VISIBILITY_BEHAVIOR_PAUSE_UNPAUSE) {
 		obs_source_media_play_pause(mps->source, true);
 	} else if (mps->visibility_behavior == VISIBILITY_BEHAVIOR_STOP_PLAY_NEXT) {
-		mps->user_stopped = true;
+		pl_player_withdraw(&mps->player);
 		obs_source_media_stop(mps->source);
 		obs_source_media_next(mps->source);
 	}
@@ -842,6 +895,14 @@ static void mps_destroy(void *data)
 {
 	struct media_playlist_source *mps = data;
 
+	/* R-UP-70: stop the player thread, disconnect the child's handler and audio callback (both wait for a
+	 * callback in flight), and only then release the child */
+	pl_player_shutdown(&mps->player);
+	if (mps->current_media_source) {
+		signal_handler_t *sh = obs_source_get_signal_handler(mps->current_media_source);
+		signal_handler_disconnect(sh, "media_ended", media_source_ended, mps);
+		obs_source_remove_audio_capture_callback(mps->current_media_source, mps_audio_callback, mps);
+	}
 	obs_source_release(mps->current_media_source);
 	shuffler_destroy(&mps->shuffler);
 	free_files(&mps->files.da);
@@ -872,13 +933,12 @@ static void *mps_create(obs_data_t *settings, obs_source_t *source)
 	obs_data_set_bool(media_source_data, "log_changes", false);
 	mps->current_media_source =
 		obs_source_create_private("ffmpeg_source", "current_media_source", media_source_data);
+	obs_data_release(media_source_data);
 	obs_source_add_active_child(mps->source, mps->current_media_source);
 	obs_source_add_audio_capture_callback(mps->current_media_source, mps_audio_callback, mps);
 
 	signal_handler_t *sh_media_source = obs_source_get_signal_handler(mps->current_media_source);
 	signal_handler_connect(sh_media_source, "media_ended", media_source_ended, mps);
-
-	mps->paused = false;
 
 	mps->play_pause_hotkey = obs_hotkey_register_source(source, "OBSPlaylister.PlayPause",
 							    obs_module_text("PlayPause"), play_pause_hotkey, mps);
@@ -906,9 +966,12 @@ static void *mps_create(obs_data_t *settings, obs_source_t *source)
 	if (pthread_mutex_init(&mps->audio_mutex, NULL) != 0)
 		goto error;
 
+	/* before the first update, which queues the first load */
+	if (!pl_player_start(&mps->player, mps->current_media_source))
+		goto error;
+
 	obs_source_update(source, NULL);
 
-	obs_data_release(media_source_data);
 	return mps;
 
 error:
@@ -991,6 +1054,37 @@ static void mps_video_tick(void *data, float seconds)
 	mps->num_channels = audio_output_get_channels(a);
 	pthread_mutex_unlock(&mps->audio_mutex);
 
+	/* Automatic advance is decided here, from the end the child recorded, and executed by the player thread, so
+	 * nothing recurses on the media thread and the graphics thread never waits on a load (R-THR-1). Next runs
+	 * directly rather than as a queued media action, so a stop queued meanwhile still comes after it; the
+	 * parent's next and ended signals are raised with no plugin lock held. */
+	if (os_atomic_load_long(&mps->player.tracker.ended_epoch) != 0) {
+		/* the end is taken and acted on under the list lock, so a selection made meanwhile either withdraws it
+		 * first or comes after the advance; never both */
+		pthread_mutex_lock(&mps->mutex);
+		bool ended = pl_player_take_end(&mps->player);
+		bool moved = ended && playlist_next_locked(mps);
+		pthread_mutex_unlock(&mps->mutex);
+		if (moved) {
+			calldata_t cd = {0};
+			calldata_set_ptr(&cd, "source", mps->source);
+			signal_handler_signal(obs_source_get_signal_handler(mps->source), "media_next", &cd);
+			calldata_free(&cd);
+		} else if (ended) {
+			mps_end_reached(mps);
+		}
+	}
+
+	/* the resume point, at most once a second and with no plugin lock held (R-UP-43, R-UP-62) */
+	if (os_atomic_load_bool(&mps->save_dirty)) {
+		uint64_t now = os_gettime_ns();
+		if (now - mps->last_save_ns >= 1000000000ULL) {
+			os_atomic_set_bool(&mps->save_dirty, false);
+			mps->last_save_ns = now;
+			obs_source_save(mps->source);
+		}
+	}
+
 	//if (mps->restart_on_activate && mps->use_cut) {
 	//	mps->elapsed = 0.0f;
 	//	mps->cur_item = mps->randomize ? random_file(mps) : 0;
@@ -1041,9 +1135,9 @@ static void mps_enum_sources(void *data, obs_source_enum_proc_t cb, void *param)
 {
 	struct media_playlist_source *mps = data;
 
-	pthread_mutex_lock(&mps->mutex);
+	/* no lock: the child pointer never changes after create, and libobs calls this with its own locks held
+	 * (R-UP-72) */
 	cb(mps->source, mps->current_media_source, param);
-	pthread_mutex_unlock(&mps->mutex);
 }
 
 static uint32_t mps_width(void *data)
@@ -1302,9 +1396,6 @@ static void mps_update(void *data, obs_data_t *settings)
 	mps->loop = obs_data_get_bool(settings, S_LOOP);
 	shuffler_set_loop(&mps->shuffler, mps->loop);
 	new_speed = obs_data_get_int(settings, S_SPEED);
-	if (mps->speed != new_speed) {
-		mps->user_stopped = true;
-	}
 	mps->speed = new_speed;
 
 	/* Internal media source settings */
@@ -1314,16 +1405,18 @@ static void mps_update(void *data, obs_data_t *settings)
 	    mps->visibility_behavior == VISIBILITY_BEHAVIOR_PAUSE_UNPAUSE) {
 		restart_on_activate = false;
 	}
-	obs_data_t *media_source_settings = obs_data_create();
-	obs_data_set_bool(media_source_settings, S_FFMPEG_RESTART_ON_ACTIVATE, restart_on_activate);
-	obs_data_set_bool(media_source_settings, S_FFMPEG_HW_DECODE, mps->use_hw_decoding);
-	obs_data_set_bool(media_source_settings, S_FFMPEG_CLOSE_WHEN_INACTIVE, mps->close_when_inactive);
-	obs_data_set_int(media_source_settings, S_SPEED, mps->speed);
-	obs_source_update(mps->current_media_source, media_source_settings);
-	obs_data_release(media_source_settings);
-	mps->state = obs_source_media_get_state(mps->source);
+	/* the player thread applies these to the child and writes them again with every load */
+	struct pl_child_settings child_settings = {
+		.hw_decode = mps->use_hw_decoding,
+		.close_when_inactive = mps->close_when_inactive,
+		.restart_on_activate = restart_on_activate,
+		.speed_percent = mps->speed,
+	};
+	pl_player_set_child_settings(&mps->player, &child_settings);
+	/* the child's state is only read here; our own state is set when requests are made */
+	enum obs_media_state child_state = obs_source_media_get_state(mps->source);
 	if (visibility_behavior_changed && !obs_source_active(mps->source) &&
-	    (mps->state == OBS_MEDIA_STATE_PLAYING || mps->state == OBS_MEDIA_STATE_PAUSED)) {
+	    (child_state == OBS_MEDIA_STATE_PLAYING || child_state == OBS_MEDIA_STATE_PAUSED)) {
 		mps_deactivate(mps);
 	}
 
@@ -1429,7 +1522,7 @@ static void mps_update(void *data, obs_data_t *settings)
 		mps->current_media_filename = NULL;
 		clear_media_source(mps);
 	}
-	obs_source_save(mps->source);
+	mark_save_dirty(mps);
 
 	/* So Current File Name is updated */
 	update_current_filename_setting(mps, settings);
