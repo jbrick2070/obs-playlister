@@ -54,6 +54,8 @@ target_sources(
     src/core/entry-list.c
     src/core/filter.h
     src/core/filter.c
+    src/core/folder-state.h
+    src/core/folder-state.c
     src/core/keys.h
     src/core/keys.c
     src/core/load-tracker.h

@@ -55,6 +55,8 @@ obs_playlister_add_test(test-modes test-modes.c "${_core}/modes.c" "${_core}/sor
 obs_playlister_add_test(test-keys test-keys.c "${_core}/keys.c" "${_core}/sort.c" "${_core}/natural.c")
 # What a row does with a new snapshot while an item plays: delete, eviction and renames (R-DIR-8)
 obs_playlister_add_test(test-merge test-merge.c "${_core}/merge.c" "${_core}/entry-list.c")
+# The folder provider's write-complete gate and watch modes against a fake folder (R-DIR-3, R-DIR-4)
+obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")
 
 # Every locale key used in src/ is in en-US.ini (R-TST-1); the second test proves the check fails on a missing key
 add_test(
