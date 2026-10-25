@@ -306,6 +306,8 @@ void pl_watch_init(struct pl_watch *watch, bool check_enabled, uint32_t check_in
 	watch->check_interval_s = clamp_interval(check_interval_s);
 	/* the first timer opens the folder at once */
 	watch->next_ms = mono_ms;
+	watch->overflow_run = 0;
+	watch->last_overflow_ms = 0;
 }
 
 void pl_watch_set_interval(struct pl_watch *watch, bool check_enabled, uint32_t check_interval_s, int64_t mono_ms)
@@ -328,6 +330,11 @@ static void enter(struct pl_watch *watch, struct pl_watch_actions *actions, enum
 	}
 	watch->mode = mode;
 	watch->next_ms = mono_ms + period_ms(watch, mode);
+}
+
+void pl_watch_notified(struct pl_watch *watch)
+{
+	watch->overflow_run = 0;
 }
 
 struct pl_watch_actions pl_watch_handle(struct pl_watch *watch, enum pl_watch_event event, int64_t mono_ms)
@@ -377,12 +384,25 @@ struct pl_watch_actions pl_watch_handle(struct pl_watch *watch, enum pl_watch_ev
 		break;
 	case PL_WATCH_CHANGED:
 		actions.rescan = before == PL_WATCH_NOTIFY;
+		watch->overflow_run = 0;
 		break;
 	case PL_WATCH_OVERFLOW:
 		if (before == PL_WATCH_NOTIFY) {
-			/* too many changes to report: arm again, then list everything */
-			actions.rearm = true;
-			actions.rescan = true;
+			bool in_run = watch->overflow_run &&
+				      mono_ms - watch->last_overflow_ms < PL_WATCH_OVERFLOW_RUN_MS;
+			watch->overflow_run = in_run ? watch->overflow_run + 1 : 1;
+			watch->last_overflow_ms = mono_ms;
+			if (watch->overflow_run >= PL_WATCH_OVERFLOW_RUN) {
+				/* every new call overflows at once: list on the interval, and try notifications again then */
+				watch->overflow_run = 0;
+				actions.rescan = true;
+				enter(watch, &actions, PL_WATCH_RESCAN_ONLY,
+				      "overflows one after another; rescanning instead", mono_ms);
+			} else {
+				/* too many changes to report: arm again, then list everything */
+				actions.rearm = true;
+				actions.rescan = true;
+			}
 		}
 		break;
 	}

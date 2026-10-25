@@ -68,6 +68,39 @@ when every check passed.
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 7 (part 1) | 105 passed, 0 failed, no memory leaks, three runs in a row; the new file waited 5 s with the list locked and joined within one poll of the button. Mutation checks: with the button's request removed, the file is still waiting 15 s later (1 check fails); with the lock option ignored, the file joins at once (1 check fails) |
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 7 (part 2) | 116 passed, 0 failed, no memory leaks, three runs in a row, and once more after the stale-choice check also read the info type. Mutation checks: with the snapshot's change count left at 0, the waiting-change check fails; without the status update in Play Selected, the stale notice is missing from the open Properties and 2 checks fail. How the dialog draws the block is item 2.1 |
 
+## Phase 2 acceptance (automated, needs OBS)
+
+`tests/obs/phase2-acceptance.lua` runs the PLAN step 8 items that can be staged on this machine against the real
+render folder:
+
+```powershell
+.\tests\obs\run-harness.ps1 -ObsRoot C:\Users\jeffr\OBS-Studio-33-Portable -Files $files `
+  -Script phase2-acceptance.lua -Otr C:\Users\jeffr\Documents\ComfyUI\output\otr\obs -TimeoutSeconds 600
+```
+
+The runner makes a temporary folder of hard links to every render (a link shares its file's dates, and removing it
+leaves the file), lists their names in date order, prepares a folder of two links to move away and back and an empty
+folder with a deny-read entry for the current user on that folder alone (removed afterwards), and checks whether this
+machine reaches its own admin share. Everything the script writes into the link folder it removes again. The runner refuses a render folder holding a file named `zz-...` (the script's own names), and
+the script refuses a link folder the runner did not make.
+
+| # | Check | Expected |
+|---|-------|----------|
+| 2.2 | The render folder as a folder row, default options; then newest only; then newest 5 | first listing in seconds; the list in date order, oldest first, exactly as the folder's dates sort (Directory Sorter parity, R-DIR-12); "1: folder - N files"; the oldest plays first; newest only lists the newest render alone ("1 of N files"); newest 5 lists the five newest, oldest first |
+| 2.3 | A new render copied in | joins within about 3 s, as the newest |
+| 2.4 | The producer contract: written as `.mp4.part`, then renamed to `.mp4` | not listed under the partial name; joins once renamed |
+| 2.5 | A file growing 1 MB every 100 ms for 8 s; a file held open for writing | neither is listed while written; the held file is counted ("waiting for 1 file to finish writing") and playback goes on; each joins within about 3 s once complete |
+| 2.6 | A case-only rename; A -> B -> C with shuffle on and Lock list at start, then Apply waiting changes now; renaming and deleting the playing render | the renamed item keeps its place and shows its new name; the renames wait ("N changes waiting") and are applied at once as one renamed item while playback goes on; Windows refuses to rename or delete the playing file (the child holds it open; every run so far) and playback goes on |
+| 2.7 | Sort by name, descending, mid-play | the list follows natural order, descending; playback keeps its place |
+| 2.8 | 2,000 small text files at once, with the folder check off | a render copied in afterwards joins within 12 s (about 3 s by notification; after a run of overflows the folder is listed on the 10 s interval instead, and a dead watch would wait for the 60 s safety net); the text files are not listed. The burst can overflow the change buffer (the log says "more changes than the buffer holds" when it does); in these runs it did not, and the overflow path is covered by `test-folder-state` and by 2.11 |
+| 2.9 | A watched folder moved away, then back | "the folder went away ...; showing the last list, from <time>" as an error, the list kept; back to "2 files" when it returns |
+| 2.10 | A folder the user may not read, added as a row | still a folder row (by its attributes), "access denied (permissions or security software)" as an error; the log names Win32 error 5 (the runner fails the run without that line) |
+| 2.11 | The media folder by a UNC path (`\\localhost\C$\...`) | listed, plays, and still listed 12 s later, past the folder check; the share's overflow right after the first listing is logged and listed again |
+
+| Date | OBS | Build | Result |
+|------|-----|-------|--------|
+| 2026-10-25 | 33.0.0 portable | Phase 2 step 8 (part 1) | 29 passed, 0 failed, no memory leaks, in four runs (the last on the final code); the first listing of 177 renders took 91 to 699 ms; one overflow logged per run (the share's, right after its first listing); the renders unchanged afterwards (177 files, none written, one link each). The first runs, before the fixes, failed 2.10 (the denied folder became a file row) and 2.11 (the UNC row flapped with Win32 error 234) |
+
 ## OBS 33 child behavior (Phase 2 step 6 spike)
 
 `tests/obs/spike-child-signals.lua` (run with `run-harness.ps1 -Script spike-child-signals.lua`, with
@@ -141,6 +174,16 @@ Setup as Phase 1, with the Phase 2 build. Items the runtime harness covers are n
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
 | 2.1 | Open Properties of a source whose list has a file, a folder and a missing file; press Esc without changing anything; then choose an item, remove it from the folder, press Play Selected File | the Status block under the playlist shows one row per line (`1: file`, `2: folder - N files`, `3: file - could not be played` once it failed), in the error color when a row failed; Esc closes Properties without asking to save; after Play Selected File the block shows the "list changed" notice in the warning color, and Refresh Filename clears it | |
+| 2.12 | Close OBS while a folder item plays; start it again | the same folder item resumes, not the folder's first item |
+| 2.13 | OBS hotkeys for Play/Pause, Restart, Stop, Next and Previous on a folder row; Next then Play/Pause at once | each acts as its button does; the load and the pause both happen; Stop never advances |
+| 2.14 | Start OBS while a 300 MB render is being copied into the watched folder | the admitted renders play within about 3 s; the new one joins when its copy finishes |
+| 2.15 | A watched folder on a removable drive: unplug it, plug it back | "the folder went away" with the last list kept; the row recovers when the drive is back |
+| 2.16 | A watched folder on another machine's share; stall the share (pull its network) during a scan, then remove the source | the row shows the error and keeps its list; removing the source returns at once (otherwise record a residual risk); on a share without change notifications the log says `rescan-only` and the 10 s check still finds a new render |
+| 2.17 | A OneDrive folder with cloud-only files as a folder row | "N cloud-only files not downloaded ..." as a warning; no download starts |
+| 2.18 | A still followed by a video in a folder row | no still frame lingers into the video |
+| 2.19 | A hidden source (Stop when not visible) and a paused one, each on a corrupt file; Close file when inactive with Always play while hidden | no item times out while hidden or paused; the always-playing hidden source keeps playing |
+| 2.20 | The operator's OTR scene: replace the Directory Sorter script with a folder row on the render folder, default options | the same order as the script gave (date modified, ascending); a new render joins in about 3 s; the script is no longer needed |
+| 2.21 | A render held open for writing for a whole session (a stuck render process), then an OBS restart | the other renders play and the list resumes where it was; the held file joins once released |
 
 ## Known residual risks
 

@@ -95,3 +95,7 @@ size_t pl_provider_held_changes(struct pl_provider *provider);
 /* Stops the worker (interrupting a scan or probe stuck on a stalled share), joins it and frees everything. NULL is
  * nothing to destroy. No publish happens after it returns. */
 void pl_provider_destroy(struct pl_provider *provider);
+
+/* R-LIST-1 rule 5: whether path names an existing directory, from its attributes (no listing), so a folder the user
+ * may not read is still a folder */
+bool pl_folder_is_directory(const char *path);

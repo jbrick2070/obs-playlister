@@ -19,8 +19,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 /* The folder provider on a real folder in the temp directory: the initial listing and its filters, new files
  * through the write-complete gate, renames that keep their identity, deletions, a file rewritten in place keeping
  * its place, view and filter changes without a new listing, lock list at start, subfolders (a hidden one and a
- * junction back up the tree skipped), and a missing folder that comes back. Each wait has a generous limit, so a
- * slow machine only makes it slower. */
+ * junction back up the tree skipped), a missing folder that comes back, and a folder through this machine's admin
+ * share where it can be reached. Each wait has a generous limit, so a slow machine only makes it slower. */
 
 #undef NDEBUG
 #include <assert.h>
@@ -604,6 +604,21 @@ static void test_missing_folder(void)
 	bfree(parent);
 }
 
+/* R-LIST-1 rule 5: a directory by its attributes; a file, a missing path and NULL are not */
+static void test_is_directory(void)
+{
+	char *folder = make_folder("kind");
+	write_file(folder, "a.mp4", 10, OLD);
+	char *file = path_in(folder, "a.mp4");
+	char *missing = path_in(folder, "missing");
+	assert(pl_folder_is_directory(folder) && !pl_folder_is_directory(file) && !pl_folder_is_directory(missing) &&
+	       !pl_folder_is_directory(NULL));
+	bfree(missing);
+	bfree(file);
+	remove_folder(folder);
+	bfree(folder);
+}
+
 static void test_create_arguments(void)
 {
 	struct pl_container_options options = default_options();
@@ -614,6 +629,48 @@ static void test_create_arguments(void)
 	assert(!pl_provider_create(PL_ROW_FOLDER, NULL, "row", 1, &options, on_publish, &inbox));
 	pl_provider_destroy(NULL);
 	inbox_free(&inbox);
+}
+
+/* A folder through this machine's admin share (\\localhost\C$\...), where it can be reached: the share reports more
+ * changes than the buffer holds as ERROR_MORE_DATA with an empty buffer, which must rescan like an overflow and not
+ * lose the folder (R-DIR-3; found by the Phase 2 acceptance, TESTING.md 2.11) */
+static void test_admin_share(void)
+{
+	char *folder = make_folder("share");
+	write_file(folder, "1.mp4", 100, OLD);
+	write_file(folder, "2.mp4", 100, OLD);
+	struct dstr unc = {0};
+	dstr_printf(&unc, "\\\\localhost\\%c$%s", folder[0], folder + 2);
+	dstr_replace(&unc, "/", "\\");
+	wchar_t *unc_w = wide(unc.array);
+	bool reachable = GetFileAttributesW(unc_w) != INVALID_FILE_ATTRIBUTES;
+	bfree(unc_w);
+	if (reachable) {
+		struct inbox inbox;
+		inbox_init(&inbox);
+		struct pl_container_options options = default_options();
+		struct pl_provider *provider =
+			pl_provider_create(PL_ROW_FOLDER, unc.array, "row", 7, &options, on_publish, &inbox);
+		assert(provider);
+		assert(wait_for(&inbox, 0, shows_exactly, "1.MP4,2.MP4", "the first listing through the share"));
+		/* the share's first notification comes after the listing */
+		Sleep(1000);
+		size_t mark = inbox_count(&inbox);
+		write_file(folder, "3.mp4", 100, OLD);
+		assert(wait_for(&inbox, mark, lists, "3.MP4", "a file added, seen through the share"));
+		pthread_mutex_lock(&inbox.mutex);
+		for (size_t i = 0; i < inbox.snapshots.num; i++)
+			assert(inbox.snapshots.array[i]->level == PL_STATUS_OK && !inbox.snapshots.array[i]->stale);
+		pthread_mutex_unlock(&inbox.mutex);
+		pl_provider_destroy(provider);
+		inbox_free(&inbox);
+		printf("admin share: passed\n");
+	} else {
+		printf("admin share: %s cannot be reached here, skipped\n", unc.array);
+	}
+	dstr_free(&unc);
+	remove_folder(folder);
+	bfree(folder);
 }
 
 int main(void)
@@ -627,12 +684,15 @@ int main(void)
 	long allocations = bnum_allocs();
 	test_create_arguments();
 	printf("create arguments: passed\n");
+	test_is_directory();
+	printf("directory test: passed\n");
 	test_listing_and_changes();
 	printf("listing and changes: passed\n");
 	test_subfolders();
 	printf("subfolders: passed\n");
 	test_missing_folder();
 	printf("missing folder: passed\n");
+	test_admin_share();
 	assert(bnum_allocs() == allocations);
 	printf("folder provider tests: passed\n");
 	return 0;

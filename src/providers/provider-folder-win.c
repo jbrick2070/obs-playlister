@@ -686,6 +686,7 @@ static void take_completed_changes(struct pl_provider *p)
 		return;
 	ResetEvent(p->overlapped_event);
 	p->armed = false;
+	pl_watch_notified(&p->watch);
 	collect_notified_renames(p, bytes);
 	/* the watch machine hears of a failed re-arm from the main loop */
 	p->arm_failed = !arm_dir(p);
@@ -767,6 +768,14 @@ static void run_event(struct pl_provider *p, enum pl_watch_event first)
 	}
 }
 
+/* More changes than the buffer holds: listed again (R-DIR-3), and said in the log, where a run of them that turns
+ * the folder to rescan-only shows too */
+static void on_overflow(struct pl_provider *p)
+{
+	obs_log(LOG_INFO, "folder %s: more changes than the buffer holds; listing it again", p->location);
+	run_event(p, PL_WATCH_OVERFLOW);
+}
+
 /* The armed call completed */
 static void on_notification(struct pl_provider *p)
 {
@@ -785,8 +794,10 @@ static void on_notification(struct pl_provider *p)
 			return;
 		}
 		p->last_error = error;
-		if (error == ERROR_NOTIFY_ENUM_DIR) {
-			run_event(p, PL_WATCH_OVERFLOW);
+		/* more changes than the buffer holds: ERROR_NOTIFY_ENUM_DIR locally, and through a share (SMB) also
+		 * ERROR_MORE_DATA with nothing in the buffer, as seen on this machine's admin share (TESTING 2.11) */
+		if (error == ERROR_NOTIFY_ENUM_DIR || error == ERROR_MORE_DATA) {
+			on_overflow(p);
 		} else if (error == ERROR_ACCESS_DENIED) {
 			/* a deleted folder ends the call this way while our handle keeps it pending deletion: with the handle
 			 * closed, a folder that is gone is lost, not a permissions problem */
@@ -802,9 +813,11 @@ static void on_notification(struct pl_provider *p)
 	}
 	if (bytes == 0) {
 		/* more changes than the buffer holds */
-		run_event(p, PL_WATCH_OVERFLOW);
+		p->last_error = ERROR_NOTIFY_ENUM_DIR;
+		on_overflow(p);
 		return;
 	}
+	pl_watch_notified(&p->watch);
 	collect_notified_renames(p, bytes);
 	/* armed again before the debounced rescan, so a change made meanwhile is caught */
 	if (!arm_dir(p))
@@ -1339,4 +1352,14 @@ void pl_provider_destroy(struct pl_provider *provider)
 	while (WaitForSingleObject(provider->thread, 100) == WAIT_TIMEOUT)
 		CancelSynchronousIo(provider->thread);
 	free_provider(provider);
+}
+
+bool pl_folder_is_directory(const char *path)
+{
+	wchar_t *path_w = path ? win32_path(path) : NULL;
+	if (!path_w)
+		return false;
+	DWORD attributes = GetFileAttributesW(path_w);
+	bfree(path_w);
+	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }

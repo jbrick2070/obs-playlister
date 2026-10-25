@@ -2819,14 +2819,12 @@ static void set_parents(struct darray *array)
 	}
 }
 
-/* libobs can only tell a directory by opening it, as upstream did */
+/* R-LIST-1 rule 5, from the path's attributes: a folder the user may not read is still a folder, whose row then shows
+ * access denied (upstream opened the folder, which took such a folder for a file) */
 static bool path_is_directory(const char *path, void *context)
 {
 	UNUSED_PARAMETER(context);
-	os_dir_t *dir = os_opendir(path);
-	if (dir)
-		os_closedir(dir);
-	return dir != NULL;
+	return pl_folder_is_directory(path);
 }
 
 /* A folder kind saved for this row with an unchanged path (R-LIST-1, rule 1) */

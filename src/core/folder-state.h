@@ -143,7 +143,15 @@ struct pl_watch {
 	bool check_enabled;        /* "Check folder every N seconds" */
 	uint32_t check_interval_s; /* N, clamped to 2 to 3600 */
 	int64_t next_ms;           /* monotonic time PL_WATCH_TIMER is due */
+	uint32_t overflow_run; /* overflows in a row: each within PL_WATCH_OVERFLOW_RUN_MS of the last, none with changes */
+	int64_t last_overflow_ms;
 };
+
+/* R-DIR-3: this many overflows in a run (a share can complete every new call at once that way) switch the folder to
+ * rescan-only, so it is listed on the interval instead of after every call. The gap is measured between the times the
+ * provider handles them, so it includes the listing each one starts. */
+#define PL_WATCH_OVERFLOW_RUN 3
+#define PL_WATCH_OVERFLOW_RUN_MS 10000
 
 /* What to do now. When several are set: close first, then open or re-arm, then rescan, so a change made during the
  * scan is caught by the armed call. mode_changed asks for one log line: path, mode and reason, with the Win32 error
@@ -162,5 +170,8 @@ void pl_watch_init(struct pl_watch *watch, bool check_enabled, uint32_t check_in
 /* The interval option changed on the running provider: the next timer is re-armed from now. Values equal to the
  * current ones change nothing, so passing the options on every settings update does not delay the folder check. */
 void pl_watch_set_interval(struct pl_watch *watch, bool check_enabled, uint32_t check_interval_s, int64_t mono_ms);
+
+/* A call completed with changes (before their debounced PL_WATCH_CHANGED): a run of overflows ends */
+void pl_watch_notified(struct pl_watch *watch);
 struct pl_watch_actions pl_watch_handle(struct pl_watch *watch, enum pl_watch_event event, int64_t mono_ms);
 const char *pl_watch_mode_name(enum pl_watch_mode mode);

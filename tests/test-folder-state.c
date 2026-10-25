@@ -448,6 +448,44 @@ static void test_watch_notify_and_overflow(void)
 	assert(watch.next_ms == now + 4 + 60000);
 }
 
+/* R-DIR-3: overflows one after another (a share that completes every new call at once) fall back to rescans on the
+ * interval at the third, instead of a listing after every call; overflows further apart, or with a call that brought
+ * changes (or a debounced change) between, do not */
+static void test_watch_overflow_run(void)
+{
+	struct pl_watch watch;
+	int64_t now = 0;
+	pl_watch_init(&watch, true, 10, now);
+	pl_watch_handle(&watch, PL_WATCH_TIMER, now);
+	pl_watch_handle(&watch, PL_WATCH_OPENED_ARMED, now);
+	for (int i = 1; i <= 4; i++) {
+		struct pl_watch_actions apart =
+			pl_watch_handle(&watch, PL_WATCH_OVERFLOW, now + (PL_WATCH_OVERFLOW_RUN_MS + 1) * i);
+		assert(apart.rearm && apart.rescan && !apart.mode_changed);
+	}
+	now = 100000;
+	pl_watch_handle(&watch, PL_WATCH_OVERFLOW, now);
+	pl_watch_handle(&watch, PL_WATCH_OVERFLOW, now + 10);
+	pl_watch_notified(&watch);
+	struct pl_watch_actions actions = pl_watch_handle(&watch, PL_WATCH_OVERFLOW, now + 20);
+	assert(actions.rearm && !actions.mode_changed);
+	pl_watch_handle(&watch, PL_WATCH_OVERFLOW, now + 25);
+	pl_watch_handle(&watch, PL_WATCH_CHANGED, now + 28);
+	actions = pl_watch_handle(&watch, PL_WATCH_OVERFLOW, now + 30);
+	assert(actions.rearm && !actions.mode_changed);
+	actions = pl_watch_handle(&watch, PL_WATCH_OVERFLOW, now + 40);
+	assert(actions.rearm && !actions.mode_changed);
+	actions = pl_watch_handle(&watch, PL_WATCH_OVERFLOW, now + 50);
+	expect_change(actions, PL_WATCH_RESCAN_ONLY, "overflows one after another; rescanning instead");
+	assert(actions.rescan && !actions.rearm && watch.next_ms == now + 50 + 10000);
+	/* the next scan arms again, and notifications take over once that works */
+	now = watch.next_ms;
+	actions = pl_watch_handle(&watch, PL_WATCH_TIMER, now);
+	assert(actions.rearm && actions.rescan);
+	actions = pl_watch_handle(&watch, PL_WATCH_OPENED_ARMED, now);
+	expect_change(actions, PL_WATCH_NOTIFY, "notifications armed");
+}
+
 static void test_watch_rescan_only(void)
 {
 	struct pl_watch watch;
@@ -546,6 +584,7 @@ int main(void)
 	test_future_write_times();
 	test_rename();
 	test_watch_notify_and_overflow();
+	test_watch_overflow_run();
 	test_watch_rescan_only();
 	test_watch_missing_denied_and_recovery();
 	assert(bnum_allocs() == allocations);

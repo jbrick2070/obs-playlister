@@ -14,6 +14,14 @@
 #
 # Example:
 #   .\tests\obs\run-harness.ps1 -ObsRoot C:\OBS-Portable -Files a.mp4, b.mp4, c.mp4
+#
+# The Phase 2 acceptance (phase2-acceptance.lua) also needs -Otr, a folder of renders on the same volume as the temp
+# folder: the run makes a temporary folder of hard links to its files (never touching the files themselves), a
+# folder of two links that the script moves away and back, an empty folder the current user may not read (a deny
+# entry on that folder alone, not inherited, removed afterwards), and checks whether this machine reaches its own
+# admin share for a UNC path:
+#   .\tests\obs\run-harness.ps1 -ObsRoot C:\OBS-Portable -Files a.mp4, b.mp4, c.mp4 -Script phase2-acceptance.lua `
+#     -Otr C:\renders -TimeoutSeconds 600
 param(
 	[Parameter(Mandatory = $true)][string]$ObsRoot,
 	[Parameter(Mandatory = $true)][string[]]$Files,
@@ -21,10 +29,13 @@ param(
 	[string]$SceneCollection = 'Untitled',
 	[int]$TimeoutSeconds = 180,
 	# another script in this folder, run the same way (spike-child-signals.lua records the child's behavior)
-	[string]$Script = 'playlister-harness.lua'
+	[string]$Script = 'playlister-harness.lua',
+	# a folder of renders for phase2-acceptance.lua
+	[string]$Otr = ''
 )
 $ErrorActionPreference = 'Stop'
 if ($Files.Count -ne 3) { throw 'pass exactly three media files, each of a different duration' }
+if ($Script -eq 'phase2-acceptance.lua' -and -not $Otr) { throw 'phase2-acceptance.lua needs -Otr <render folder>' }
 if (-not (Test-Path (Join-Path $ObsRoot 'portable_mode.txt'))) { throw "$ObsRoot is not a portable OBS (no portable_mode.txt)" }
 # another OBS (an installed one) may stay open: the portable copy keeps its own config, logs and plugins, and starts
 # with --multi
@@ -61,6 +72,12 @@ $mediaFolder = $null
 $mediaJunction = $null
 $stillFile = $null
 $mediaLinks = @()
+$otrFolder = $null
+$otrLinks = @()
+$otrOrder = $null
+$moveFolder = $null
+$moveLinks = @()
+$deniedFolder = $null
 try {
 	$emptyFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-empty-' + [guid]::NewGuid().ToString('N'))
 	New-Item -ItemType Directory $emptyFolder | Out-Null
@@ -93,6 +110,51 @@ try {
 	$bitmap.Save($stillFile, [System.Drawing.Imaging.ImageFormat]::Jpeg)
 	$bitmap.Dispose()
 	$env:PLAYLISTER_HARNESS_STILL = $stillFile -replace '\\', '/'
+	if ($Otr) {
+		# hard links to every render, named as the renders, and their names in date order (R-DIR-12: date modified,
+		# ascending); a link shares its file's dates
+		# the default extension filter's files (R-DIR-5), as the folder row lists them
+		$extensions = 'mp4 m4v mov mkv webm avi flv ts mpg mxf gif mp3 m4a mka aac ogg opus wav flac jpg jpeg png webp bmp' -split ' '
+		$renders = @(Get-ChildItem -LiteralPath $Otr -File | Where-Object { $extensions -contains $_.Extension.TrimStart('.').ToLower() } |
+			Sort-Object LastWriteTimeUtc, Name)
+		if ($renders.Count -lt 10) { throw "-Otr needs at least ten media files: $Otr" }
+		# the script writes files named zz-...; a link of that name would let it write into a render
+		if ($renders | Where-Object { $_.Name -like 'zz-*' }) { throw "-Otr holds a file named zz-..., which the script uses: $Otr" }
+		$otrFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-otr-' + [guid]::NewGuid().ToString('N'))
+		New-Item -ItemType Directory $otrFolder | Out-Null
+		foreach ($render in $renders) {
+			$link = Join-Path $otrFolder $render.Name
+			New-Item -ItemType HardLink -Path $link -Target $render.FullName | Out-Null
+			$otrLinks += $link
+		}
+		$otrOrder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-otr-order-' + [guid]::NewGuid().ToString('N') + '.txt')
+		[IO.File]::WriteAllLines($otrOrder, [string[]]($renders | ForEach-Object { $_.Name }), (New-Object Text.UTF8Encoding $false))
+		$env:PLAYLISTER_HARNESS_OTR_FOLDER = $otrFolder -replace '\\', '/'
+		$env:PLAYLISTER_HARNESS_OTR_ORDER = $otrOrder -replace '\\', '/'
+		# two links in a folder the script moves away and back
+		$moveFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-moving-' + [guid]::NewGuid().ToString('N'))
+		New-Item -ItemType Directory $moveFolder | Out-Null
+		for ($i = 0; $i -lt 2; $i++) {
+			$link = Join-Path $moveFolder ('{0}.mp4' -f [char](97 + $i))
+			New-Item -ItemType HardLink -Path $link -Target (Resolve-Path $Files[$i]).Path | Out-Null
+			$moveLinks += Split-Path -Leaf $link
+		}
+		$env:PLAYLISTER_HARNESS_MOVE_FOLDER = $moveFolder -replace '\\', '/'
+		# empty, so the deny entry (on the folder alone, without inheritance) reaches no file
+		$deniedFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-denied-' + [guid]::NewGuid().ToString('N'))
+		New-Item -ItemType Directory $deniedFolder | Out-Null
+		icacls $deniedFolder /deny "${env:USERDOMAIN}\${env:USERNAME}:(RX)" | Out-Null
+		if ($LASTEXITCODE -ne 0) { throw "icacls could not deny reading $deniedFolder" }
+		$env:PLAYLISTER_HARNESS_DENIED_FOLDER = $deniedFolder -replace '\\', '/'
+		# the media folder through this machine's admin share, when it is reachable
+		$unc = '\\localhost\' + $mediaFolder.Substring(0, 1) + '$' + $mediaFolder.Substring(2)
+		if (Test-Path -LiteralPath (Join-Path $unc '1.mp4')) {
+			$env:PLAYLISTER_HARNESS_UNC_FOLDER = $unc
+		}
+		else {
+			Remove-Item Env:\PLAYLISTER_HARNESS_UNC_FOLDER -ErrorAction SilentlyContinue
+		}
+	}
 	# PowerShell names are case-insensitive: a $script here would overwrite the -Script parameter
 	$scriptPath = (Join-Path $PSScriptRoot $Script) -replace '\\', '/'
 	$json = Get-Content $collection -Raw | ConvertFrom-Json
@@ -127,10 +189,10 @@ try {
 		ForEach-Object { '  ' + $_.Line.Trim() }
 	$passes = @(Select-String -Path $log.FullName -Pattern 'HARNESS PASS').Count
 	$fails = @(Select-String -Path $log.FullName -Pattern 'HARNESS FAIL').Count
-	# the player logs every load; the empty folder, the absent one and the junction are never loaded themselves (a
-	# file inside the junction is), so such a load means a folder row was taken for a file
+	# the player logs every load; the empty folder, the absent one, the denied one and the junction are never loaded
+	# themselves (a file inside the junction is), so such a load means a folder row was taken for a file
 	# loads only: the player's own "playing <path>" line (a skip message names its path after "playing" too)
-	$folderLoads = @(Select-String -Path $log.FullName -Pattern '\[obs-playlister\] playing .*playlister-harness-(empty|gone)-|\[obs-playlister\] playing .*playlister-harness-linked-[0-9a-f]+\.mp4$').Count
+	$folderLoads = @(Select-String -Path $log.FullName -Pattern '\[obs-playlister\] playing .*playlister-harness-(empty|gone|denied)-|\[obs-playlister\] playing .*playlister-harness-linked-[0-9a-f]+\.mp4$').Count
 	if ($folderLoads -gt 0) { "FAIL a folder row was loaded as a file ($folderLoads loads)" }
 	# R-BEH-5: the corrupt file is loaded once by each failing source and once more by Play, the corrupt still once; a
 	# list that cycles through its failures loads them again and again, and a Play that did nothing loads one less
@@ -141,8 +203,18 @@ try {
 		if ($corruptLoads -ne 3) { "FAIL the corrupt file was loaded $corruptLoads times, not 3"; $loadCountsWrong = $true }
 		if ($stillLoads -ne 1) { "FAIL the corrupt still was loaded $stillLoads times, not once"; $loadCountsWrong = $true }
 	}
+	$logLineMissing = $false
+	if ($Script -eq 'phase2-acceptance.lua') {
+		# R-PLAT-10: the denied folder's log line names the Win32 code
+		if (-not (Select-String -Path $log.FullName -Pattern 'access denied \(permissions or security software\); Win32 error 5\)' -Quiet)) {
+			'FAIL the denied folder has no log line naming Win32 error 5'
+			$logLineMissing = $true
+		}
+		$overflows = @(Select-String -Path $log.FullName -Pattern 'more changes than the buffer holds').Count
+		"overflows logged: $overflows"
+	}
 	"summary: $passes passed, $fails failed"
-	$failed = (-not $done) -or $fails -gt 0 -or $folderLoads -gt 0 -or $loadCountsWrong
+	$failed = (-not $done) -or $fails -gt 0 -or $folderLoads -gt 0 -or $loadCountsWrong -or $logLineMissing
 }
 finally {
 	Remove-Item Env:\PLAYLISTER_HARNESS_FILES -ErrorAction SilentlyContinue
@@ -151,6 +223,40 @@ finally {
 	Remove-Item Env:\PLAYLISTER_HARNESS_MISSING_FOLDER -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_MEDIA_JUNCTION -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_STILL -ErrorAction SilentlyContinue
+	foreach ($name in 'OTR_FOLDER', 'OTR_ORDER', 'MOVE_FOLDER', 'DENIED_FOLDER', 'UNC_FOLDER') {
+		Remove-Item "Env:\PLAYLISTER_HARNESS_$name" -ErrorAction SilentlyContinue
+	}
+	# the acceptance folders: only what this run made is removed (links, never the files they name); a file the
+	# script left behind keeps its folder and is reported
+	foreach ($link in $otrLinks) {
+		if (Test-Path -LiteralPath $link) {
+			try { [IO.File]::Delete($link) } catch { "warning: could not remove ${link}: $_" }
+		}
+	}
+	if ($otrFolder -and (Test-Path $otrFolder)) {
+		try { [IO.Directory]::Delete($otrFolder) } catch { "warning: could not remove ${otrFolder}: $_" }
+	}
+	if ($otrOrder -and (Test-Path $otrOrder)) {
+		try { [IO.File]::Delete($otrOrder) } catch { "warning: could not remove ${otrOrder}: $_" }
+	}
+	if ($moveFolder) {
+		# the script moves the folder back; if it stopped half way, the folder is still away
+		foreach ($folder in $moveFolder, "$moveFolder-away") {
+			if (Test-Path $folder) {
+				foreach ($name in $moveLinks) {
+					$link = Join-Path $folder $name
+					if (Test-Path -LiteralPath $link) {
+						try { [IO.File]::Delete($link) } catch { "warning: could not remove ${link}: $_" }
+					}
+				}
+				try { [IO.Directory]::Delete($folder) } catch { "warning: could not remove ${folder}: $_" }
+			}
+		}
+	}
+	if ($deniedFolder -and (Test-Path $deniedFolder)) {
+		icacls $deniedFolder /remove:d "${env:USERDOMAIN}\${env:USERNAME}" | Out-Null
+		try { [IO.Directory]::Delete($deniedFolder) } catch { "warning: could not remove ${deniedFolder}: $_" }
+	}
 	if ($stillFile -and (Test-Path $stillFile)) {
 		try { [IO.File]::Delete($stillFile) } catch { "warning: could not remove ${stillFile}: $_" }
 	}
