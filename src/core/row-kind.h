@@ -33,8 +33,11 @@ typedef bool (*pl_is_directory_fn)(const char *path, void *context);
 
 /* A row with a path, in R-LIST-1's order. A URL (any "scheme://") is a file row. Otherwise a folder kind saved for
  * this row with an unchanged path wins, so a watched folder that is absent when OBS starts is still a folder; a name
- * whose extension is in the filter is a file; any other path is a folder when is_directory says so, else a file
- * (upstream, so a moved or mistyped file still reaches the missing-files dialog). Only that last rule touches the
- * disk. Playlist files (Phase 3a) and UNC folders decided on the provider's worker (Phase 2 step 5) come later. */
+ * whose extension is in the filter is a file; a UNC path is a folder, decided by its provider on its worker; any
+ * other path is a folder when is_directory says so, else a file (upstream, so a moved or mistyped file still reaches
+ * the missing-files dialog). Only that last rule touches the disk. Playlist files come in Phase 3a. */
 enum pl_row_kind pl_classify_row(const char *path, bool saved_folder, const struct pl_filter *filter,
 				 pl_is_directory_fn is_directory, void *context);
+
+/* A network share path: \\server\share\... (either separator), or the \\?\UNC\ form */
+bool pl_path_is_unc(const char *path);

@@ -43,6 +43,7 @@ static inline void reset_folder_item_index(struct media_playlist_source *mps);
 static void clear_media_source(void *data);
 static void update_media_source(void *data, bool forced);
 static void cancel_resume(struct media_playlist_source *mps);
+static bool key_pending(const struct media_file_data *row, const char *key);
 
 static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index);
 
@@ -215,6 +216,31 @@ static void remember_item(struct media_playlist_source *mps, const struct media_
 	}
 }
 
+/* R-DIR-4: a folder item rewritten in place keeps its place while its new version is gated (PLAN step 5), but it is
+ * not loaded until that version is admitted */
+static bool item_pending(const struct media_file_data *item)
+{
+	return item && item->parent && item->entry && key_pending(item->parent, item->entry->key);
+}
+
+/* The first item of the row at index or after it (before it when backward) that may be loaded, or DARRAY_INVALID */
+static size_t loadable_item(const struct media_file_data *row, size_t index, bool backward)
+{
+	for (size_t i = index; i < row->folder_items.num; i = backward ? i - 1 : i + 1) {
+		if (!item_pending(&row->folder_items.array[i]))
+			return i;
+		if (backward && i == 0)
+			break;
+	}
+	return DARRAY_INVALID;
+}
+
+/* A file row, or a folder row with an item that may be loaded */
+static bool row_playable(const struct media_file_data *row)
+{
+	return !row->is_folder || loadable_item(row, 0, false) != DARRAY_INVALID;
+}
+
 static inline void set_current_media_index(struct media_playlist_source *mps, size_t index)
 {
 	if (get_total_file_count(mps) > 0) {
@@ -356,6 +382,14 @@ static bool select_index_locked(struct media_playlist_source *mps, size_t media_
 	    !mps->files.array[media_index].folder_items.num) {
 		/* R-UP-64: nothing to play in an empty folder row; the current item keeps playing */
 		obs_log(LOG_INFO, "select_index: row %zu is an empty folder; ignored", media_index + 1);
+	} else if (media_index < mps->files.num && mps->files.array[media_index].is_folder &&
+		   item_pending(&mps->files.array[media_index]
+					 .folder_items
+					 .array[folder_item_index < mps->files.array[media_index].folder_items.num
+							? folder_item_index
+							: 0])) {
+		obs_log(LOG_INFO, "select_index: item %zu-%zu is still being written; ignored", media_index + 1,
+			folder_item_index + 1);
 	} else if (media_index < mps->files.num) {
 		set_current_media_index(mps, media_index);
 		set_current_folder_item_index(mps, folder_item_index);
@@ -457,7 +491,8 @@ static size_t skip_empty_folder_rows(struct media_playlist_source *mps, size_t i
 	size_t num = mps->files.num;
 	for (size_t tries = 0; index < num && tries < num; tries++) {
 		struct media_file_data *row = &mps->files.array[index];
-		if (!row->is_folder || row->folder_items.num)
+		/* a folder row whose only items are being rewritten counts as empty for now (R-DIR-4) */
+		if (row_playable(row))
 			return index;
 		if (backward)
 			index = index > 0 ? index - 1 : (mps->loop ? num - 1 : num);
@@ -486,10 +521,12 @@ static void play_media_at_index(void *data, size_t index, bool play_last_folder_
 
 	if (mps->current_media->is_folder) {
 		// when Previous Item is clicked to go back to a folder
+		/* the first (or last) item that may be loaded; the row is playable, so there is one */
 		if (play_last_folder_item) {
-			mps->current_folder_item_index = mps->current_media->folder_items.num - 1;
+			mps->current_folder_item_index =
+				loadable_item(mps->current_media, mps->current_media->folder_items.num - 1, true);
 		} else {
-			mps->current_folder_item_index = 0;
+			mps->current_folder_item_index = loadable_item(mps->current_media, 0, false);
 		}
 
 		play_folder_item_at_index(mps, mps->current_folder_item_index);
@@ -715,10 +752,21 @@ static bool playback_stopped(struct media_playlist_source *mps)
 }
 
 /* The current row is a file, or a folder whose current item exists */
-static bool current_item_playable(struct media_playlist_source *mps)
+/* Whether the current item can be loaded. In a folder row an item being rewritten is passed for the next one that
+ * may be loaded, from the row's start if none follows (R-DIR-4); the index moves to it. */
+static bool point_at_playable_item(struct media_playlist_source *mps)
 {
-	return mps->current_media && (!mps->current_media->is_folder ||
-				      mps->current_folder_item_index < mps->current_media->folder_items.num);
+	if (!mps->current_media)
+		return false;
+	if (!mps->current_media->is_folder)
+		return true;
+	size_t index = loadable_item(mps->current_media, mps->current_folder_item_index, false);
+	if (index == DARRAY_INVALID)
+		index = loadable_item(mps->current_media, 0, false);
+	if (index == DARRAY_INVALID)
+		return false;
+	mps->current_folder_item_index = index;
+	return true;
 }
 
 static void play_pause_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
@@ -789,7 +837,7 @@ static void mps_play_pause(void *data, bool pause)
 		if (!stopped) {
 			pl_player_play_pause(&mps->player, false);
 			set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
-		} else if (current_item_playable(mps)) {
+		} else if (point_at_playable_item(mps)) {
 			/* Play from stopped or ended is a playback trigger: kept folder lists are published (R-DIR-11) */
 			os_atomic_set_bool(&mps->release_held, true);
 			update_media_source(mps, true);
@@ -813,7 +861,7 @@ static void mps_restart(void *data)
 	if (mps->restart_behavior == RESTART_BEHAVIOR_FIRST_FILE) {
 		play_media_at_index(mps, 0, false, false);
 	} else if (mps->restart_behavior == RESTART_BEHAVIOR_CURRENT_FILE) {
-		if (current_item_playable(mps))
+		if (point_at_playable_item(mps))
 			update_media_source(mps, true);
 	}
 	pthread_mutex_unlock(&mps->mutex);
@@ -842,9 +890,24 @@ static bool playlist_next_locked(struct media_playlist_source *mps)
 		return false;
 
 	if (mps->shuffle) {
-		if (!shuffler_has_next(&mps->shuffler))
+		/* an item being rewritten is passed over, at most once round the list (R-DIR-4); a passed item comes again
+		 * in a later round. With nothing loadable at all the shuffler is left alone. */
+		bool any_loadable = false;
+		for (size_t i = 0; i < mps->files.num && !any_loadable; i++)
+			any_loadable = row_playable(&mps->files.array[i]);
+		if (!any_loadable)
 			return false;
-		mps->actual_media = shuffler_next(&mps->shuffler);
+		struct media_file_data *next = NULL;
+		for (size_t tries = get_total_file_count(mps); tries > 0 && !next; tries--) {
+			if (!shuffler_has_next(&mps->shuffler))
+				return false;
+			next = shuffler_next(&mps->shuffler);
+			if (item_pending(next))
+				next = NULL;
+		}
+		if (!next)
+			return false;
+		mps->actual_media = next;
 		remember_item(mps, mps->actual_media);
 		if (mps->actual_media->parent_id) {
 			mps->current_media = mps->actual_media->parent;
@@ -861,9 +924,12 @@ static bool playlist_next_locked(struct media_playlist_source *mps)
 
 	if (mps->current_media->is_folder && mps->current_media->folder_items.num > 0 &&
 	    mps->current_folder_item_index < mps->current_media->folder_items.num - 1) {
-		++mps->current_folder_item_index;
-		play_folder_item_at_index(mps, mps->current_folder_item_index);
-		return true;
+		size_t next_item = loadable_item(mps->current_media, mps->current_folder_item_index + 1, false);
+		if (next_item != DARRAY_INVALID) {
+			mps->current_folder_item_index = next_item;
+			play_folder_item_at_index(mps, mps->current_folder_item_index);
+			return true;
+		}
 	}
 
 	size_t next;
@@ -903,8 +969,19 @@ static void mps_playlist_prev(void *data)
 		goto end;
 
 	if (mps->shuffle) {
-		if (shuffler_has_prev(&mps->shuffler)) {
-			mps->actual_media = shuffler_prev(&mps->shuffler);
+		/* an item being rewritten is passed; with nothing loadable back there, the shuffler stays where it was */
+		size_t position = mps->shuffler.next;
+		struct media_file_data *prev = NULL;
+		for (size_t tries = get_total_file_count(mps); tries > 0 && !prev && shuffler_has_prev(&mps->shuffler);
+		     tries--) {
+			prev = shuffler_prev(&mps->shuffler);
+			if (item_pending(prev))
+				prev = NULL;
+		}
+		if (!prev)
+			mps->shuffler.next = position;
+		if (prev) {
+			mps->actual_media = prev;
 			remember_item(mps, mps->actual_media);
 			if (mps->actual_media->parent_id) {
 				mps->current_media = mps->actual_media->parent;
@@ -921,8 +998,11 @@ static void mps_playlist_prev(void *data)
 	}
 
 	if (mps->current_media->is_folder) {
-		if (mps->current_folder_item_index > 0) {
-			--mps->current_folder_item_index;
+		size_t prev_item = mps->current_folder_item_index > 0
+					   ? loadable_item(mps->current_media, mps->current_folder_item_index - 1, true)
+					   : DARRAY_INVALID;
+		if (prev_item != DARRAY_INVALID) {
+			mps->current_folder_item_index = prev_item;
 			play_folder_item_at_index(mps, mps->current_folder_item_index);
 			goto end;
 		} else {
@@ -1162,7 +1242,7 @@ static void move_past_removed(struct media_playlist_source *mps, struct media_fi
 		for (size_t j = position + 1; j < old_items.num; j++) {
 			const struct pl_entry *entry = old_items.array[j].entry;
 			size_t successor = exact_item_index(row, entry->key, entry->occurrence);
-			if (successor != DARRAY_INVALID) {
+			if (successor != DARRAY_INVALID && !item_pending(&row->folder_items.array[successor])) {
 				obs_log(LOG_INFO, "row %zu: the playing item is gone; playing the one that followed it",
 					row_index + 1);
 				play_folder_item_at_index(mps, successor);
@@ -1184,7 +1264,8 @@ static void resume_in_row(struct media_playlist_source *mps, struct media_file_d
 	size_t found = mps->resume.item_key ? find_folder_item_index(&row->folder_items.da, mps->resume.item_key,
 								     mps->resume.item_occurrence)
 					    : DARRAY_INVALID;
-	if (found == DARRAY_INVALID && mps->resume.item_key && key_pending(row, mps->resume.item_key)) {
+	/* still being written, whether new or rewritten in place (then its old version is listed, but not loaded) */
+	if (mps->resume.item_key && key_pending(row, mps->resume.item_key)) {
 		if (!mps->resume.wait_until_ns) {
 			mps->resume.wait_until_ns = os_gettime_ns() + RESUME_WAIT_NS;
 			obs_log(LOG_INFO, "row %zu: the saved item is still being written; waiting up to 30 s for it",
@@ -1196,7 +1277,10 @@ static void resume_in_row(struct media_playlist_source *mps, struct media_file_d
 		if (mps->resume.item_key)
 			obs_log(LOG_INFO, "row %zu: the saved item is not there; starting at the row's first item",
 				row_index + 1);
-		found = 0;
+		found = loadable_item(row, 0, false);
+		/* every item is being rewritten: the snapshot that admits one comes back here */
+		if (found == DARRAY_INVALID)
+			return;
 	}
 	set_current_media_index(mps, row_index);
 	set_current_folder_item_index(mps, found);
@@ -1216,7 +1300,7 @@ static void resume_after_row(struct media_playlist_source *mps, size_t row_index
 	for (size_t step = 1; step <= num; step++) {
 		size_t index = (row_index + step) % num;
 		const struct media_file_data *candidate = &mps->files.array[index];
-		if (!candidate->is_folder || candidate->folder_items.num) {
+		if (row_playable(candidate)) {
 			obs_log(LOG_INFO, "row %zu has nothing to play; starting at row %zu", row_index + 1, index + 1);
 			play_media_at_index(mps, index, false, false);
 			return;
@@ -1320,7 +1404,8 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 				for (size_t j = loaded_position + 1; j < old_items.num; j++) {
 					const struct pl_entry *entry = old_items.array[j].entry;
 					size_t successor = exact_item_index(row, entry->key, entry->occurrence);
-					if (successor != DARRAY_INVALID) {
+					if (successor != DARRAY_INVALID &&
+					    !item_pending(&row->folder_items.array[successor])) {
 						mps->current_folder_item_index = successor;
 						break;
 					}
@@ -2115,7 +2200,7 @@ static void migrate_settings(obs_data_t *settings)
 		if (path && *path) {
 			if (position++ == index)
 				obs_data_set_string(settings, S_CURRENT_ROW_UUID, id);
-			if (*id && !strstr(path, "://") && path_is_directory(path, NULL))
+			if (*id && !strstr(path, "://") && !pl_path_is_unc(path) && path_is_directory(path, NULL))
 				save_folder_kind(row_kinds, id, path);
 		}
 		obs_data_release(row);
@@ -2341,7 +2426,9 @@ static void mps_update(void *data, obs_data_t *settings)
 		if (item_edited) {
 			mps->current_folder_item_index = 0;
 		} else if (mps->current_media && mps->current_media->is_folder) {
-			mps->current_folder_item_index = 0;
+			/* without the remembered item, the first item that may be loaded (R-DIR-4) */
+			size_t first = loadable_item(mps->current_media, 0, false);
+			mps->current_folder_item_index = first != DARRAY_INVALID ? first : 0;
 
 			/* Find that file in the folder */
 			if (mps->current_item_key) {
@@ -2350,13 +2437,14 @@ static void mps_update(void *data, obs_data_t *settings)
 					find_folder_item_index(&mps->current_media->folder_items.da,
 							       mps->current_item_key, mps->current_item_occurrence);
 				if (mps->current_folder_item_index == DARRAY_INVALID) {
-					mps->current_folder_item_index = 0;
+					mps->current_folder_item_index = first != DARRAY_INVALID ? first : 0;
 					found = false;
 				}
 			}
 
-			if (mps->current_media->folder_items.num == 0) {
-				/* the current folder row is empty now: move on, or clear when nothing follows */
+			if (!row_playable(mps->current_media)) {
+				/* the current folder row has nothing to play now (empty, or only items being rewritten): move
+				 * on, or clear when nothing follows */
 				if (!playlist_next_locked(mps))
 					clear_media_source(mps);
 				handled = true;
@@ -2492,9 +2580,10 @@ static obs_missing_files_t *mps_missingfiles(void *data)
 		obs_data_t *item = obs_data_array_item(files, i);
 		const char *path = obs_data_get_string(item, "value");
 
-		/* R-UP-34: file rows only; the relocation dialog takes files, and an absent folder row waits for its
-		 * folder (R-LIST-1) */
-		if (strcmp(path, "") != 0 && !saved_folder_kind(row_kinds, obs_data_get_string(item, S_ID), path)) {
+		/* R-UP-34: local file rows only; the relocation dialog takes files, an absent folder row waits for its
+		 * folder (R-LIST-1), and asking about a share here would hold up the UI while it is offline */
+		if (strcmp(path, "") != 0 && !pl_path_is_unc(path) &&
+		    !saved_folder_kind(row_kinds, obs_data_get_string(item, S_ID), path)) {
 			if (!os_file_exists(path) && strstr(path, "://") == NULL) {
 				/* R-UP-67: the callback can run long after this, when the settings no longer hold path, so
 				 * it gets a copy that lives as long as the source; a path reported before reuses its copy */

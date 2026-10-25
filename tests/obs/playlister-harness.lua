@@ -143,6 +143,34 @@ local function play_selected(value)
 	obs.obs_properties_destroy(props)
 end
 
+-- whether a file exists (the handle opened to find out is closed again)
+local function exists(path)
+	local file = io.open(path, "rb")
+	if file then
+		file:close()
+		return true
+	end
+	return false
+end
+
+-- copies a file byte for byte
+local function copy_file(from, to)
+	local input = io.open(from, "rb")
+	local bytes = input:read("*a")
+	input:close()
+	local output = io.open(to, "wb")
+	output:write(bytes)
+	output:close()
+end
+
+-- the Current File text after Refresh Filename (it is written on updates and button presses only, upstream's note)
+local function refreshed_file_name()
+	local props = obs.obs_source_properties(src)
+	obs.obs_property_button_clicked(obs.obs_properties_get(props, "refresh_filename"), src)
+	obs.obs_properties_destroy(props)
+	return current_file_name()
+end
+
 -- a stale choice is reported in the Current File text instead of played (R-UP-20)
 local function reports_stale_choice()
 	return current_file_name():find("list changed", 1, true) ~= nil
@@ -669,20 +697,15 @@ end, function()
 	check("current file names the playing item at its new position",
 		current_file_name() == "2-3: " .. MEDIA_FOLDER .. "/2.mp4", current_file_name())
 	os.rename(MEDIA_FOLDER .. "/0.mp4", MEDIA_FOLDER .. "/3.mp4")
-	-- a new file joins once the write-complete gate admits it (R-DIR-4)
-	local input = io.open(FILES[3], "rb")
-	local bytes = input:read("*a")
-	input:close()
-	local output = io.open(MEDIA_FOLDER .. "/9.mp4", "wb")
-	output:write(bytes)
-	output:close()
+	-- a new file joins once the write-complete gate admits it (R-DIR-4); a copy the harness owns, as the hard links
+	-- are the user's own files
+	copy_file(FILES[1], MEDIA_FOLDER .. "/9.mp4")
 	mark.before_add = tm()
 end)
 
 step("file added while playing", 500, 15000, function()
 	return select_file_values():find("media:1:9.MP4", 1, true) ~= nil
 end, function()
-	os.remove(MEDIA_FOLDER .. "/9.mp4")
 	check("a file added to the watched folder joins the list",
 		select_file_values() == "0 f1:0: media:1:1.MP4 media:1:2.MP4 media:1:3.MP4 media:1:9.MP4",
 		select_file_values())
@@ -693,28 +716,45 @@ end, function()
 	play_selected("media:1:3.MP4")
 end)
 
-step("last folder item", 500, 15000, function() return dur() == D[3] and st() == PLAYING end, function()
+-- R-DIR-4: the file after the playing one is rewritten in place; while its new version is gated it keeps its place
+-- but is not loaded, so Next passes it (and with loop off nothing follows)
+step("third folder item", 500, 15000, function() return dur() == D[3] and st() == PLAYING end, function()
+	local output = io.open(MEDIA_FOLDER .. "/9.mp4", "ab")
+	output:write(string.rep("\0", 4096))
+	output:close()
+end)
+
+step("rewrite pending", 1200, 1200, nil, function()
+	obs.obs_source_media_next(src)
+end)
+
+step("next passes the rewrite", 800, 800, nil, function()
+	check("next passes a file still being rewritten", dur() == D[3] and st() == PLAYING and
+		refreshed_file_name() == "2-3: " .. MEDIA_FOLDER .. "/3.mp4", refreshed_file_name() .. ", " .. status())
+end)
+
+step("rewrite admitted", 3000, 3000, nil, function()
+	obs.obs_source_media_next(src)
+end)
+
+step("next plays the rewritten file", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
+	check("once admitted the rewritten file plays", refreshed_file_name() == "2-4: " .. MEDIA_FOLDER .. "/9.mp4",
+		refreshed_file_name())
 	seek_near_end()
 end)
 
 -- the list ends on the folder's last item (loop off); the item stays loaded while the folder changes
 step("list ended on a folder item", 500, 15000, function() return st() == ENDED end, function()
-	local input = io.open(FILES[3], "rb")
-	local bytes = input:read("*a")
-	input:close()
-	local output = io.open(MEDIA_FOLDER .. "/8.mp4", "wb")
-	output:write(bytes)
-	output:close()
+	copy_file(FILES[3], MEDIA_FOLDER .. "/8.mp4")
 end)
 
 step("file added after the end", 500, 15000, function()
 	return select_file_values():find("media:1:8.MP4", 1, true) ~= nil
 end, function()
-	os.remove(MEDIA_FOLDER .. "/8.mp4")
 	-- save writes the ended item's name; it must still point at a live item after the folder's new listing
 	obs.obs_source_save(src)
 	check("after the list ended, a folder change keeps the ended item and its state",
-		current_file_name() == "2-3: " .. MEDIA_FOLDER .. "/3.mp4" and st() == ENDED,
+		current_file_name() == "2-5: " .. MEDIA_FOLDER .. "/9.mp4" and st() == ENDED,
 		current_file_name() .. ", " .. status())
 	remove_source()
 end)
@@ -723,6 +763,16 @@ end)
 -- nothing to play, so playback moves on to the next row and its path is never handed to the child as a file
 -- (run-harness.ps1 fails the run if it is); without the saved kind it would be a file row. The second row was saved
 -- without a uuid and is given one, so Select File can name it.
+-- the copies go once the child that may hold the last one open is released; tried until they are gone
+step("copies removed", 0, 10000, function()
+	os.remove(MEDIA_FOLDER .. "/8.mp4")
+	os.remove(MEDIA_FOLDER .. "/9.mp4")
+	return not exists(MEDIA_FOLDER .. "/8.mp4") and not exists(MEDIA_FOLDER .. "/9.mp4")
+end, function()
+	check("the harness copies in the watched folder are removed",
+		not exists(MEDIA_FOLDER .. "/8.mp4") and not exists(MEDIA_FOLDER .. "/9.mp4"))
+end)
+
 step("source with an absent folder row", 1500, 1500, nil, function()
 	create_source("playlister-harness-absent", function(settings)
 		set_playlist(settings, { { MISSING_FOLDER, "gone" }, { FILES[2] } })

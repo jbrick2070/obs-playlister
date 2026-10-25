@@ -25,8 +25,8 @@ to the three files): settings saved before Phase 2 must migrate and resume on th
 new resume keys, and a restarted source must resume by row uuid and key, save the folder row's kind, list the
 folder items by identity, report a choice whose occurrence is gone (or a folder row's own identity) and play a
 folder item it names, then keep playing it while a file in its folder is renamed (the list follows in name
-order) and while a new file is copied in (it joins once admitted), and with loop off keep the ended last item through
-a folder change; its migrated predecessor uses a junction named like a media file, which only the kind the
+order) and while a new file is copied in (it joins once admitted), pass over a harness copy rewritten in place while it is
+still being written and play it once admitted, and with loop off keep the ended last item through a folder change; its migrated predecessor uses a junction named like a media file, which only the kind the
 migration saves keeps a folder. A fourth source has a row saved as a folder that does not exist: it must stay a
 folder and be passed over (the runner fails the run if a folder path is ever loaded as a file), and a row saved
 without a uuid must be given one and play when chosen by it. It needs a portable
@@ -45,6 +45,7 @@ when every check passed.
 | 2026-10-24 | 33.0.0 portable, beside a running OBS 33 | Phase 2 step 4 (part 1) | 52 passed, 0 failed, no memory leaks, in three runs in a row. Mutation check: without the R-UP-80 save guard the resume chain fails (5 checks). With another OBS running the portable copy's video thread sometimes stalls for seconds ("the media source has not applied an update for 2 s"); load waits allow 15 s. After the second QA pass (pause held across newer commands, progress as a third distinct time): 52 passed, 0 failed, no memory leaks, three runs in a row, no OBS running beside it, no startup-window warning |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 4 (part 2) | 69 passed, 0 failed, no memory leaks, three runs in a row; the runner's temporary folders and junction removed and the three media files unchanged. Mutation check: without the migration saving folder kinds, 5 checks fail and the runner reports the junction loaded as a file (314 loads, as loop is on and the unopenable row is the only one: the full-pass stop of R-BEH-5 is Phase 2 step 6) |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 5 (part 2) | 76 passed, 0 failed, no memory leaks, three runs in a row; folder rows now come from the folder provider asynchronously, and every earlier folder check passed unchanged |
+| 2026-10-24 | 33.0.0 portable | Phase 2 step 5 (part 3) | 79 passed, 0 failed, no memory leaks, three runs in a row. Mutation check: with the pending check disabled, Next loads the file still being rewritten (1 check fails) |
 
 ## Manual checks
 

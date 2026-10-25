@@ -86,6 +86,13 @@ static void test_order(void)
 	expect(&filter, "D:\\renders", false, PL_ROW_FOLDER, 1);
 	expect(&filter, "C:/media/notes.xyz", false, PL_ROW_FILE, 1);
 	expect(&filter, "C:/media/moved", false, PL_ROW_FILE, 1);
+	/* a share is a folder without a disk question (its provider decides on its worker), unless the name is media */
+	expect(&filter, "\\\\server\\share\\shows", false, PL_ROW_FOLDER, 0);
+	expect(&filter, "//server/share/shows", false, PL_ROW_FOLDER, 0);
+	expect(&filter, "\\\\?\\UNC\\server\\share\\shows", false, PL_ROW_FOLDER, 0);
+	expect(&filter, "\\\\server\\share\\ep1.mp4", false, PL_ROW_FILE, 0);
+	/* a prefixed local path is not a share */
+	expect(&filter, "\\\\?\\C:\\media\\notes", false, PL_ROW_FILE, 1);
 	/* a trailing separator leaves the last component without an extension, so the disk decides */
 	expect(&filter, "C:/media/shows/", false, PL_ROW_FILE, 1);
 	expect(&filter, "C:/media/clips.mp4\\", false, PL_ROW_FILE, 1);
@@ -103,6 +110,23 @@ static void test_empty_filter(void)
 	pl_filter_free(&filter);
 }
 
+static void test_unc(void)
+{
+	assert(pl_path_is_unc("\\\\server\\share"));
+	assert(pl_path_is_unc("//server/share/x"));
+	assert(pl_path_is_unc("\\/server\\share"));
+	assert(pl_path_is_unc("\\\\?\\UNC\\server\\share"));
+	assert(pl_path_is_unc("//?/unc/server/share"));
+	assert(!pl_path_is_unc("\\\\?\\C:\\media"));
+	assert(!pl_path_is_unc("\\\\.\\C:\\media"));
+	assert(!pl_path_is_unc("\\\\?\\"));
+	assert(!pl_path_is_unc("\\\\"));
+	assert(!pl_path_is_unc("\\\\\\server"));
+	assert(!pl_path_is_unc("C:\\media"));
+	assert(!pl_path_is_unc("/media"));
+	assert(!pl_path_is_unc(""));
+}
+
 int main(void)
 {
 	/* a failed assert prints to stderr and exits non-zero instead of opening a dialog */
@@ -113,6 +137,7 @@ int main(void)
 	long allocations = bnum_allocs();
 	test_order();
 	test_empty_filter();
+	test_unc();
 	assert(bnum_allocs() == allocations);
 	printf("row kind tests: passed\n");
 	return 0;
