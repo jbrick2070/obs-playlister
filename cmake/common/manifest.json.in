@@ -5,7 +5,7 @@
     "version": "@PLUGIN_VERSION@",
     "os_arch": "windows-x64",
     "description": "Playlist source for OBS Studio: plays files and folders through OBS's media source.",
-    "long_description": "OBS Playlister plays a list of local files and folders through OBS's own media source, and editing the list does not restart the current clip. Based on Media Playlist Source by Ian Rodriguez.",
+    "long_description": "Playlister plays a list of local files and folders through OBS's own media source, and editing the list does not restart the current clip. Based on Media Playlist Source by Ian Rodriguez.",
     "urls": {
         "repository": "@PLUGIN_WEBSITE@",
         "website": "@PLUGIN_WEBSITE@",

@@ -34,8 +34,8 @@
         }
     },
     "name": "obs-playlister",
-    "displayName": "OBS Playlister",
-    "version": "0.3.0",
+    "displayName": "Playlister",
+    "version": "0.3.1",
     "author": "Jeffrey A. Brick",
     "website": "https://github.com/jbrick2070/obs-playlister",
     "email": "jbrick2070@gmail.com",

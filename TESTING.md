@@ -9,7 +9,7 @@ ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure --no-tests=erro
 ## Runtime harness (automated, needs OBS)
 
 `tests/obs/run-harness.ps1` runs `tests/obs/playlister-harness.lua` inside a portable OBS 33 and drives one
-OBS Playlister source through: play, auto-advance at the end of a file, next and previous, stop (no advance),
+Playlister source through: play, auto-advance at the end of a file, next and previous, stop (no advance),
 Play then Pause at once from stop (both happen: the item reloads and stays paused), Play again, pause, seek, restart, a speed change, hide and show (stop/restart and stop/play-next), end of
 the list with loop off, wrap-around with loop on, next then pause in a row, Properties (the Select File list,
 Refresh Filename, the identities Select File stores, Play Selected File with nothing chosen, with a position
@@ -69,6 +69,7 @@ when every check passed.
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 7 (part 2) | 116 passed, 0 failed, no memory leaks, three runs in a row, and once more after the stale-choice check also read the info type. Mutation checks: with the snapshot's change count left at 0, the waiting-change check fails; without the status update in Play Selected, the stale notice is missing from the open Properties and 2 checks fail. How the dialog draws the block is item 2.1 |
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 8 (part 2) | 117 passed, 0 failed, no memory leaks, four runs (the last after the QA fixes); Play then Pause at once from stop left item 2 paused at 120 ms. Mutation check: without the pending-load rule the pause is dropped and the item plays on to 2.4 s (1 check fails) |
 | 2026-10-25 | 33.0.0 portable | 0.3.0 (version bump) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.3.0)` |
+| 2026-10-25 | 33.0.0 portable | 0.3.1 (renamed Playlister) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.3.1)`; the sources are found by their unchanged id |
 
 ## Phase 2 acceptance (automated, needs OBS)
 
@@ -145,14 +146,14 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 `release/RelWithDebInfo/obs-playlister`, so the folder holds exactly
 `obs-playlister.dll`, `obs-playlister.pdb`, `data\manifest.json` and
 `data\locale\en-US.ini`. From Phase 2 on these run on the current build (the waiver in PLAN section 7), so the
-version expected in 1.1 and 1.2 is that build's: 0.3.0 now.
+version expected in 1.1 and 1.2 is that build's (0.3.1 now).
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
-| 1.1 | Start OBS 33 and open the log | `[obs-playlister] plugin loaded successfully (version 0.2.0)` on the Phase 1 build, `(version 0.3.0)` on the current one; module list shows `obs-playlister.dll`; source list shows `'OBS Playlister' (obs_playlister_source)` | 2026-10-24, OBS 33.0.0 portable (plugin in `plugins\obs-playlister\`): pass. Load line logged; the Plugin Manager's modules.json lists OBS Playlister 0.2.0 with source `obs_playlister_source`; clean exit, 0 leaks. 2026-10-24, OBS 33.0.0 system install (plugin in `C:\ProgramData\obs-studio\plugins\obs-playlister\`, Phase 1 build): pass. Load line logged next to `[media-playlist-source] plugin loaded successfully (version 0.1.3)`. |
-| 1.2 | Tools > Plugin Manager | "OBS Playlister", version 0.2.0 on the Phase 1 build and 0.3.0 on the current one, no Legacy chip; Media Playlist Source still shows its Legacy chip. Note which manifest fields are displayed (PLAN V7) and whether the Discover tab is still "Coming soon" (D-10) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.1 | Start OBS 33 and open the log | `[obs-playlister] plugin loaded successfully (version 0.2.0)` on the Phase 1 build, the current build's version on later ones; module list shows `obs-playlister.dll`; source list shows `'Playlister' (obs_playlister_source)` | 2026-10-24, OBS 33.0.0 portable (plugin in `plugins\obs-playlister\`): pass. Load line logged; the Plugin Manager's modules.json lists OBS Playlister 0.2.0 with source `obs_playlister_source`; clean exit, 0 leaks. 2026-10-24, OBS 33.0.0 system install (plugin in `C:\ProgramData\obs-studio\plugins\obs-playlister\`, Phase 1 build): pass. Load line logged next to `[media-playlist-source] plugin loaded successfully (version 0.1.3)`. |
+| 1.2 | Tools > Plugin Manager | "Playlister" ("OBS Playlister" before 0.3.1), version 0.2.0 on the Phase 1 build and the current build's version on later ones, no Legacy chip; Media Playlist Source still shows its Legacy chip. Note which manifest fields are displayed (PLAN V7) and whether the Discover tab is still "Coming soon" (D-10) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.3 | Windows security (R-PLAT-10) | `Get-AuthenticodeSignature` on the DLL reports NotSigned; Windows Security protection history and the Code Integrity log show nothing for `obs64.exe` or `obs-playlister.dll` | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
-| 1.4 | Add an "OBS Playlister" source; open Properties | Labels read "Loop Playlist", "Shuffle", "Use hardware decoding when available" (checked by default, D-11), never raw keys | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.4 | Add a "Playlister" source; open Properties | Labels read "Loop Playlist", "Shuffle", "Use hardware decoding when available" (checked by default, D-11), never raw keys | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.5 | Add two video files; play | first file plays; Current File shows `1: <path>` after Refresh Filename | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.6 | Hardware decoding | Task Manager > GPU shows "Video Decode" activity while a file plays | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.7 | Next / Previous (media controls and hotkeys) | moves between the two files; hotkeys appear under the source as "Next" / "Previous" | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
@@ -170,7 +171,7 @@ version expected in 1.1 and 1.2 is that build's: 0.3.0 now.
 | 1.17b | Add a folder row and apply, close OBS, rename that folder, start OBS (R-UP-34, R-LIST-1; Phase 2 step 4 build) | the missing-files dialog does not list the folder; the folder row is passed over; renaming the folder back and pressing OK in Properties plays its files again | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.18 | Close OBS while item 2 plays, start OBS again | item 2 resumes | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.19 | Script `select_index` with `media_index` past the end | nothing happens (R-UP-5) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
-| 1.20 | Both plugins at once | a Media Playlist Source and an OBS Playlister source work side by side | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.20 | Both plugins at once | a Media Playlist Source and a Playlister source work side by side | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.21 | Packaging (D-2, PLAN V9) | each zip extracts to the layout above; the Inno installer (unsigned, SmartScreen prompt expected) installs the same tree; the portable zip loads in a portable OBS 33 | 2026-10-24, Phase 1 build (CI run 40134077740): partial. Both zip layouts are as above, and the CI portable zip loads in a portable OBS 33.0.0. The Inno installer was not run (it needs an administrator); that part is pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 
 ## Phase 2 (version 0.3.0)

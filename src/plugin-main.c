@@ -33,7 +33,7 @@ extern struct obs_source_info media_playlist_source_info;
  * with buildspec.json (displayName) and cmake/common/manifest.json.in (description). */
 const char *obs_module_name(void)
 {
-	return "OBS Playlister";
+	return "Playlister";
 }
 
 const char *obs_module_description(void)

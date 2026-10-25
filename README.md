@@ -1,19 +1,24 @@
-# OBS Playlister
+# Playlister
 
 A playlist source for OBS Studio 33 and later. It plays a list of local files,
 folders and URLs through OBS's own Media Source, and editing the list does not
 restart the clip that is playing.
 
+Playlister is a third-party plugin for OBS Studio. It is not made, endorsed or
+supported by the OBS Project. Before 0.3.1 its name began with "OBS"; its
+plugin files, source ID and this repository keep the identifier
+`obs-playlister`, so existing scenes, settings and hotkeys carry over.
+
 **If you use Media Playlist Source or the Directory Sorter for OBS script (both
 by Ian Rodriguez, CodeYan01 on GitHub), this is the one tool that does both
-jobs.** OBS Playlister is a fork of
+jobs.** Playlister is a fork of
 [Media Playlist Source](https://github.com/CodeYan01/media-playlist-source), and
 its watched folders take over what the
 [Directory Sorter for OBS](https://github.com/CodeYan01/directory_sorter_for_obs)
 script did for a playlist: sorted folders that update themselves (by date
 modified, oldest first, by default), with no Stop needed. That part is written
-from scratch, and folders play in OBS Playlister itself (the script could also
-fill a VLC Video Source or an Image Slideshow). OBS Playlister is its
+from scratch, and folders play in Playlister itself (the script could also
+fill a VLC Video Source or an Image Slideshow). Playlister is its
 own source type and installs next to Media Playlist Source without either one
 replacing the other; existing Media Playlist Source sources are left as they
 are. Remote playlists come next; see [PLAN.md](PLAN.md) and
@@ -21,7 +26,7 @@ are. Remote playlists come next; see [PLAN.md](PLAN.md) and
 
 **Bonus: no Python runtime needed.** The Directory Sorter script runs in OBS's
 Python scripting, which needs a matching Python installed and set in
-Tools > Scripts > Python Settings. OBS Playlister is a native plugin, so there
+Tools > Scripts > Python Settings. Playlister is a native plugin, so there
 is nothing else to install or configure.
 
 ## Status
@@ -33,7 +38,9 @@ N; "Lock list at start" holds changes until the next Play (or "Apply waiting
 changes now"); Properties shows a status line per row; entries that cannot play
 are skipped; still images are held for a set time. The manual checks in OBS
 (TESTING.md) are still pending.
-Version 0.2.0 (Phase 1) was the original plugin renamed and built for OBS 33.
+Version 0.3.1 renames the plugin Playlister, as the OBS Project does not allow
+"OBS" in plugin names. Version 0.2.0 (Phase 1) was the original plugin renamed
+and built for OBS 33.
 Remote playlists come in Phase 3.
 
 ## Features (from Media Playlist Source)
@@ -68,7 +75,7 @@ The DLL is unsigned. It loads with Windows' default settings, but it would be
 refused if Smart App Control or a Windows Defender Application Control policy
 for user-mode code were turned on.
 
-In OBS, add a source of type **OBS Playlister**.
+In OBS, add a source of type **Playlister**.
 
 ## Limitations
 
@@ -77,7 +84,7 @@ In OBS, add a source of type **OBS Playlister**.
   Reopen the window or press Refresh Filename.
 - No audio track or subtitle selection.
 - Folders play in this source only. The Directory Sorter script could also
-  fill a VLC Video Source or an Image Slideshow; OBS Playlister does not.
+  fill a VLC Video Source or an Image Slideshow; Playlister does not.
 - Windows will not rename or delete a file while it plays (OBS holds it open);
   do that after it has played.
 

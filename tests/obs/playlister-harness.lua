@@ -2,7 +2,7 @@
 -- Copyright (C) 2026 Jeffrey A. Brick
 -- SPDX-License-Identifier: GPL-2.0-or-later
 --
--- Runtime harness for OBS 33: drives OBS Playlister sources through the transport, Properties and empty-folder paths
+-- Runtime harness for OBS 33: drives Playlister sources through the transport, Properties and empty-folder paths
 -- and logs "HARNESS PASS|FAIL <check>" lines. Run it with run-harness.ps1, which passes three media files of
 -- different durations in PLAYLISTER_HARNESS_FILES (separated by "|"), an empty folder in
 -- PLAYLISTER_HARNESS_EMPTY_FOLDER, a folder of hard links to the three in PLAYLISTER_HARNESS_MEDIA_FOLDER and a path
