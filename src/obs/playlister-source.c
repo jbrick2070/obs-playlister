@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/filter.h"
 #include "core/keys.h"
 #include "core/modes.h"
+#include "core/row-kind.h"
 #include "core/sort.h"
 #include "providers/fold-key-win.h"
 
@@ -95,7 +96,7 @@ static void missing_file_callback(void *src, const char *new_path, void *data);
 static obs_missing_files_t *mps_missingfiles(void *data);
 
 static void set_parents(struct darray *array);
-static void add_file(struct darray *array, const char *path, const char *id);
+static void add_file(struct darray *array, const char *path, const char *id, bool folder);
 static void free_files(struct darray *array);
 
 struct obs_source_info media_playlist_source_info = {
@@ -156,6 +157,8 @@ struct obs_source_info media_playlist_source_info = {
 #define S_FOLDER_CHECK_ENABLED "folder_check_enabled"
 #define S_FOLDER_CHECK_INTERVAL "folder_check_interval_s"
 #define S_LOCK_LIST_AT_START "lock_list_at_start"
+#define S_ROW_KINDS "row_kinds" /* row uuid -> {"kind": "folder", "path": ...} (R-LIST-1) */
+#define ROW_KIND_FOLDER "folder"
 #define SCHEMA_VERSION 1
 #define S_ID "uuid"
 #define S_IS_URL "is_url"
@@ -181,6 +184,7 @@ struct obs_source_info media_playlist_source_info = {
 #define T_CURRENT_FILE_NAME T_("CurrentFileName")
 #define T_SELECT_FILE T_("SelectFile")
 #define T_NO_FILE_SELECTED T_("NoFileSelected")
+#define T_SELECT_FILE_STALE T_("SelectFileStale")
 #define T_USE_HARDWARE_DECODING T_("UseHardwareDecoding")
 #define T_FFMPEG_CLOSE_WHEN_INACTIVE T_("CloseFileWhenInactive")
 #define T_FFMPEG_CLOSE_WHEN_INACTIVE_TOOLTIP T_("CloseFileWhenInactive.Tooltip")
@@ -365,11 +369,10 @@ static void update_media_source(void *data, bool forced)
 	}
 }
 
-/* Returns whether a selection was played */
-static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index)
+/* Returns whether a selection was played. The caller holds the list lock. */
+static bool select_index_locked(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index)
 {
 	bool played = false;
-	pthread_mutex_lock(&mps->mutex);
 	if (media_index < mps->files.num && mps->files.array[media_index].is_folder &&
 	    !mps->files.array[media_index].folder_items.num) {
 		/* R-UP-64: nothing to play in an empty folder row; the current item keeps playing */
@@ -386,8 +389,52 @@ static bool select_index_proc_(struct media_playlist_source *mps, size_t media_i
 			played = true;
 		}
 	}
+	return played;
+}
+
+/* Returns whether a selection was played */
+static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index)
+{
+	pthread_mutex_lock(&mps->mutex);
+	bool played = select_index_locked(mps, media_index, folder_item_index);
 	pthread_mutex_unlock(&mps->mutex);
 	return played;
+}
+
+/* R-UP-20: the row and item a Select File identity names, exactly: an item whose occurrence is gone is not replaced
+ * by another of its key, since the choice was that item. The caller holds the list lock. */
+static bool find_selection(struct media_playlist_source *mps, const char *text, size_t *media_index,
+			   size_t *folder_item_index)
+{
+	struct pl_selection selection;
+	if (!pl_selection_parse(&selection, text))
+		return false;
+
+	bool found = false;
+	for (size_t i = 0; i < mps->files.num && !found; i++) {
+		struct media_file_data *row = &mps->files.array[i];
+		if (strcmp(row->id, selection.row_uuid) != 0)
+			continue;
+		if (selection.occurrence == 0) {
+			found = !row->is_folder;
+			*media_index = i;
+			*folder_item_index = 0;
+			break;
+		}
+		for (size_t j = 0; row->is_folder && j < row->folder_items.num; j++) {
+			const struct pl_entry *entry = row->folder_items.array[j].entry;
+			if (entry && entry->occurrence == selection.occurrence &&
+			    strcmp(entry->key, selection.item_key) == 0) {
+				*media_index = i;
+				*folder_item_index = j;
+				found = true;
+				break;
+			}
+		}
+		break;
+	}
+	pl_selection_free(&selection);
+	return found;
 }
 
 /* Tells listeners that the source moved to another item, with the calldata libobs gives its own media signals.
@@ -564,29 +611,27 @@ static bool play_selected_clicked(obs_properties_t *props, obs_property_t *prope
 	UNUSED_PARAMETER(property);
 	struct media_playlist_source *mps = data;
 	obs_data_t *settings = obs_source_get_settings(mps->source);
+	bool played = false;
+	/* "0" is No File Selected, also the default, and an empty value is no choice either (R-UP-65) */
+	const char *choice = obs_data_get_string(settings, S_SELECT_FILE);
+	bool chosen = *choice && strcmp(choice, "0") != 0;
+	pthread_mutex_lock(&mps->mutex);
 	size_t media_index = 0;
 	size_t folder_item_index = 0;
-	bool played = false;
-	/* "0" is No File Selected, also the default (R-UP-65) */
-	const char *index_str = obs_data_get_string(settings, S_SELECT_FILE);
-	if (strcmp(index_str, "0") != 0) {
-		char **indexes = strlist_split(index_str, '-', false);
-
-		/* R-UP-65: an empty value splits into no parts */
-		if (indexes && indexes[0]) {
-			media_index = strtol(indexes[0], NULL, 10) - 1;
-			if (indexes[1]) {
-				folder_item_index = strtol(indexes[1], NULL, 10) - 1;
-			}
-			played = select_index_proc_(mps, media_index, folder_item_index);
-		}
-
-		strlist_free(indexes);
+	/* R-UP-20: the identity is looked up and played under one hold of the lock, so the list cannot change between */
+	bool stale = chosen && !find_selection(mps, choice, &media_index, &folder_item_index);
+	if (chosen && !stale)
+		played = select_index_locked(mps, media_index, folder_item_index);
+	if (stale) {
+		/* the item is gone or moved since Properties listed it (or the value predates identities): no guess. Shown
+		 * in the Current File text until the row status block (R-LIST-5) takes it. */
+		obs_log(LOG_INFO, "play selected: the chosen item is no longer in the list; refresh and choose again");
+		obs_data_set_string(settings, S_CURRENT_FILE_NAME, T_SELECT_FILE_STALE);
+		/* the dropdown has no entry for that value; it shows No File Selected until another item is chosen */
+		obs_data_set_string(settings, S_SELECT_FILE, "0");
+	} else {
+		update_current_filename_setting(mps, settings);
 	}
-	/*update_current_filename_property(
-		mps, obs_properties_get(props, S_CURRENT_FILE_NAME));*/
-	pthread_mutex_lock(&mps->mutex);
-	update_current_filename_setting(mps, settings);
 	pthread_mutex_unlock(&mps->mutex);
 	/* released after its last use (R-UP-71) */
 	obs_data_release(settings);
@@ -1251,13 +1296,17 @@ static void mps_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, S_LOCK_LIST_AT_START, false);
 }
 
+/* Each item is shown by its position, "N: location" or "N-M: location", and stored by its identity (R-UP-20) */
 static void add_media_to_selection(obs_property_t *list, struct media_file_data *data)
 {
-	struct dstr key = {0};
 	struct dstr name = {0};
+	char *identity = NULL;
 
 	if (data->parent) {
-		dstr_catf(&key, "%zu-%zu", data->parent->index + 1, data->index + 1);
+		if (!data->entry)
+			return;
+		dstr_printf(&name, "%zu-%zu", data->parent->index + 1, data->index + 1);
+		identity = pl_selection_format(data->parent->id, data->entry->occurrence, data->entry->key);
 	} else if (data->is_folder) {
 		/* R-UP-66: a folder lists its items, so an empty one lists nothing; upstream listed it as a file */
 		for (size_t i = 0; i < data->folder_items.num; i++) {
@@ -1265,14 +1314,14 @@ static void add_media_to_selection(obs_property_t *list, struct media_file_data 
 		}
 		return;
 	} else {
-		dstr_catf(&key, "%zu", data->index + 1);
+		dstr_printf(&name, "%zu", data->index + 1);
+		identity = pl_selection_format(data->id, 0, NULL);
 	}
-	dstr_copy_dstr(&name, &key);
 	dstr_cat(&name, ": ");
 	dstr_cat(&name, data->path);
-	obs_property_list_add_string(list, name.array, key.array);
+	obs_property_list_add_string(list, name.array, identity);
 	dstr_free(&name);
-	dstr_free(&key);
+	bfree(identity);
 }
 
 /* The caller holds the list lock (no caller today; upstream's calls are commented out) */
@@ -1412,7 +1461,39 @@ static void assign_item_occurrences(struct media_file_data *row)
 	bfree(view);
 }
 
-static void add_file(struct darray *array, const char *path, const char *id)
+/* libobs can only tell a directory by opening it, as upstream did */
+static bool path_is_directory(const char *path, void *context)
+{
+	UNUSED_PARAMETER(context);
+	os_dir_t *dir = os_opendir(path);
+	if (dir)
+		os_closedir(dir);
+	return dir != NULL;
+}
+
+/* A folder kind saved for this row with an unchanged path (R-LIST-1, rule 1) */
+static bool saved_folder_kind(obs_data_t *row_kinds, const char *id, const char *path)
+{
+	if (!row_kinds || !*id)
+		return false;
+	obs_data_t *saved = obs_data_get_obj(row_kinds, id);
+	bool folder = saved && strcmp(obs_data_get_string(saved, "kind"), ROW_KIND_FOLDER) == 0 &&
+		      strcmp(obs_data_get_string(saved, "path"), path) == 0;
+	obs_data_release(saved);
+	return folder;
+}
+
+static void save_folder_kind(obs_data_t *row_kinds, const char *id, const char *path)
+{
+	obs_data_t *kind = obs_data_create();
+	obs_data_set_string(kind, "kind", ROW_KIND_FOLDER);
+	obs_data_set_string(kind, "path", path);
+	obs_data_set_obj(row_kinds, id, kind);
+	obs_data_release(kind);
+}
+
+/* A folder row whose folder cannot be opened now (an absent watched folder, R-LIST-1) is a folder with no items */
+static void add_file(struct darray *array, const char *path, const char *id, bool folder)
 {
 	DARRAY(struct media_file_data) new_files;
 	new_files.da = *array;
@@ -1422,15 +1503,14 @@ static void add_file(struct darray *array, const char *path, const char *id)
 	data->index = new_files.num - 1;
 	data->path = bstrdup(path);
 	data->is_url = strstr(path, "://") != NULL;
+	data->is_folder = folder;
 	da_init(data->folder_items);
 
-	os_dir_t *dir = os_opendir(path);
+	os_dir_t *dir = folder ? os_opendir(path) : NULL;
 
 	if (dir) {
 		struct dstr dir_path = {0};
 		struct os_dirent *ent;
-
-		data->is_folder = true;
 
 		while (true) {
 			const char *ext;
@@ -1471,10 +1551,32 @@ static void add_file(struct darray *array, const char *path, const char *id)
 	*array = new_files.da;
 }
 
+/* Every row gets a uuid: one saved without it (by an older OBS or a script) is given one here, written into the row,
+ * so resume, Select File and row_kinds can name it (R-KEY-2, R-UP-20, R-LIST-1). Upstream matched every such row to
+ * the first of them. */
+static void assign_missing_row_uuids(obs_data_t *settings)
+{
+	obs_data_array_t *playlist = obs_data_get_array(settings, S_PLAYLIST);
+	size_t count = obs_data_array_count(playlist);
+	for (size_t i = 0; i < count; i++) {
+		obs_data_t *row = obs_data_array_item(playlist, i);
+		if (!*obs_data_get_string(row, S_ID)) {
+			char *uuid = os_generate_uuid();
+			obs_data_set_string(row, S_ID, uuid);
+			obs_log(LOG_INFO, "playlist row %zu had no uuid; it now has %s", i + 1, uuid);
+			bfree(uuid);
+		}
+		obs_data_release(row);
+	}
+	obs_data_array_release(playlist);
+}
+
 /* R-LIST-4: upstream and Phase 1 settings (schema 0) become schema 1 in the settings object itself, once, when they
  * carry a playlist. current_folder_item_filename becomes the folded current_item_key (a top-level folder item has
  * no subfolder part), and current_row_uuid is the row at current_media_index, counted as the source counts rows:
- * rows with an empty path are left out. Idempotent: schema 1 is left alone. */
+ * rows with an empty path are left out. Every row that opens as a folder now has its kind saved (R-LIST-1), so a
+ * folder whose name ends in a media extension stays a folder as it was upstream. Idempotent: schema 1 is left
+ * alone. */
 static void migrate_settings(obs_data_t *settings)
 {
 	if (obs_data_get_int(settings, S_SCHEMA_VERSION) != 0 || !obs_data_has_user_value(settings, S_PLAYLIST))
@@ -1489,13 +1591,21 @@ static void migrate_settings(obs_data_t *settings)
 	obs_data_array_t *playlist = obs_data_get_array(settings, S_PLAYLIST);
 	size_t count = obs_data_array_count(playlist);
 	long long position = 0;
+	obs_data_t *row_kinds = obs_data_create();
 	for (size_t i = 0; i < count; i++) {
 		obs_data_t *row = obs_data_array_item(playlist, i);
 		const char *path = obs_data_get_string(row, "value");
-		if (path && *path && position++ == index)
-			obs_data_set_string(settings, S_CURRENT_ROW_UUID, obs_data_get_string(row, S_ID));
+		const char *id = obs_data_get_string(row, S_ID);
+		if (path && *path) {
+			if (position++ == index)
+				obs_data_set_string(settings, S_CURRENT_ROW_UUID, id);
+			if (*id && !strstr(path, "://") && path_is_directory(path, NULL))
+				save_folder_kind(row_kinds, id, path);
+		}
 		obs_data_release(row);
 	}
+	obs_data_set_obj(settings, S_ROW_KINDS, row_kinds);
+	obs_data_release(row_kinds);
 	obs_data_array_release(playlist);
 	obs_data_set_int(settings, S_SCHEMA_VERSION, SCHEMA_VERSION);
 	obs_log(LOG_INFO, "settings migrated to schema %d", SCHEMA_VERSION);
@@ -1522,6 +1632,8 @@ static void mps_update(void *data, obs_data_t *settings)
 	/* ------------------------------------- */
 	/* get settings data */
 
+	/* before the migration, which names the current row by its uuid */
+	assign_missing_row_uuids(settings);
 	migrate_settings(settings);
 	da_init(new_files);
 
@@ -1562,15 +1674,31 @@ static void mps_update(void *data, obs_data_t *settings)
 	array = obs_data_get_array(settings, S_PLAYLIST);
 	count = obs_data_array_count(array);
 
-	/* The new list, folder listings included, is built before the lock, so nothing waits on disk I/O through it */
+	/* The new list, folder listings included, is built before the lock, so nothing waits on disk I/O through it.
+	 * Each row's kind is detected (R-LIST-1), and the folder kinds are saved again for the rows that have them, so
+	 * row_kinds keeps no row that is gone or whose path changed. */
+	obs_data_t *row_kinds = obs_data_get_obj(settings, S_ROW_KINDS);
+	obs_data_t *new_row_kinds = obs_data_create();
+	struct pl_filter filter;
+	pl_filter_parse(&filter, obs_data_get_string(settings, S_EXTENSION_FILTER));
 	for (size_t i = 0; i < count; i++) {
 		obs_data_t *item = obs_data_array_item(array, i);
 		const char *path = obs_data_get_string(item, "value");
+		const char *id = obs_data_get_string(item, S_ID);
 
-		if (path && *path)
-			add_file(&new_files.da, path, obs_data_get_string(item, S_ID));
+		if (path && *path) {
+			bool folder = pl_classify_row(path, saved_folder_kind(row_kinds, id, path), &filter,
+						      path_is_directory, NULL) == PL_ROW_FOLDER;
+			add_file(&new_files.da, path, id, folder);
+			if (folder && *id)
+				save_folder_kind(new_row_kinds, id, path);
+		}
 		obs_data_release(item);
 	}
+	pl_filter_free(&filter);
+	obs_data_set_obj(settings, S_ROW_KINDS, new_row_kinds);
+	obs_data_release(new_row_kinds);
+	obs_data_release(row_kinds);
 	set_parents(&new_files.da);
 
 	/* R-UP-44, R-THR-1: the list, the current-item pointers and the shuffler change together under the list lock,
@@ -1772,13 +1900,16 @@ static obs_missing_files_t *mps_missingfiles(void *data)
 	obs_source_t *source = mps->source;
 	obs_data_t *settings = obs_source_get_settings(source);
 	obs_data_array_t *files = obs_data_get_array(settings, S_PLAYLIST);
+	obs_data_t *row_kinds = obs_data_get_obj(settings, S_ROW_KINDS);
 
 	size_t l = obs_data_array_count(files);
 	for (size_t i = 0; i < l; i++) {
 		obs_data_t *item = obs_data_array_item(files, i);
 		const char *path = obs_data_get_string(item, "value");
 
-		if (strcmp(path, "") != 0) {
+		/* R-UP-34: file rows only; the relocation dialog takes files, and an absent folder row waits for its
+		 * folder (R-LIST-1) */
+		if (strcmp(path, "") != 0 && !saved_folder_kind(row_kinds, obs_data_get_string(item, S_ID), path)) {
 			if (!os_file_exists(path) && strstr(path, "://") == NULL) {
 				/* R-UP-67: the callback can run long after this, when the settings no longer hold path, so
 				 * it gets a copy that lives as long as the source; a path reported before reuses its copy */
@@ -1803,6 +1934,7 @@ static obs_missing_files_t *mps_missingfiles(void *data)
 		obs_data_release(item);
 	}
 
+	obs_data_release(row_kinds);
 	obs_data_array_release(files);
 	obs_data_release(settings);
 

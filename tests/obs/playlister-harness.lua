@@ -4,9 +4,10 @@
 --
 -- Runtime harness for OBS 33: drives OBS Playlister sources through the transport, Properties and empty-folder paths
 -- and logs "HARNESS PASS|FAIL <check>" lines. Run it with run-harness.ps1, which passes three media files of
--- different durations in PLAYLISTER_HARNESS_FILES (separated by "|") and an empty folder in
--- PLAYLISTER_HARNESS_EMPTY_FOLDER; items are told apart by their durations. Each step waits for its condition (or
--- its timeout), checks the result of the previous action, then performs the next one.
+-- different durations in PLAYLISTER_HARNESS_FILES (separated by "|"), an empty folder in
+-- PLAYLISTER_HARNESS_EMPTY_FOLDER, a folder of hard links to the three in PLAYLISTER_HARNESS_MEDIA_FOLDER and a path
+-- that does not exist in PLAYLISTER_HARNESS_MISSING_FOLDER; items are told apart by their durations. Each step waits
+-- for its condition (or its timeout), checks the result of the previous action, then performs the next one.
 obs = obslua
 
 local FILES = {}
@@ -15,6 +16,8 @@ for path in string.gmatch(os.getenv("PLAYLISTER_HARNESS_FILES") or "", "[^|]+") 
 end
 local EMPTY_FOLDER = os.getenv("PLAYLISTER_HARNESS_EMPTY_FOLDER")
 local MEDIA_FOLDER = os.getenv("PLAYLISTER_HARNESS_MEDIA_FOLDER") -- 1.mp4 to 3.mp4: the three files, in order
+local MISSING_FOLDER = os.getenv("PLAYLISTER_HARNESS_MISSING_FOLDER") -- never created
+local MEDIA_JUNCTION = os.getenv("PLAYLISTER_HARNESS_MEDIA_JUNCTION") -- MEDIA_FOLDER again, named "<...>.mp4"
 local PLAYING, PAUSED, STOPPED, ENDED = 1, 4, 5, 6
 local src, item = nil, nil
 local D = {}
@@ -60,13 +63,16 @@ local function update_settings(fn)
 	obs.obs_data_release(data)
 end
 
--- sets the playlist to these rows, each { path, uuid }; the source follows a row by its uuid
+-- sets the playlist to these rows, each { path, uuid }; the source follows a row by its uuid; a row given no uuid is
+-- saved without one, as by an older OBS
 local function set_playlist(data, rows)
 	local playlist = obs.obs_data_array_create()
 	for _, r in ipairs(rows) do
 		local row = obs.obs_data_create()
 		obs.obs_data_set_string(row, "value", r[1])
-		obs.obs_data_set_string(row, "uuid", r[2])
+		if r[2] then
+			obs.obs_data_set_string(row, "uuid", r[2])
+		end
 		obs.obs_data_array_push_back(playlist, row)
 		obs.obs_data_release(row)
 	end
@@ -115,6 +121,33 @@ local function select_file_entries()
 	return count
 end
 
+-- the values Select File stores, in list order, joined by spaces (No File Selected's "0" first)
+local function select_file_values()
+	local props = obs.obs_source_properties(src)
+	local list = obs.obs_properties_get(props, "select_file")
+	local values = {}
+	for i = 0, obs.obs_property_list_item_count(list) - 1 do
+		table.insert(values, obs.obs_property_list_item_string(list, i))
+	end
+	obs.obs_properties_destroy(props)
+	return table.concat(values, " ")
+end
+
+-- chooses this value in Select File and presses Play Selected File, as Properties does
+local function play_selected(value)
+	local settings = obs.obs_source_get_settings(src)
+	obs.obs_data_set_string(settings, "select_file", value)
+	obs.obs_data_release(settings)
+	local props = obs.obs_source_properties(src)
+	obs.obs_property_button_clicked(obs.obs_properties_get(props, "play_selected"), src)
+	obs.obs_properties_destroy(props)
+end
+
+-- a stale choice is reported in the Current File text instead of played (R-UP-20)
+local function reports_stale_choice()
+	return current_file_name():find("list changed", 1, true) ~= nil
+end
+
 local function seek_near_end()
 	obs.obs_source_media_set_time(src, dur() - 1500)
 end
@@ -133,6 +166,12 @@ step("create", 1000, 1000, nil, function()
 	end
 	if not MEDIA_FOLDER then
 		error("PLAYLISTER_HARNESS_MEDIA_FOLDER must name the folder of the three files")
+	end
+	if not MISSING_FOLDER then
+		error("PLAYLISTER_HARNESS_MISSING_FOLDER must name a folder that does not exist")
+	end
+	if not MEDIA_JUNCTION then
+		error("PLAYLISTER_HARNESS_MEDIA_JUNCTION must name a junction to the media folder")
 	end
 	create_source("playlister-harness", function(settings)
 		set_playlist(settings, { { FILES[1], "row-1" }, { FILES[2], "row-2" }, { FILES[3], "row-3" } })
@@ -300,6 +339,9 @@ end, function()
 	local props = obs.obs_source_properties(src)
 	local count = obs.obs_property_list_item_count(obs.obs_properties_get(props, "select_file"))
 	check("properties list the three items after No File Selected", count == 4, "entries=" .. count)
+	-- R-UP-20: each item is stored by its identity, a file row as "<row uuid>:0:"
+	check("select file stores the rows' identities", select_file_values() == "0 row-1:0: row-2:0: row-3:0:",
+		select_file_values())
 	local settings = obs.obs_source_get_settings(src)
 	obs.obs_data_set_string(settings, "current_file_name", "placeholder")
 	obs.obs_property_button_clicked(obs.obs_properties_get(props, "refresh_filename"), src)
@@ -331,11 +373,15 @@ step("nothing chosen", 1000, 1000, nil, function()
 	obs.obs_property_button_clicked(obs.obs_properties_get(props, "play_selected"), src)
 	check("play selected with an empty choice raises no media_next", media_next_count == before,
 		"media_next raised " .. (media_next_count - before) .. " times")
-	obs.obs_data_set_string(settings, "select_file", "1")
 	obs.obs_data_release(settings)
-	before = media_next_count
-	obs.obs_property_button_clicked(obs.obs_properties_get(props, "play_selected"), src)
 	obs.obs_properties_destroy(props)
+	-- R-UP-20: a position stored before Phase 2 (upstream's "1") is no identity, so it is reported, not guessed at
+	before = media_next_count
+	play_selected("1")
+	check("play selected with a position from before Phase 2 is reported, not played", media_next_count == before and
+		reports_stale_choice() and dur() == D[3], current_file_name() .. ", " .. status())
+	before = media_next_count
+	play_selected("row-1:0:")
 	check("play selected with item 1 chosen raises media_next once", media_next_count == before + 1,
 		"media_next raised " .. (media_next_count - before) .. " times")
 end)
@@ -477,12 +523,42 @@ local function setting_int(key)
 	return value
 end
 
+-- the uuid of playlist row i (counting from 0) in the source's settings
+local function row_uuid(i)
+	local settings = obs.obs_source_get_settings(src)
+	local playlist = obs.obs_data_get_array(settings, "playlist")
+	local row = obs.obs_data_array_item(playlist, i)
+	local uuid = obs.obs_data_get_string(row, "uuid")
+	obs.obs_data_release(row)
+	obs.obs_data_array_release(playlist)
+	obs.obs_data_release(settings)
+	return uuid
+end
+
+-- "<kind> <path>" saved for a row in row_kinds (R-LIST-1), or "" when nothing is
+local function row_kind(uuid)
+	local settings = obs.obs_source_get_settings(src)
+	local kinds = obs.obs_data_get_obj(settings, "row_kinds")
+	local result = ""
+	if kinds then
+		local kind = obs.obs_data_get_obj(kinds, uuid)
+		if kind then
+			result = obs.obs_data_get_string(kind, "kind") .. " " .. obs.obs_data_get_string(kind, "path")
+			obs.obs_data_release(kind)
+		end
+		obs.obs_data_release(kinds)
+	end
+	obs.obs_data_release(settings)
+	return result
+end
+
 -- A third source with a folder row and settings saved before Phase 2 (schema 0): the migration turns the saved
--- file name into a key and the row index into the row's uuid (R-LIST-4), and playback resumes there (R-KEY-2)
+-- file name into a key and the row index into the row's uuid (R-LIST-4), and playback resumes there (R-KEY-2). The
+-- folder's name ends in ".mp4", so only the kind the migration saves keeps it a folder (R-LIST-1).
 step("source with old settings", 1500, 1500, nil, function()
 	create_source("playlister-harness-resume", function(settings)
 		-- the row with an empty path is not counted: index 0 is the folder row (R-UP-77)
-		set_playlist(settings, { { "", "blank" }, { MEDIA_FOLDER, "media" } })
+		set_playlist(settings, { { "", "blank" }, { MEDIA_JUNCTION, "media" } })
 		obs.obs_data_set_int(settings, "current_media_index", 0)
 		obs.obs_data_set_string(settings, "current_folder_item_filename", "2.mp4")
 		obs.obs_data_set_int(settings, "visibility_behavior", 2)
@@ -499,6 +575,8 @@ step("migrated resume", 1000, 15000, function() return st() == PLAYING and dur()
 		setting_string("current_item_key") == "2.MP4" and setting_string("current_row_uuid") == "media",
 		"schema " .. setting_int("schema_version") .. ", key " .. setting_string("current_item_key") .. ", row " ..
 		setting_string("current_row_uuid"))
+	check("the migration saves the kind of a folder named like a media file", row_kind("media") == "folder " ..
+		MEDIA_JUNCTION, row_kind("media"))
 	obs.obs_source_media_next(src)
 end)
 
@@ -530,11 +608,79 @@ step("restarted source", 1500, 1500, nil, function()
 		obs.obs_data_set_int(settings, "visibility_behavior", 2)
 	end)
 	check("restarted source created and shown", src ~= nil and item ~= nil)
+	count_media_next_signals()
 end)
 
 step("resume by uuid and key", 1000, 15000, function() return st() == PLAYING and dur() > 0 end, function()
 	check("the row uuid and item key resume the folder item, not the row at the saved index", dur() == D[3] and
 		st() == PLAYING, status())
+	-- R-LIST-1: a folder row's kind is saved with its path; a file row's is not
+	check("row kinds keep the folder row with its path and not the file row",
+		row_kind("media") == "folder " .. MEDIA_FOLDER and row_kind("f1") == "",
+		"media: " .. row_kind("media") .. "; f1: " .. row_kind("f1"))
+	-- R-UP-20: a folder item is stored by its row, occurrence and key
+	check("select file stores the folder items' identities",
+		select_file_values() == "0 f1:0: media:1:1.MP4 media:1:2.MP4 media:1:3.MP4", select_file_values())
+	-- an occurrence that is not there is not swapped for another item of its key, and a folder row itself is no
+	-- item; neither plays or moves to another item
+	local before = media_next_count
+	play_selected("media:2:2.MP4")
+	check("play selected with an item that is not there is reported, not played", reports_stale_choice() and
+		dur() == D[3] and media_next_count == before, current_file_name() .. ", " .. status() .. ", media_next " ..
+		(media_next_count - before))
+	play_selected("media:0:")
+	check("play selected with a folder row's own identity is reported, not played", reports_stale_choice() and
+		dur() == D[3] and media_next_count == before, current_file_name() .. ", " .. status() .. ", media_next " ..
+		(media_next_count - before))
+	check("a stale choice resets Select File to No File Selected", setting_string("select_file") == "0",
+		setting_string("select_file"))
+end)
+
+step("stale choice", 1000, 1000, nil, function()
+	check("a stale choice leaves the playing item alone", dur() == D[3] and st() == PLAYING, status())
+	play_selected("media:1:2.MP4")
+end)
+
+step("folder item selected", 500, 15000, function() return dur() == D[2] and st() == PLAYING end, function()
+	check("play selected plays the folder item it names", dur() == D[2] and st() == PLAYING, status())
+	check("current file names that folder item", current_file_name() == "2-2: " .. MEDIA_FOLDER .. "/2.mp4",
+		current_file_name())
+	remove_source()
+end)
+
+-- A fourth source whose first row was saved as a folder that is gone now (R-LIST-1, rule 1). It stays a folder with
+-- nothing to play, so playback moves on to the next row and its path is never handed to the child as a file
+-- (run-harness.ps1 fails the run if it is); without the saved kind it would be a file row. The second row was saved
+-- without a uuid and is given one, so Select File can name it.
+step("source with an absent folder row", 1500, 1500, nil, function()
+	create_source("playlister-harness-absent", function(settings)
+		set_playlist(settings, { { MISSING_FOLDER, "gone" }, { FILES[2] } })
+		local kinds = obs.obs_data_create()
+		local kind = obs.obs_data_create()
+		obs.obs_data_set_string(kind, "kind", "folder")
+		obs.obs_data_set_string(kind, "path", MISSING_FOLDER)
+		obs.obs_data_set_obj(kinds, "gone", kind)
+		obs.obs_data_set_obj(settings, "row_kinds", kinds)
+		obs.obs_data_release(kind)
+		obs.obs_data_release(kinds)
+		obs.obs_data_set_int(settings, "schema_version", 1)
+		obs.obs_data_set_string(settings, "current_row_uuid", "gone")
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	check("source with an absent folder row created and shown", src ~= nil and item ~= nil)
+end)
+
+step("absent folder passed over", 1000, 15000, function() return st() == PLAYING and dur() > 0 end, function()
+	check("a row saved as a folder that is gone moves on to the next row", dur() == D[2] and st() == PLAYING,
+		status())
+	check("the absent folder keeps its saved kind", row_kind("gone") == "folder " .. MISSING_FOLDER, row_kind("gone"))
+	local uuid = row_uuid(1)
+	check("a row saved without a uuid is given one", uuid ~= "" and uuid ~= "gone", uuid)
+	check("select file lists the file row only, by its new uuid", select_file_values() == "0 " .. uuid .. ":0:",
+		select_file_values())
+	play_selected(uuid .. ":0:")
+	check("play selected plays that row", not reports_stale_choice() and current_file_name() == "2: " .. FILES[2],
+		current_file_name())
 	remove_source()
 end)
 

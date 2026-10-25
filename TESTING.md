@@ -12,7 +12,8 @@ ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure --no-tests=erro
 OBS Playlister source through: play, auto-advance at the end of a file, next and previous, stop (no advance),
 play after stop, pause, seek, restart, a speed change, hide and show (stop/restart and stop/play-next), end of
 the list with loop off, wrap-around with loop on, next then pause in a row, Properties (the Select File list,
-Refresh Filename, Play Selected File with nothing chosen and with item 1 chosen, counting `media_next` signals)
+Refresh Filename, the identities Select File stores, Play Selected File with nothing chosen, with a position
+saved before Phase 2 (reported, not played) and with item 1 chosen, counting `media_next` signals)
 and save, and removal; then a second source whose saved current row is an empty folder: it must move on to the
 next row, the Select File list must leave the empty folder out, next and wrap must pass over the empty row, next
 with shuffle on and loop off must leave the last row, removing the playing row while turning shuffle off must fall
@@ -21,7 +22,12 @@ editing the playing row's path must play the new file, and when the playing row 
 source must report stopped and next must still play the file after it. The runner fails the run if the empty
 folder is ever loaded as a file. A third source has a folder row (the runner makes a temporary folder of hard links
 to the three files): settings saved before Phase 2 must migrate and resume on the saved file, save must write the
-new resume keys, and a restarted source must resume by row uuid and key. It needs a portable
+new resume keys, and a restarted source must resume by row uuid and key, save the folder row's kind, list the
+folder items by identity, report a choice whose occurrence is gone (or a folder row's own identity) and play a
+folder item it names; its migrated predecessor uses a junction named like a media file, which only the kind the
+migration saves keeps a folder. A fourth source has a row saved as a folder that does not exist: it must stay a
+folder and be passed over (the runner fails the run if a folder path is ever loaded as a file), and a row saved
+without a uuid must be given one and play when chosen by it. It needs a portable
 OBS 33 (with `portable_mode.txt`) and three local media files of different durations, and exits with 0 only
 when every check passed.
 
@@ -35,6 +41,7 @@ when every check passed.
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 1.3 | 37 passed, 0 failed, no memory leaks. Mutation checks: with upstream's `actual_media` test put back into `play_media_at_index`, 5 checks fail; with upstream's settings-array index in `update` (R-UP-77), 3 fail |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 1.4 | 44 passed, 0 failed, no memory leaks. Mutation checks: with Play Selected raising `media_next` every time (R-UP-71), 1 check fails; with upstream's folder test in the Select File list (R-UP-66) and upstream's `get_state` (R-UP-78), 2 fail. Upstream's Play Selected with nothing chosen (R-UP-65) crashes, so it was not run |
 | 2026-10-24 | 33.0.0 portable, beside a running OBS 33 | Phase 2 step 4 (part 1) | 52 passed, 0 failed, no memory leaks, in three runs in a row. Mutation check: without the R-UP-80 save guard the resume chain fails (5 checks). With another OBS running the portable copy's video thread sometimes stalls for seconds ("the media source has not applied an update for 2 s"); load waits allow 15 s. After the second QA pass (pause held across newer commands, progress as a third distinct time): 52 passed, 0 failed, no memory leaks, three runs in a row, no OBS running beside it, no startup-window warning |
+| 2026-10-24 | 33.0.0 portable | Phase 2 step 4 (part 2) | 69 passed, 0 failed, no memory leaks, three runs in a row; the runner's temporary folders and junction removed and the three media files unchanged. Mutation check: without the migration saving folder kinds, 5 checks fail and the runner reports the junction loaded as a file (314 loads, as loop is on and the unopenable row is the only one: the full-pass stop of R-BEH-5 is Phase 2 step 6) |
 
 ## Manual checks
 
@@ -71,6 +78,7 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 | 1.16 | Play Selected File with a chosen item | jumps to that item | |
 | 1.17 | Move a listed file away, restart OBS | the missing-files dialog offers to find or remove it | |
 | 1.17a | As 1.17, but before acting in the dialog add a row to the playlist and apply, then point the dialog at the moved file (R-UP-67, Phase 2 step 1.4 build) | the row is relocated; no crash | |
+| 1.17b | Add a folder row and apply, close OBS, rename that folder, start OBS (R-UP-34, R-LIST-1; Phase 2 step 4 build) | the missing-files dialog does not list the folder; the folder row is passed over; renaming the folder back and pressing OK in Properties plays its files again | |
 | 1.18 | Close OBS while item 2 plays, start OBS again | item 2 resumes | |
 | 1.19 | Script `select_index` with `media_index` past the end | nothing happens (R-UP-5) | |
 | 1.20 | Both plugins at once | a Media Playlist Source and an OBS Playlister source work side by side | |

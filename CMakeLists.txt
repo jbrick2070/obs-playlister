@@ -66,6 +66,8 @@ target_sources(
     src/core/modes.c
     src/core/natural.h
     src/core/natural.c
+    src/core/row-kind.h
+    src/core/row-kind.c
     src/core/sort.h
     src/core/sort.c
     src/providers/fold-key-win.h

@@ -18,8 +18,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "keys.h"
 
+#include <inttypes.h>
 #include <string.h>
 #include <util/bmem.h>
+#include <util/dstr.h>
 
 #include "sort.h"
 
@@ -55,4 +57,46 @@ void pl_assign_occurrences(struct pl_entry *entries, size_t count)
 		entries[order[i]].occurrence = occurrence;
 	}
 	bfree(order);
+}
+
+char *pl_selection_format(const char *row_uuid, uint32_t occurrence, const char *item_key)
+{
+	struct dstr text = {0};
+	dstr_printf(&text, "%s:%" PRIu32 ":%s", row_uuid, occurrence, item_key ? item_key : "");
+	return text.array;
+}
+
+bool pl_selection_parse(struct pl_selection *selection, const char *text)
+{
+	memset(selection, 0, sizeof(*selection));
+	const char *first = strchr(text, ':');
+	if (!first || first == text)
+		return false;
+	const char *second = strchr(first + 1, ':');
+	if (!second || second == first + 1)
+		return false;
+
+	uint64_t occurrence = 0;
+	for (const char *c = first + 1; c < second; c++) {
+		if (*c < '0' || *c > '9')
+			return false;
+		occurrence = occurrence * 10 + (uint64_t)(*c - '0');
+		if (occurrence > UINT32_MAX)
+			return false;
+	}
+	const char *key = second + 1;
+	if ((occurrence == 0) != (*key == '\0'))
+		return false;
+
+	selection->row_uuid = bstrdup_n(text, (size_t)(first - text));
+	selection->occurrence = (uint32_t)occurrence;
+	selection->item_key = bstrdup(key);
+	return true;
+}
+
+void pl_selection_free(struct pl_selection *selection)
+{
+	bfree(selection->row_uuid);
+	bfree(selection->item_key);
+	memset(selection, 0, sizeof(*selection));
 }

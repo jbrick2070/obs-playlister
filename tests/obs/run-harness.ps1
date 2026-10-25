@@ -4,7 +4,8 @@
 #
 # Runs playlister-harness.lua in a portable OBS 33 (TESTING.md, "Runtime harness"). It builds and installs the
 # current build (build_x64, RelWithDebInfo) into <ObsRoot>\plugins\obs-playlister, registers the harness in the
-# scene collection for this run only, creates an empty folder for the empty-folder checks, starts OBS, waits for
+# scene collection for this run only, creates an empty folder for the empty-folder checks (and names one that is
+# never created, for a saved folder row whose folder is absent), starts OBS, waits for
 # "HARNESS DONE", closes OBS, restores the scene collection, removes the folder and prints the results with the
 # plugin's log lines. Exit code 0 only when every check passed.
 #
@@ -55,11 +56,15 @@ Copy-Item $collection $backup
 $failed = $true
 $emptyFolder = $null
 $mediaFolder = $null
+$mediaJunction = $null
 $mediaLinks = @()
 try {
 	$emptyFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-empty-' + [guid]::NewGuid().ToString('N'))
 	New-Item -ItemType Directory $emptyFolder | Out-Null
 	$env:PLAYLISTER_HARNESS_EMPTY_FOLDER = $emptyFolder -replace '\\', '/'
+	# never created: a row saved as a folder whose folder is gone (R-LIST-1)
+	$missingFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-gone-' + [guid]::NewGuid().ToString('N'))
+	$env:PLAYLISTER_HARNESS_MISSING_FOLDER = $missingFolder -replace '\\', '/'
 	# a folder row of the three files, as hard links named 1.mp4 to 3.mp4 (no copies; the files must be on the same
 	# volume as the temp folder)
 	$mediaFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-media-' + [guid]::NewGuid().ToString('N'))
@@ -70,6 +75,11 @@ try {
 		$mediaLinks += $link
 	}
 	$env:PLAYLISTER_HARNESS_MEDIA_FOLDER = $mediaFolder -replace '\\', '/'
+	# the same folder through a junction whose name ends in a media extension: only a saved folder kind keeps such a
+	# row a folder (R-LIST-1)
+	$mediaJunction = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-linked-' + [guid]::NewGuid().ToString('N') + '.mp4')
+	New-Item -ItemType Junction -Path $mediaJunction -Target $mediaFolder | Out-Null
+	$env:PLAYLISTER_HARNESS_MEDIA_JUNCTION = $mediaJunction -replace '\\', '/'
 	$script = (Join-Path $PSScriptRoot 'playlister-harness.lua') -replace '\\', '/'
 	$json = Get-Content $collection -Raw | ConvertFrom-Json
 	$json.modules.'scripts-tool' = @([pscustomobject]@{ path = $script; settings = [pscustomobject]@{} })
@@ -103,9 +113,10 @@ try {
 		ForEach-Object { '  ' + $_.Line.Trim() }
 	$passes = @(Select-String -Path $log.FullName -Pattern 'HARNESS PASS').Count
 	$fails = @(Select-String -Path $log.FullName -Pattern 'HARNESS FAIL').Count
-	# the player logs every load; an empty folder row is never loaded, so a load of it means it was taken for a file
-	$folderLoads = @(Select-String -Path $log.FullName -Pattern 'playing .*playlister-harness-empty-').Count
-	if ($folderLoads -gt 0) { "FAIL the empty folder row was loaded as a file ($folderLoads loads)" }
+	# the player logs every load; the empty folder, the absent one and the junction are never loaded themselves (a
+	# file inside the junction is), so such a load means a folder row was taken for a file
+	$folderLoads = @(Select-String -Path $log.FullName -Pattern 'playing .*playlister-harness-(empty|gone)-|playing .*playlister-harness-linked-[0-9a-f]+\.mp4$').Count
+	if ($folderLoads -gt 0) { "FAIL a folder row was loaded as a file ($folderLoads loads)" }
 	"summary: $passes passed, $fails failed"
 	$failed = (-not $done) -or $fails -gt 0 -or $folderLoads -gt 0
 }
@@ -113,12 +124,18 @@ finally {
 	Remove-Item Env:\PLAYLISTER_HARNESS_FILES -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_EMPTY_FOLDER -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_MEDIA_FOLDER -ErrorAction SilentlyContinue
+	Remove-Item Env:\PLAYLISTER_HARNESS_MISSING_FOLDER -ErrorAction SilentlyContinue
+	Remove-Item Env:\PLAYLISTER_HARNESS_MEDIA_JUNCTION -ErrorAction SilentlyContinue
 	Copy-Item $backup $collection -Force
 	Remove-Item $backup -Force
 	# created by this run and still empty; Directory.Delete refuses a folder that is not empty, so anything put into
 	# it is kept and reported, never deleted
 	if ($emptyFolder -and (Test-Path $emptyFolder)) {
 		try { [IO.Directory]::Delete($emptyFolder) } catch { "warning: could not remove ${emptyFolder}: $_" }
+	}
+	# the junction first: removing it removes the link only, never the folder it points to
+	if ($mediaJunction -and (Test-Path $mediaJunction)) {
+		try { [IO.Directory]::Delete($mediaJunction) } catch { "warning: could not remove ${mediaJunction}: $_" }
 	}
 	# only the links this run made are deleted (removing a hard link leaves the file itself), then their folder
 	foreach ($link in $mediaLinks) {
