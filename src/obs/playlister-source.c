@@ -19,6 +19,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "playlister-source.h"
 
+#include "core/filter.h"
+#include "core/keys.h"
+#include "core/modes.h"
+#include "core/sort.h"
+#include "providers/fold-key-win.h"
+
 /* the audio queue's planes go straight into struct obs_source_audio */
 _Static_assert(PL_AUDIO_MAX_PLANES == MAX_AV_PLANES, "the audio queue must have as many planes as libobs");
 
@@ -43,7 +49,7 @@ static void select_index_proc(void *data, calldata_t *cd);
 static void play_folder_item_at_index(void *data, size_t index);
 static void play_media_at_index(void *data, size_t index, bool play_last_folder_item, bool backward);
 
-static size_t find_folder_item_index(struct darray *array, const char *filename);
+static size_t find_folder_item_index(struct darray *array, const char *key, uint32_t occurrence);
 
 static void set_media_state(void *data, enum obs_media_state state);
 static enum obs_media_state mps_get_state(void *data);
@@ -134,7 +140,23 @@ struct obs_source_info media_playlist_source_info = {
 #define S_SELECT_FILE "select_file"
 
 #define S_CURRENT_MEDIA_INDEX "current_media_index"
-#define S_CURRENT_FOLDER_ITEM_FILENAME "current_folder_item_filename"
+#define S_CURRENT_FOLDER_ITEM_FILENAME "current_folder_item_filename" /* read by the 0 -> 1 migration only */
+/* Phase 2 settings (PLAN section 3.4) */
+#define S_SCHEMA_VERSION "schema_version"
+#define S_CURRENT_ROW_UUID "current_row_uuid"
+#define S_CURRENT_ITEM_KEY "current_item_key"
+#define S_CURRENT_ITEM_OCCURRENCE "current_item_occurrence"
+#define S_INCLUDE_SUBFOLDERS "include_subfolders"
+#define S_EXTENSION_FILTER "extension_filter"
+#define S_SORT_KEY "sort_key"
+#define S_SORT_DESCENDING "sort_descending"
+#define S_CONTAINER_MODE "container_mode"
+#define S_NEWEST_COUNT "newest_count"
+#define S_STILL_DURATION "still_duration_s"
+#define S_FOLDER_CHECK_ENABLED "folder_check_enabled"
+#define S_FOLDER_CHECK_INTERVAL "folder_check_interval_s"
+#define S_LOCK_LIST_AT_START "lock_list_at_start"
+#define SCHEMA_VERSION 1
 #define S_ID "uuid"
 #define S_IS_URL "is_url"
 #define S_SPEED "speed_percent"
@@ -176,6 +198,19 @@ static inline void mark_save_dirty(struct media_playlist_source *mps)
 	os_atomic_set_bool(&mps->save_dirty, true);
 }
 
+/* Keeps the playing folder item's identity (R-KEY-1) to find it again after a rescan; a file row or no item keeps
+ * none. The caller holds the list lock. */
+static void remember_item(struct media_playlist_source *mps, const struct media_file_data *item)
+{
+	bfree(mps->current_item_key);
+	mps->current_item_key = NULL;
+	mps->current_item_occurrence = 1;
+	if (item && item->parent_id) {
+		mps->current_item_key = bstrdup(item->entry ? item->entry->key : item->filename);
+		mps->current_item_occurrence = item->entry ? item->entry->occurrence : 1;
+	}
+}
+
 static inline void set_current_media_index(struct media_playlist_source *mps, size_t index)
 {
 	if (get_total_file_count(mps) > 0) {
@@ -189,8 +224,7 @@ static inline void set_current_media_index(struct media_playlist_source *mps, si
 		mps->current_media = NULL;
 		mps->actual_media = NULL;
 		mps->current_folder_item_index = 0;
-		bfree(mps->current_media_filename);
-		mps->current_media_filename = NULL;
+		remember_item(mps, NULL);
 	}
 }
 
@@ -215,8 +249,7 @@ static size_t get_total_file_count(struct media_playlist_source *mps)
  */
 static inline void set_current_folder_item_index(struct media_playlist_source *mps, size_t index)
 {
-	bfree(mps->current_media_filename);
-	mps->current_media_filename = NULL;
+	remember_item(mps, NULL);
 	if (mps->current_media) {
 		if (!mps->current_media->is_folder) {
 			mps->current_folder_item_index = 0;
@@ -236,7 +269,7 @@ static inline void set_current_folder_item_index(struct media_playlist_source *m
 			mps->current_folder_item_index = index = 0;
 		}
 		mps->actual_media = &mps->current_media->folder_items.array[index];
-		mps->current_media_filename = bstrdup(mps->actual_media->filename);
+		remember_item(mps, mps->actual_media);
 	} else {
 		mps->current_folder_item_index = 0;
 		mps->actual_media = NULL;
@@ -246,8 +279,7 @@ static inline void set_current_folder_item_index(struct media_playlist_source *m
 static inline void reset_folder_item_index(struct media_playlist_source *mps)
 {
 	mps->current_folder_item_index = 0;
-	bfree(mps->current_media_filename);
-	mps->current_media_filename = NULL;
+	remember_item(mps, NULL);
 }
 
 static bool valid_extension(const char *ext)
@@ -384,8 +416,7 @@ static void play_folder_item_at_index(void *data, size_t index)
 	if (mps->current_media->is_folder && index < mps->current_media->folder_items.num) {
 		mps->current_folder_item_index = index;
 		mps->actual_media = &mps->current_media->folder_items.array[index];
-		bfree(mps->current_media_filename);
-		mps->current_media_filename = bstrdup(mps->actual_media->filename);
+		remember_item(mps, mps->actual_media);
 		update_media_source(mps, true);
 		mark_save_dirty(mps);
 	}
@@ -439,21 +470,34 @@ static void play_media_at_index(void *data, size_t index, bool play_last_folder_
 		return;
 	}
 	update_media_source(mps, true);
+	remember_item(mps, mps->actual_media);
 	mark_save_dirty(mps);
 }
 
-static size_t find_folder_item_index(struct darray *array, const char *filename)
+/* By key and occurrence (R-KEY-1); an item without an entry is matched by its file name, as upstream did */
+static size_t find_folder_item_index(struct darray *array, const char *key, uint32_t occurrence)
 {
 	DARRAY(struct media_file_data) files;
 	files.da = *array;
 
+	size_t same_key = DARRAY_INVALID;
 	for (size_t i = 0; i < files.num; i++) {
-		if (strcmp(files.array[i].filename, filename) == 0) {
-			return i;
+		const struct media_file_data *item = &files.array[i];
+		if (!item->entry) {
+			if (strcmp(item->filename, key) == 0)
+				return i;
+			continue;
 		}
+		if (strcmp(item->entry->key, key) != 0)
+			continue;
+		if (item->entry->occurrence == occurrence)
+			return i;
+		if (same_key == DARRAY_INVALID)
+			same_key = i;
 	}
 
-	return DARRAY_INVALID;
+	/* the saved occurrence is gone but the key is there: that item (R-KEY-2) */
+	return same_key;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -576,6 +620,14 @@ static const char *mps_getname(void *unused)
 	return obs_module_text("OBSPlaylister");
 }
 
+static void free_entry(struct pl_entry *entry)
+{
+	if (entry) {
+		pl_entry_free(entry);
+		bfree(entry);
+	}
+}
+
 static void free_files(struct darray *array)
 {
 	DARRAY(struct media_file_data) files;
@@ -586,12 +638,14 @@ static void free_files(struct darray *array)
 		bfree(file->filename);
 		bfree(file->path);
 		bfree(file->id);
+		free_entry(file->entry);
 		if (file->is_folder) {
 			for (size_t j = 0; j < file->folder_items.num; j++) {
 				struct media_file_data *folder_item = &file->folder_items.array[j];
 				bfree(folder_item->filename);
 				bfree(folder_item->path);
 				bfree(folder_item->id);
+				free_entry(folder_item->entry);
 			}
 		}
 		da_free(file->folder_items);
@@ -758,14 +812,12 @@ static bool playlist_next_locked(struct media_playlist_source *mps)
 		if (!shuffler_has_next(&mps->shuffler))
 			return false;
 		mps->actual_media = shuffler_next(&mps->shuffler);
-		bfree(mps->current_media_filename);
+		remember_item(mps, mps->actual_media);
 		if (mps->actual_media->parent_id) {
 			mps->current_media = mps->actual_media->parent;
-			mps->current_media_filename = bstrdup(mps->actual_media->filename);
 			mps->current_folder_item_index = mps->actual_media->index;
 		} else {
 			mps->current_media = mps->actual_media;
-			mps->current_media_filename = NULL;
 			mps->current_folder_item_index = 0;
 		}
 		mps->current_media_index = mps->current_media->index;
@@ -820,14 +872,12 @@ static void mps_playlist_prev(void *data)
 	if (mps->shuffle) {
 		if (shuffler_has_prev(&mps->shuffler)) {
 			mps->actual_media = shuffler_prev(&mps->shuffler);
-			bfree(mps->current_media_filename);
+			remember_item(mps, mps->actual_media);
 			if (mps->actual_media->parent_id) {
 				mps->current_media = mps->actual_media->parent;
-				mps->current_media_filename = bstrdup(mps->actual_media->filename);
 				mps->current_folder_item_index = mps->actual_media->index;
 			} else {
 				mps->current_media = mps->actual_media;
-				mps->current_media_filename = NULL;
 				mps->current_folder_item_index = 0;
 			}
 			mps->current_media_index = mps->current_media->index;
@@ -932,7 +982,7 @@ static void mps_destroy(void *data)
 		bfree(mps->missing_paths.array[i]);
 	da_free(mps->missing_paths);
 	pthread_mutex_destroy(&mps->mutex);
-	bfree(mps->current_media_filename);
+	bfree(mps->current_item_key);
 	bfree(mps);
 }
 
@@ -1181,6 +1231,24 @@ static void mps_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_SPEED, 100);
 	/* GPU decoding by default (operator decision D-11); upstream left it off */
 	obs_data_set_default_bool(settings, S_FFMPEG_HW_DECODE, true);
+
+	/* Phase 2 (PLAN section 3.4). A missing schema_version means 0, so upstream and Phase 1 settings migrate
+	 * (R-LIST-4). The container options take effect with the folder provider (step 5) and appear in Properties
+	 * in step 7. */
+	obs_data_set_default_int(settings, S_SCHEMA_VERSION, 0);
+	obs_data_set_default_string(settings, S_CURRENT_ROW_UUID, "");
+	obs_data_set_default_string(settings, S_CURRENT_ITEM_KEY, "");
+	obs_data_set_default_int(settings, S_CURRENT_ITEM_OCCURRENCE, 1);
+	obs_data_set_default_bool(settings, S_INCLUDE_SUBFOLDERS, false);
+	obs_data_set_default_string(settings, S_EXTENSION_FILTER, PL_FILTER_DEFAULT);
+	obs_data_set_default_int(settings, S_SORT_KEY, PL_SORT_DATE);
+	obs_data_set_default_bool(settings, S_SORT_DESCENDING, false);
+	obs_data_set_default_int(settings, S_CONTAINER_MODE, PL_MODE_FULL);
+	obs_data_set_default_int(settings, S_NEWEST_COUNT, 5);
+	obs_data_set_default_int(settings, S_STILL_DURATION, 10);
+	obs_data_set_default_bool(settings, S_FOLDER_CHECK_ENABLED, true);
+	obs_data_set_default_int(settings, S_FOLDER_CHECK_INTERVAL, 10);
+	obs_data_set_default_bool(settings, S_LOCK_LIST_AT_START, false);
 }
 
 static void add_media_to_selection(obs_property_t *list, struct media_file_data *data)
@@ -1329,6 +1397,21 @@ static void set_parents(struct darray *array)
 	}
 }
 
+/* Numbers identical keys in a folder row 1, 2, ... in listing order (R-KEY-1) */
+static void assign_item_occurrences(struct media_file_data *row)
+{
+	size_t count = row->folder_items.num;
+	if (!count)
+		return;
+	struct pl_entry *view = bmalloc(count * sizeof(*view));
+	for (size_t i = 0; i < count; i++)
+		view[i] = *row->folder_items.array[i].entry;
+	pl_assign_occurrences(view, count);
+	for (size_t i = 0; i < count; i++)
+		row->folder_items.array[i].entry->occurrence = view[i].occurrence;
+	bfree(view);
+}
+
 static void add_file(struct darray *array, const char *path, const char *id)
 {
 	DARRAY(struct media_file_data) new_files;
@@ -1370,15 +1453,52 @@ static void add_file(struct darray *array, const char *path, const char *id)
 			dstr_cat_ch(&dir_path, '/');
 			dstr_cat(&dir_path, ent->d_name);
 			folder_item.path = bstrdup(dir_path.array);
+			/* R-KEY-1: one folder level, so the key is the folded file name */
+			folder_item.entry = bzalloc(sizeof(*folder_item.entry));
+			folder_item.entry->location = bstrdup(dir_path.array);
+			folder_item.entry->key = pl_fold_key(ent->d_name);
+			folder_item.entry->source_ordinal = (uint32_t)folder_item.index;
+			folder_item.entry->kind = pl_filter_kind(ent->d_name);
 
 			da_push_back(data->folder_items, &folder_item);
 		}
 
 		dstr_free(&dir_path);
 		os_closedir(dir);
+		assign_item_occurrences(data);
 	}
 
 	*array = new_files.da;
+}
+
+/* R-LIST-4: upstream and Phase 1 settings (schema 0) become schema 1 in the settings object itself, once, when they
+ * carry a playlist. current_folder_item_filename becomes the folded current_item_key (a top-level folder item has
+ * no subfolder part), and current_row_uuid is the row at current_media_index, counted as the source counts rows:
+ * rows with an empty path are left out. Idempotent: schema 1 is left alone. */
+static void migrate_settings(obs_data_t *settings)
+{
+	if (obs_data_get_int(settings, S_SCHEMA_VERSION) != 0 || !obs_data_has_user_value(settings, S_PLAYLIST))
+		return;
+
+	char *key = pl_fold_key(obs_data_get_string(settings, S_CURRENT_FOLDER_ITEM_FILENAME));
+	obs_data_set_string(settings, S_CURRENT_ITEM_KEY, key);
+	bfree(key);
+	obs_data_set_int(settings, S_CURRENT_ITEM_OCCURRENCE, 1);
+
+	long long index = obs_data_get_int(settings, S_CURRENT_MEDIA_INDEX);
+	obs_data_array_t *playlist = obs_data_get_array(settings, S_PLAYLIST);
+	size_t count = obs_data_array_count(playlist);
+	long long position = 0;
+	for (size_t i = 0; i < count; i++) {
+		obs_data_t *row = obs_data_array_item(playlist, i);
+		const char *path = obs_data_get_string(row, "value");
+		if (path && *path && position++ == index)
+			obs_data_set_string(settings, S_CURRENT_ROW_UUID, obs_data_get_string(row, S_ID));
+		obs_data_release(row);
+	}
+	obs_data_array_release(playlist);
+	obs_data_set_int(settings, S_SCHEMA_VERSION, SCHEMA_VERSION);
+	obs_log(LOG_INFO, "settings migrated to schema %d", SCHEMA_VERSION);
 }
 
 static void mps_update(void *data, obs_data_t *settings)
@@ -1394,6 +1514,7 @@ static void mps_update(void *data, obs_data_t *settings)
 	enum visibility_behavior visibility_behavior = mps->visibility_behavior;
 	bool visibility_behavior_changed = false;
 	bool item_edited = false;
+	bool resumed_row = false; /* first update: the saved row was found, or there is no uuid and the index stands */
 	bool restart_on_activate = true;
 	long long new_speed;
 	//const char *mode;
@@ -1401,6 +1522,7 @@ static void mps_update(void *data, obs_data_t *settings)
 	/* ------------------------------------- */
 	/* get settings data */
 
+	migrate_settings(settings);
 	da_init(new_files);
 
 	mps->visibility_behavior = obs_data_get_int(settings, S_VISIBILITY_BEHAVIOR);
@@ -1459,8 +1581,24 @@ static void mps_update(void *data, obs_data_t *settings)
 	mps->loop = loop;
 	shuffler_set_loop(&mps->shuffler, loop);
 	if (mps->first_update) {
-		mps->current_media_filename = bstrdup(obs_data_get_string(settings, S_CURRENT_FOLDER_ITEM_FILENAME));
+		/* R-KEY-2: the row by its uuid (current_media_index only when the uuid is gone), and in a folder row the
+		 * item by key and occurrence */
+		const char *row_uuid = obs_data_get_string(settings, S_CURRENT_ROW_UUID);
 		mps->current_media_index = obs_data_get_int(settings, S_CURRENT_MEDIA_INDEX);
+		/* a row saved without a uuid (an old row the migration could not name) is found by its index alone */
+		resumed_row = !*row_uuid;
+		for (size_t i = 0; *row_uuid && i < new_files.num; i++) {
+			if (strcmp(new_files.array[i].id, row_uuid) == 0) {
+				mps->current_media_index = i;
+				resumed_row = true;
+				break;
+			}
+		}
+		const char *item_key = obs_data_get_string(settings, S_CURRENT_ITEM_KEY);
+		long long occurrence = obs_data_get_int(settings, S_CURRENT_ITEM_OCCURRENCE);
+		bfree(mps->current_item_key);
+		mps->current_item_key = *item_key ? bstrdup(item_key) : NULL;
+		mps->current_item_occurrence = occurrence >= 1 && occurrence <= UINT32_MAX ? (uint32_t)occurrence : 1;
 	}
 
 	bool found = false;
@@ -1476,17 +1614,18 @@ static void mps_update(void *data, obs_data_t *settings)
 		}
 	}
 
+	/* the item key belongs to the row it was kept for: on another row (the playing row was deleted, or the saved row
+	 * is gone) a file of the same name is a different item, so that row starts at its first item */
+	if (!found && !resumed_row)
+		remember_item(mps, NULL);
+
 	/* R-THR-4: the shuffler follows every list change, shuffle on or off, while the old items are still alive */
 	if (mps->shuffle && shuffle_changed)
 		shuffler_reshuffle(&mps->shuffler);
 	shuffler_update_files(&mps->shuffler, &new_files.da);
-	if (!mps->shuffle && shuffle_changed) {
-		bfree(mps->current_media_filename);
-		if (mps->actual_media && mps->actual_media->parent_id)
-			mps->current_media_filename = bstrdup(mps->actual_media->filename);
-		else
-			mps->current_media_filename = NULL;
-	}
+	/* only while the playing row is still there: a deleted row's item must not be remembered for another row */
+	if (!mps->shuffle && shuffle_changed && found)
+		remember_item(mps, mps->actual_media);
 	old_files.da = mps->files.da;
 	mps->files.da = new_files.da;
 	/* points into the old list until a branch below sets it again; none may leave it dangling */
@@ -1506,10 +1645,11 @@ static void mps_update(void *data, obs_data_t *settings)
 			mps->current_folder_item_index = 0;
 
 			/* Find that file in the folder */
-			if (mps->current_media_filename) {
+			if (mps->current_item_key) {
 				// some files may have been added/deleted so current file index is changed
-				mps->current_folder_item_index = find_folder_item_index(
-					&mps->current_media->folder_items.da, mps->current_media_filename);
+				mps->current_folder_item_index =
+					find_folder_item_index(&mps->current_media->folder_items.da,
+							       mps->current_item_key, mps->current_item_occurrence);
 				if (mps->current_folder_item_index == DARRAY_INVALID) {
 					mps->current_folder_item_index = 0;
 					found = false;
@@ -1523,6 +1663,8 @@ static void mps_update(void *data, obs_data_t *settings)
 				handled = true;
 			} else {
 				set_current_folder_item_index(mps, mps->current_folder_item_index);
+				/* the item found may be another occurrence of the key, when the saved one is gone */
+				remember_item(mps, mps->actual_media);
 				if (mps->shuffle)
 					shuffler_select(&mps->shuffler, mps->actual_media);
 			}
@@ -1538,17 +1680,18 @@ static void mps_update(void *data, obs_data_t *settings)
 				clear_media_source(mps);
 			} else {
 				update_media_source(mps, true);
+				remember_item(mps, mps->actual_media);
 			}
 		}
 	} else if (!mps->first_update) {
-		bfree(mps->current_media_filename);
-		mps->current_media_filename = NULL;
+		remember_item(mps, NULL);
 		clear_media_source(mps);
 	}
 	mark_save_dirty(mps);
 
 	/* So Current File Name is updated */
 	update_current_filename_setting(mps, settings);
+	mps->first_update = false;
 	pthread_mutex_unlock(&mps->mutex);
 
 	free_files(&old_files.da);
@@ -1565,15 +1708,25 @@ static void mps_update(void *data, obs_data_t *settings)
 	//	obs_source_media_started(mps->source);
 	//}
 	obs_data_array_release(array);
-	mps->first_update = false;
 }
 
 static void mps_save(void *data, obs_data_t *settings)
 {
 	struct media_playlist_source *mps = data;
 	pthread_mutex_lock(&mps->mutex);
+	/* R-UP-80: until the first update has applied the saved resume point, the settings still hold it, and the
+	 * source's own state is empty; a scene-collection save in that window must not overwrite it (nor the schema,
+	 * which would skip the migration) */
+	if (mps->first_update) {
+		pthread_mutex_unlock(&mps->mutex);
+		return;
+	}
+	/* the resume point (R-KEY-2); current_folder_item_filename is no longer written (R-LIST-4) */
+	obs_data_set_int(settings, S_SCHEMA_VERSION, SCHEMA_VERSION);
 	obs_data_set_int(settings, S_CURRENT_MEDIA_INDEX, mps->current_media_index);
-	obs_data_set_string(settings, S_CURRENT_FOLDER_ITEM_FILENAME, mps->current_media_filename);
+	obs_data_set_string(settings, S_CURRENT_ROW_UUID, mps->current_media ? mps->current_media->id : "");
+	obs_data_set_string(settings, S_CURRENT_ITEM_KEY, mps->current_item_key ? mps->current_item_key : "");
+	obs_data_set_int(settings, S_CURRENT_ITEM_OCCURRENCE, mps->current_item_occurrence);
 	update_current_filename_setting(mps, settings);
 	pthread_mutex_unlock(&mps->mutex);
 }

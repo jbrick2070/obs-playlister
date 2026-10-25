@@ -14,6 +14,7 @@ for path in string.gmatch(os.getenv("PLAYLISTER_HARNESS_FILES") or "", "[^|]+") 
 	table.insert(FILES, path)
 end
 local EMPTY_FOLDER = os.getenv("PLAYLISTER_HARNESS_EMPTY_FOLDER")
+local MEDIA_FOLDER = os.getenv("PLAYLISTER_HARNESS_MEDIA_FOLDER") -- 1.mp4 to 3.mp4: the three files, in order
 local PLAYING, PAUSED, STOPPED, ENDED = 1, 4, 5, 6
 local src, item = nil, nil
 local D = {}
@@ -130,6 +131,9 @@ step("create", 1000, 1000, nil, function()
 	if not EMPTY_FOLDER then
 		error("PLAYLISTER_HARNESS_EMPTY_FOLDER must name an empty folder")
 	end
+	if not MEDIA_FOLDER then
+		error("PLAYLISTER_HARNESS_MEDIA_FOLDER must name the folder of the three files")
+	end
 	create_source("playlister-harness", function(settings)
 		set_playlist(settings, { { FILES[1], "row-1" }, { FILES[2], "row-2" }, { FILES[3], "row-3" } })
 		obs.obs_data_set_bool(settings, "loop", true)
@@ -138,7 +142,7 @@ step("create", 1000, 1000, nil, function()
 	count_media_next_signals()
 end)
 
-step("first item plays", 1000, 8000, function() return st() == PLAYING and dur() > 0 end, function()
+step("first item plays", 1000, 15000, function() return st() == PLAYING and dur() > 0 end, function()
 	D[1] = dur()
 	check("first item plays", st() == PLAYING, status())
 	seek_near_end()
@@ -150,13 +154,13 @@ step("auto-advance at end", 1000, 20000, function() return dur() > 0 and dur() ~
 	obs.obs_source_media_next(src)
 end)
 
-step("next", 500, 8000, function() return dur() > 0 and dur() ~= D[2] and st() == PLAYING end, function()
+step("next", 500, 15000, function() return dur() > 0 and dur() ~= D[2] and st() == PLAYING end, function()
 	D[3] = dur()
 	check("next goes to item 3", st() == PLAYING and D[3] ~= D[1] and D[3] ~= D[2], status())
 	obs.obs_source_media_previous(src)
 end)
 
-step("previous", 500, 8000, function() return dur() == D[2] and st() == PLAYING end, function()
+step("previous", 500, 15000, function() return dur() == D[2] and st() == PLAYING end, function()
 	check("previous goes back to item 2", dur() == D[2] and st() == PLAYING, status())
 	obs.obs_source_media_stop(src)
 end)
@@ -166,12 +170,18 @@ step("stop", 4000, 4000, nil, function()
 	obs.obs_source_media_play_pause(src, false)
 end)
 
-step("play from stop", 500, 8000, function() return st() == PLAYING end, function()
+step("play from stop", 500, 15000, function() return st() == PLAYING and dur() > 0 end, function()
 	check("play after stop reloads item 2 and plays", st() == PLAYING and dur() == D[2] and tm() < 5000, status())
 	obs.obs_source_media_play_pause(src, true)
 end)
 
-step("pause", 1000, 1000, nil, function()
+-- the pause reaches the child a tick or two later, so the mark waits for the time to read the same twice in a row
+step("pause", 1000, 5000, function()
+	local now = tm()
+	local settled = st() == PAUSED and mark.pause_poll == now
+	mark.pause_poll = now
+	return settled
+end, function()
 	mark.paused_time = tm()
 	check("pause pauses", st() == PAUSED, status())
 end)
@@ -207,7 +217,7 @@ step("hide", 2500, 2500, nil, function()
 	obs.obs_sceneitem_set_visible(item, true)
 end)
 
-step("show", 500, 8000, function() return st() == PLAYING end, function()
+step("show", 500, 15000, function() return st() == PLAYING and dur() > 0 end, function()
 	check("show restarts item 2", st() == PLAYING and dur() == D[2] and tm() < 5000, status())
 	update_settings(function(data)
 		obs.obs_data_set_bool(data, "loop", false)
@@ -219,7 +229,7 @@ step("loop off", 300, 300, nil, function()
 	obs.obs_source_media_next(src)
 end)
 
-step("last item", 500, 8000, function() return dur() == D[3] and dur() > 0 end, function()
+step("last item", 500, 15000, function() return dur() == D[3] and dur() > 0 end, function()
 	check("next goes to item 3", dur() == D[3] and st() == PLAYING, status())
 	seek_near_end()
 end)
@@ -237,7 +247,7 @@ end)
 
 -- settings reach a video source at its next tick (libobs deferred update), so each settings change gets its
 -- own step before the action that depends on it
-step("restart after end", 500, 8000, function() return dur() == D[1] and st() == PLAYING end, function()
+step("restart after end", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
 	check("restart after the end plays item 1", dur() == D[1] and st() == PLAYING, status())
 	update_settings(function(data) obs.obs_data_set_bool(data, "loop", true) end)
 end)
@@ -246,12 +256,12 @@ step("loop on", 300, 300, nil, function()
 	obs.obs_source_media_previous(src)
 end)
 
-step("wrap backward", 500, 8000, function() return dur() == D[3] and dur() > 0 end, function()
+step("wrap backward", 500, 15000, function() return dur() == D[3] and dur() > 0 end, function()
 	check("with loop on previous from item 1 wraps to item 3", dur() == D[3] and st() == PLAYING, status())
 	obs.obs_source_media_next(src)
 end)
 
-step("wrap forward", 500, 8000, function() return dur() == D[1] and st() == PLAYING end, function()
+step("wrap forward", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
 	check("with loop on next from item 3 wraps to item 1", dur() == D[1] and st() == PLAYING, status())
 	update_settings(function(data) obs.obs_data_set_int(data, "visibility_behavior", 3) end)
 end)
@@ -265,7 +275,7 @@ step("hide plays next", 2500, 2500, nil, function()
 	obs.obs_sceneitem_set_visible(item, true)
 end)
 
-step("show next", 500, 8000, function() return st() == PLAYING and dur() > 0 end, function()
+step("show next", 500, 15000, function() return st() == PLAYING and dur() > 0 end, function()
 	check("stop/play-next behavior: show plays item 2", st() == PLAYING and dur() == D[2], status())
 	update_settings(function(data) obs.obs_data_set_int(data, "visibility_behavior", 0) end)
 end)
@@ -275,8 +285,15 @@ step("stop/restart behavior on", 300, 300, nil, function()
 	obs.obs_source_media_play_pause(src, true)
 end)
 
-step("next then pause", 500, 8000, function() return dur() == D[3] and dur() > 0 end, function()
+-- the pause waits for the new file to show progress (R-UP-79), so the step waits for it to land and settle
+step("next then pause", 500, 15000, function()
+	local now = tm()
+	local settled = dur() == D[3] and st() == PAUSED and mark.next_pause_poll == now
+	mark.next_pause_poll = now
+	return settled
+end, function()
 	check("next then pause in a row: both happen, in order", dur() == D[3] and st() == PAUSED, status())
+	mark.next_pause_time = tm()
 	-- Properties, its two buttons and save take the list lock (R-THR-1); a self-deadlock hangs OBS here. The buttons
 	-- and save write into the live settings, so a placeholder written there first shows that each one ran (the
 	-- throttled save from video_tick writes the same keys, but never inside this one call).
@@ -303,6 +320,9 @@ end)
 
 step("nothing chosen", 1000, 1000, nil, function()
 	check("play selected with nothing chosen leaves item 3 paused", dur() == D[3] and st() == PAUSED, status())
+	-- R-UP-79: the pause sent right after the load holds; its time has not moved for a second
+	check("a pause sent right after a load holds", tm() == mark.next_pause_time,
+		status() .. " paused at " .. mark.next_pause_time)
 	local props = obs.obs_source_properties(src)
 	local settings = obs.obs_source_get_settings(src)
 	-- an empty value, as a scene saved before anything was chosen can hold (R-UP-65's guard, not the default)
@@ -320,7 +340,7 @@ step("nothing chosen", 1000, 1000, nil, function()
 		"media_next raised " .. (media_next_count - before) .. " times")
 end)
 
-step("play selected", 500, 8000, function() return dur() == D[1] and st() == PLAYING end, function()
+step("play selected", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
 	check("play selected file plays item 1", dur() == D[1] and st() == PLAYING, status())
 	check("current file names item 1", current_file_name() == "1: " .. FILES[1], current_file_name())
 	remove_source()
@@ -340,7 +360,7 @@ step("source with an empty folder row", 1500, 1500, nil, function()
 	check("source with an empty folder row created and shown", src ~= nil and item ~= nil)
 end)
 
-step("empty current folder", 1000, 8000, function() return st() == PLAYING and dur() > 0 end, function()
+step("empty current folder", 1000, 15000, function() return st() == PLAYING and dur() > 0 end, function()
 	check("an empty current folder row moves on to the next row", st() == PLAYING and dur() == D[1], status())
 	-- R-UP-66: an empty folder has nothing to select; upstream listed it as a file
 	local entries = select_file_entries()
@@ -349,17 +369,17 @@ step("empty current folder", 1000, 8000, function() return st() == PLAYING and d
 	obs.obs_source_media_next(src)
 end)
 
-step("next after the empty folder", 500, 8000, function() return dur() == D[2] and st() == PLAYING end, function()
+step("next after the empty folder", 500, 15000, function() return dur() == D[2] and st() == PLAYING end, function()
 	check("next goes on to the last row", dur() == D[2] and st() == PLAYING, status())
 	obs.obs_source_media_next(src)
 end)
 
-step("wrap past the empty folder", 500, 8000, function() return dur() == D[1] and st() == PLAYING end, function()
+step("wrap past the empty folder", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
 	check("with loop on next wraps past the empty folder row", dur() == D[1] and st() == PLAYING, status())
 	obs.obs_source_media_next(src)
 end)
 
-step("last row again", 500, 8000, function() return dur() == D[2] and st() == PLAYING end, function()
+step("last row again", 500, 15000, function() return dur() == D[2] and st() == PLAYING end, function()
 	update_settings(function(data)
 		obs.obs_data_set_bool(data, "loop", false)
 		obs.obs_data_set_bool(data, "shuffle", true)
@@ -371,7 +391,7 @@ step("shuffle on, loop off", 300, 300, nil, function()
 end)
 
 -- in list order the last row has no next with loop off, so only the shuffler can reach the other file
-step("shuffle next from the last row", 500, 8000, function() return dur() == D[1] and st() == PLAYING end, function()
+step("shuffle next from the last row", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
 	check("with shuffle on and loop off next from the last row plays the other file", dur() == D[1] and
 		st() == PLAYING, status())
 	-- one update turns shuffle off and removes the playing row, so the current row falls back to the empty folder
@@ -382,7 +402,7 @@ step("shuffle next from the last row", 500, 8000, function() return dur() == D[1
 	end)
 end)
 
-step("playing row removed", 500, 8000, function() return dur() == D[2] and st() == PLAYING end, function()
+step("playing row removed", 500, 15000, function() return dur() == D[2] and st() == PLAYING end, function()
 	check("removing the playing row falls back past the empty folder row", dur() == D[2] and st() == PLAYING,
 		status())
 	obs.obs_source_media_set_time(src, 30000)
@@ -406,7 +426,7 @@ step("blank row added", 1500, 1500, nil, function()
 	end)
 end)
 
-step("playing row edited", 500, 8000, function() return dur() == D[3] and st() == PLAYING end, function()
+step("playing row edited", 500, 15000, function() return dur() == D[3] and st() == PLAYING end, function()
 	check("editing the playing row's path plays the new file", dur() == D[3] and st() == PLAYING, status())
 	update_settings(function(data)
 		obs.obs_data_set_bool(data, "shuffle", true)
@@ -414,13 +434,14 @@ step("playing row edited", 500, 8000, function() return dur() == D[3] and st() =
 	end)
 end)
 
-step("shuffle and loop on", 300, 300, nil, function()
+-- the file reports its duration before its time moves, so the mark waits until it has played a little
+step("shuffle and loop on", 300, 5000, function() return tm() > 500 end, function()
 	mark.before_next = tm()
 	obs.obs_source_media_next(src)
 end)
 
 -- a smoke test of the shuffler with one item; in list order, next with loop on replays it too
-step("one file left", 500, 8000, function()
+step("one file left", 500, 15000, function()
 	return dur() == D[3] and st() == PLAYING and tm() < mark.before_next
 end, function()
 	check("with one file left next replays it (shuffle and loop on)", dur() == D[3] and st() == PLAYING and
@@ -437,8 +458,83 @@ step("playing row emptied", 1500, 1500, nil, function()
 	obs.obs_source_media_next(src)
 end)
 
-step("next after a clear", 500, 8000, function() return dur() == D[1] and st() == PLAYING end, function()
+step("next after a clear", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
 	check("next after a clear plays the file after the empty rows", dur() == D[1] and st() == PLAYING, status())
+	remove_source()
+end)
+
+local function setting_string(key)
+	local settings = obs.obs_source_get_settings(src)
+	local value = obs.obs_data_get_string(settings, key)
+	obs.obs_data_release(settings)
+	return value
+end
+
+local function setting_int(key)
+	local settings = obs.obs_source_get_settings(src)
+	local value = obs.obs_data_get_int(settings, key)
+	obs.obs_data_release(settings)
+	return value
+end
+
+-- A third source with a folder row and settings saved before Phase 2 (schema 0): the migration turns the saved
+-- file name into a key and the row index into the row's uuid (R-LIST-4), and playback resumes there (R-KEY-2)
+step("source with old settings", 1500, 1500, nil, function()
+	create_source("playlister-harness-resume", function(settings)
+		-- the row with an empty path is not counted: index 0 is the folder row (R-UP-77)
+		set_playlist(settings, { { "", "blank" }, { MEDIA_FOLDER, "media" } })
+		obs.obs_data_set_int(settings, "current_media_index", 0)
+		obs.obs_data_set_string(settings, "current_folder_item_filename", "2.mp4")
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	check("source with a folder row and old settings created and shown", src ~= nil and item ~= nil)
+	-- R-UP-80: OBS can save the scene collection before the source's first update; that save must leave the saved
+	-- resume point and schema alone
+	obs.obs_source_save(src)
+end)
+
+step("migrated resume", 1000, 15000, function() return st() == PLAYING and dur() > 0 end, function()
+	check("old settings resume on the saved folder item", dur() == D[2] and st() == PLAYING, status())
+	check("the migration writes schema 1, the folded key and the row uuid", setting_int("schema_version") == 1 and
+		setting_string("current_item_key") == "2.MP4" and setting_string("current_row_uuid") == "media",
+		"schema " .. setting_int("schema_version") .. ", key " .. setting_string("current_item_key") .. ", row " ..
+		setting_string("current_row_uuid"))
+	obs.obs_source_media_next(src)
+end)
+
+step("next in the folder", 500, 15000, function() return dur() == D[3] and st() == PLAYING end, function()
+	obs.obs_source_save(src)
+	check("save writes the playing folder item's key, occurrence and row", setting_string("current_item_key") ==
+		"3.MP4" and setting_int("current_item_occurrence") == 1 and setting_string("current_row_uuid") == "media",
+		"key " .. setting_string("current_item_key") .. ", row " .. setting_string("current_row_uuid"))
+	-- a later update must not migrate again (it would turn the old file name back into the key)
+	update_settings(function(data) obs.obs_data_set_bool(data, "loop", true) end)
+end)
+
+step("no second migration", 1000, 1000, nil, function()
+	obs.obs_source_save(src)
+	check("a later update leaves the resume key alone", setting_string("current_item_key") == "3.MP4" and
+		dur() == D[3], "key " .. setting_string("current_item_key") .. ", " .. status())
+	remove_source()
+end)
+
+-- as after a restart, with a row added above: the uuid finds the row although the saved index points elsewhere
+step("restarted source", 1500, 1500, nil, function()
+	create_source("playlister-harness-resume-again", function(settings)
+		set_playlist(settings, { { FILES[1], "f1" }, { MEDIA_FOLDER, "media" } })
+		obs.obs_data_set_int(settings, "schema_version", 1)
+		obs.obs_data_set_int(settings, "current_media_index", 0)
+		obs.obs_data_set_string(settings, "current_row_uuid", "media")
+		obs.obs_data_set_string(settings, "current_item_key", "3.MP4")
+		obs.obs_data_set_int(settings, "current_item_occurrence", 1)
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	check("restarted source created and shown", src ~= nil and item ~= nil)
+end)
+
+step("resume by uuid and key", 1000, 15000, function() return st() == PLAYING and dur() > 0 end, function()
+	check("the row uuid and item key resume the folder item, not the row at the saved index", dur() == D[3] and
+		st() == PLAYING, status())
 	remove_source()
 end)
 

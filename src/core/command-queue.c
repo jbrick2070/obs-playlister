@@ -81,6 +81,14 @@ bool pl_command_queue_pop(struct pl_command_queue *queue, struct pl_command *com
 	return popped;
 }
 
+bool pl_command_queue_has_pending(struct pl_command_queue *queue)
+{
+	pthread_mutex_lock(&queue->mutex);
+	bool pending = queue->commands.size > 0;
+	pthread_mutex_unlock(&queue->mutex);
+	return pending;
+}
+
 bool pl_command_queue_wait(struct pl_command_queue *queue, unsigned long timeout_ms)
 {
 	return os_event_timedwait(queue->wake, timeout_ms) == 0;

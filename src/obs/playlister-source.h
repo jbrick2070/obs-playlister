@@ -65,7 +65,10 @@ struct media_playlist_source {
 	struct media_file_data *current_media; // only for file/folder in the list
 	struct media_file_data *actual_media;  // for both files and folder items
 	size_t current_media_index;
-	char *current_media_filename; // only used with folder_items
+	/* the playing folder item's identity within its row (R-KEY-1), to find it again after a rescan; NULL for a file
+	 * row */
+	char *current_item_key;
+	uint32_t current_item_occurrence;
 	// to know if current_folder_item_index will be used, check if current file is a folder
 	size_t current_folder_item_index;
 	long long speed;

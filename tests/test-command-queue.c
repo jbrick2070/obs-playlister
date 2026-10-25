@@ -211,6 +211,21 @@ static void test_free_pending(void)
 	assert(bnum_allocs() == allocations);
 }
 
+/* has_pending looks without taking: the player's pause wait (R-UP-79) stops for a newer command */
+static void test_has_pending(void)
+{
+	struct pl_command_queue queue;
+	struct pl_command command;
+	assert(pl_command_queue_init(&queue));
+	assert(!pl_command_queue_has_pending(&queue));
+	push_type(&queue, PL_COMMAND_STOP);
+	assert(pl_command_queue_has_pending(&queue));
+	assert(pl_command_queue_has_pending(&queue));
+	assert(pl_command_queue_pop(&queue, &command) && command.type == PL_COMMAND_STOP);
+	assert(!pl_command_queue_has_pending(&queue));
+	pl_command_queue_free(&queue);
+}
+
 int main(void)
 {
 	/* a failed assert prints to stderr and exits non-zero instead of opening a dialog */
@@ -223,6 +238,7 @@ int main(void)
 	test_quit_while_busy();
 	test_request_numbers_follow_queue_order();
 	test_free_pending();
+	test_has_pending();
 	printf("command queue tests: passed\n");
 	return 0;
 }

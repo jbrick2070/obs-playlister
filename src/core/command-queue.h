@@ -73,6 +73,8 @@ long pl_command_queue_push_request(struct pl_command_queue *queue, struct pl_com
 				   volatile long *request_sequence);
 /* Moves the oldest command into *command; false when the queue is empty */
 bool pl_command_queue_pop(struct pl_command_queue *queue, struct pl_command *command);
+/* Whether a command is waiting, without taking it */
+bool pl_command_queue_has_pending(struct pl_command_queue *queue);
 /* Waits until a push happens (or happened since the last wait); false on timeout */
 bool pl_command_queue_wait(struct pl_command_queue *queue, unsigned long timeout_ms);
 void pl_command_free(struct pl_command *command);

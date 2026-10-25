@@ -54,10 +54,22 @@ finally {
 Copy-Item $collection $backup
 $failed = $true
 $emptyFolder = $null
+$mediaFolder = $null
+$mediaLinks = @()
 try {
 	$emptyFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-empty-' + [guid]::NewGuid().ToString('N'))
 	New-Item -ItemType Directory $emptyFolder | Out-Null
 	$env:PLAYLISTER_HARNESS_EMPTY_FOLDER = $emptyFolder -replace '\\', '/'
+	# a folder row of the three files, as hard links named 1.mp4 to 3.mp4 (no copies; the files must be on the same
+	# volume as the temp folder)
+	$mediaFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-media-' + [guid]::NewGuid().ToString('N'))
+	New-Item -ItemType Directory $mediaFolder | Out-Null
+	for ($i = 0; $i -lt 3; $i++) {
+		$link = Join-Path $mediaFolder ('{0}.mp4' -f ($i + 1))
+		New-Item -ItemType HardLink -Path $link -Target (Resolve-Path $Files[$i]).Path | Out-Null
+		$mediaLinks += $link
+	}
+	$env:PLAYLISTER_HARNESS_MEDIA_FOLDER = $mediaFolder -replace '\\', '/'
 	$script = (Join-Path $PSScriptRoot 'playlister-harness.lua') -replace '\\', '/'
 	$json = Get-Content $collection -Raw | ConvertFrom-Json
 	$json.modules.'scripts-tool' = @([pscustomobject]@{ path = $script; settings = [pscustomobject]@{} })
@@ -100,12 +112,20 @@ try {
 finally {
 	Remove-Item Env:\PLAYLISTER_HARNESS_FILES -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_EMPTY_FOLDER -ErrorAction SilentlyContinue
+	Remove-Item Env:\PLAYLISTER_HARNESS_MEDIA_FOLDER -ErrorAction SilentlyContinue
 	Copy-Item $backup $collection -Force
 	Remove-Item $backup -Force
 	# created by this run and still empty; Directory.Delete refuses a folder that is not empty, so anything put into
 	# it is kept and reported, never deleted
 	if ($emptyFolder -and (Test-Path $emptyFolder)) {
 		try { [IO.Directory]::Delete($emptyFolder) } catch { "warning: could not remove ${emptyFolder}: $_" }
+	}
+	# only the links this run made are deleted (removing a hard link leaves the file itself), then their folder
+	foreach ($link in $mediaLinks) {
+		try { [IO.File]::Delete($link) } catch { "warning: could not remove ${link}: $_" }
+	}
+	if ($mediaFolder -and (Test-Path $mediaFolder)) {
+		try { [IO.Directory]::Delete($mediaFolder) } catch { "warning: could not remove ${mediaFolder}: $_" }
 	}
 }
 if ($failed) { exit 1 }

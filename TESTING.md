@@ -19,7 +19,9 @@ with shuffle on and loop off must leave the last row, removing the playing row w
 back past the empty row, a row with an empty path added above the playing row must neither move nor restart it,
 editing the playing row's path must play the new file, and when the playing row becomes an empty folder the
 source must report stopped and next must still play the file after it. The runner fails the run if the empty
-folder is ever loaded as a file. It needs a portable
+folder is ever loaded as a file. A third source has a folder row (the runner makes a temporary folder of hard links
+to the three files): settings saved before Phase 2 must migrate and resume on the saved file, save must write the
+new resume keys, and a restarted source must resume by row uuid and key. It needs a portable
 OBS 33 (with `portable_mode.txt`) and three local media files of different durations, and exits with 0 only
 when every check passed.
 
@@ -32,6 +34,7 @@ when every check passed.
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 1.2 | 23 passed, 0 failed, no memory leaks |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 1.3 | 37 passed, 0 failed, no memory leaks. Mutation checks: with upstream's `actual_media` test put back into `play_media_at_index`, 5 checks fail; with upstream's settings-array index in `update` (R-UP-77), 3 fail |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 1.4 | 44 passed, 0 failed, no memory leaks. Mutation checks: with Play Selected raising `media_next` every time (R-UP-71), 1 check fails; with upstream's folder test in the Select File list (R-UP-66) and upstream's `get_state` (R-UP-78), 2 fail. Upstream's Play Selected with nothing chosen (R-UP-65) crashes, so it was not run |
+| 2026-10-24 | 33.0.0 portable, beside a running OBS 33 | Phase 2 step 4 (part 1) | 52 passed, 0 failed, no memory leaks, in three runs in a row. Mutation check: without the R-UP-80 save guard the resume chain fails (5 checks). With another OBS running the portable copy's video thread sometimes stalls for seconds ("the media source has not applied an update for 2 s"); load waits allow 15 s. After the second QA pass (pause held across newer commands, progress as a third distinct time): 52 passed, 0 failed, no memory leaks, three runs in a row, no OBS running beside it, no startup-window warning |
 
 ## Manual checks
 

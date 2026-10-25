@@ -278,6 +278,58 @@ static void test_identity_update_keeps_valid_next(void)
 	}
 }
 
+/* R-KEY-1: folder items with entries match by key and occurrence across a rescan, whatever their file names */
+static void test_update_files_matches_keys(void)
+{
+	struct pl_entry entries[2] = {{.key = "CLIP.MP4", .occurrence = 1}, {.key = "CLIP.MP4", .occurrence = 2}};
+	struct pl_entry rescanned_entries[2] = {{.key = "CLIP.MP4", .occurrence = 1},
+						{.key = "CLIP.MP4", .occurrence = 2}};
+	struct media_file_data items[2] = {{.filename = "clip.mp4", .parent_id = "F", .entry = &entries[0]},
+					   {.filename = "CLIP.mp4", .parent_id = "F", .entry = &entries[1]}};
+	struct media_file_data rescanned[2] = {{.filename = "a.mp4", .parent_id = "F", .entry = &rescanned_entries[0]},
+					       {.filename = "b.mp4", .parent_id = "F", .entry = &rescanned_entries[1]}};
+	DARRAY(struct media_file_data) rows;
+	DARRAY(struct media_file_data) rescanned_rows;
+	da_init(rows);
+	da_init(rescanned_rows);
+	struct media_file_data row = {.id = "F", .is_folder = true};
+	row.folder_items.array = items;
+	row.folder_items.num = 2;
+	da_push_back(rows, &row);
+	struct media_file_data rescanned_row = row;
+	rescanned_row.folder_items.array = rescanned;
+	da_push_back(rescanned_rows, &rescanned_row);
+
+	struct shuffler shuffler;
+	shuffler_init(&shuffler);
+	shuffler_set_loop(&shuffler, true);
+	shuffler_update_files(&shuffler, &rows.da);
+	shuffler_select(&shuffler, &items[1]);
+	assert(shuffler.head == 1 && shuffler.shuffled_files.array[0] == &items[1]);
+
+	/* the second CLIP.MP4 is still the selected one, by occurrence, though no file name matches */
+	shuffler_update_files(&shuffler, &rescanned_rows.da);
+	assert(shuffler.head == 1 && shuffler.shuffled_files.array[0] == &rescanned[1]);
+	assert_next_in_cycle(&shuffler);
+
+	/* an item without an entry on either side is matched by file name, as upstream */
+	rescanned[1].entry = NULL;
+	struct media_file_data by_name[2] = {{.filename = "a.mp4", .parent_id = "F"},
+					     {.filename = "b.mp4", .parent_id = "F"}};
+	DARRAY(struct media_file_data) by_name_rows;
+	da_init(by_name_rows);
+	struct media_file_data by_name_row = row;
+	by_name_row.folder_items.array = by_name;
+	da_push_back(by_name_rows, &by_name_row);
+	shuffler_update_files(&shuffler, &by_name_rows.da);
+	assert(shuffler.head == 1 && shuffler.shuffled_files.array[0] == &by_name[1]);
+	da_free(by_name_rows);
+
+	shuffler_destroy(&shuffler);
+	da_free(rows);
+	da_free(rescanned_rows);
+}
+
 /* A new row for the randomized test: a file row, or a folder row with up to three items */
 static void add_random_row(struct darray *rows, size_t *last_id)
 {
@@ -463,6 +515,8 @@ int main(void)
 	test_update_files_with_overlapping_ranges();
 	printf("test_update_files_without_select_keeps_next_in_range\n");
 	test_update_files_without_select_keeps_next_in_range();
+	printf("test_update_files_matches_keys\n");
+	test_update_files_matches_keys();
 	printf("test_identity_update_keeps_valid_next\n");
 	test_identity_update_keeps_valid_next();
 	printf("test_random_operations_keep_invariant\n");

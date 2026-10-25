@@ -20,6 +20,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <util/darray.h>
 
+#include "core/entry.h"
+
 struct media_file_data {
 	char *path;
 	char *filename; // filename with ext, ONLY for folder item checking
@@ -30,4 +32,7 @@ struct media_file_data {
 	struct media_file_data *parent;
 	const char *parent_id; // for folder items
 	size_t index;          // makes it easier to switch back to non-shuffle mode
+	/* owned (bmem), freed by free_files: the item's identity and data (R-KEY-1); folder items have one from Phase 2
+	 * step 4, rows and the upstream shuffler tests do not */
+	struct pl_entry *entry;
 };

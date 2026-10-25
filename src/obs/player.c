@@ -139,25 +139,97 @@ static void execute_load(struct pl_player *player, const struct pl_command *comm
 	write_child_settings(data, &player->settings);
 	update_child(player, data);
 	obs_data_release(data);
+	player->starting = true;
+	player->starting_url = command->is_url;
+	player->loaded_ns = os_gettime_ns();
 	log_playing(command->path);
+}
+
+#define STARTUP_WINDOW_LOCAL_MS 5000 /* R-BEH-5 */
+#define STARTUP_WINDOW_URL_MS 15000
+
+/* R-UP-79: OBS's media playback clears its pause flag once its thread has opened the file (mp_media_reset,
+ * shared/media-playback/media.c), so a pause that reaches the child before then is lost while the child reports
+ * PAUSED. A pause is therefore held until the loaded media shows progress, within the startup window. Returns true
+ * once that is settled: the media progressed, is not running, or the window ran out. Returns false when a newer
+ * command is waiting, so commands never queue up behind the wait, or when the player shuts down. */
+static bool wait_until_started(struct pl_player *player)
+{
+	if (!player->starting)
+		return true;
+	uint64_t window_ms = player->starting_url ? STARTUP_WINDOW_URL_MS : STARTUP_WINDOW_LOCAL_MS;
+	uint64_t limit_ns = player->loaded_ns + window_ms * 1000000ULL;
+	/* the window ran out while nothing waited on it: the media has had its time */
+	if (os_gettime_ns() >= limit_ns) {
+		player->starting = false;
+		return true;
+	}
+	int64_t last_time = 0;
+	int distinct_times = 0;
+	while (!os_atomic_load_bool(&player->shutting_down) && !pl_command_queue_has_pending(&player->queue)) {
+		enum obs_media_state state = obs_source_media_get_state(player->child);
+		bool running = state == OBS_MEDIA_STATE_PLAYING || state == OBS_MEDIA_STATE_OPENING ||
+			       state == OBS_MEDIA_STATE_BUFFERING;
+		if (!running) {
+			player->starting = false;
+			return true;
+		}
+		/* Progress is a third distinct time past 0. Before the reset clears the pause flag it decodes one frame of
+		 * each stream, and each frame sets the time once (decode.c, mp_decode_next), so the reset shows at most
+		 * two; only playback shows a third. The time is read only while the media runs, as the child frees its
+		 * media when it stops. */
+		int64_t media_time = obs_source_media_get_time(player->child);
+		if (media_time > last_time) {
+			last_time = media_time;
+			if (++distinct_times == 3) {
+				player->starting = false;
+				return true;
+			}
+		}
+		if (os_gettime_ns() >= limit_ns) {
+			obs_log(LOG_WARNING,
+				"the media showed no progress within its startup window; pausing it anyway");
+			player->starting = false;
+			return true;
+		}
+		os_sleep_ms(10);
+	}
+	return false;
+}
+
+/* Sends a held pause once the media has started. A newer command ends the wait with the pause still held: that
+ * command runs, and the wait resumes after it unless it was a load, stop, clear or play, which drop the pause */
+static void send_held_pause(struct pl_player *player)
+{
+	if (!player->pause_held || !wait_until_started(player))
+		return;
+	player->pause_held = false;
+	obs_source_media_play_pause(player->child, true);
 }
 
 static void execute(struct pl_player *player, const struct pl_command *command)
 {
 	switch (command->type) {
 	case PL_COMMAND_LOAD:
+		player->pause_held = false;
 		execute_load(player, command);
 		break;
 	case PL_COMMAND_PLAY_PAUSE:
-		obs_source_media_play_pause(player->child, command->pause);
+		player->pause_held = command->pause;
+		if (!command->pause)
+			obs_source_media_play_pause(player->child, false);
 		break;
 	case PL_COMMAND_STOP:
 		/* again here: a load executed after the request was made may have made itself eligible */
 		pl_load_tracker_withdraw(&player->tracker);
+		player->starting = false;
+		player->pause_held = false;
 		obs_source_media_stop(player->child);
 		break;
 	case PL_COMMAND_CLEAR:
 		pl_load_tracker_withdraw(&player->tracker);
+		player->starting = false;
+		player->pause_held = false;
 		unload_child(player);
 		obs_source_media_stop(player->child);
 		break;
@@ -179,6 +251,7 @@ static void execute(struct pl_player *player, const struct pl_command *command)
 	case PL_COMMAND_QUIT:
 		break;
 	}
+	send_held_pause(player);
 }
 
 static void *player_thread(void *data)

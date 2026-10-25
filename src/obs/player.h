@@ -36,6 +36,10 @@ struct pl_player {
 
 	/* player thread only */
 	struct pl_child_settings settings;
+	bool starting;      /* the loaded media has not shown progress yet (R-UP-79) */
+	bool starting_url;  /* that media is a URL: the longer startup window */
+	uint64_t loaded_ns; /* when it was loaded */
+	bool pause_held;    /* a pause waits for that media to start */
 };
 
 bool pl_player_start(struct pl_player *player, obs_source_t *child);

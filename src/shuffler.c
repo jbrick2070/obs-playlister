@@ -313,8 +313,13 @@ size_t find_media_index(struct darray *array, struct media_file_data *search_dat
 
 			/* plain rows have no parent_id and folder items have no id */
 			if (current_data->parent_id && strcmp(current_data->parent_id, search_data->parent_id) == 0) {
-				int match = strcmp(search_data->filename, current_data->filename);
-				if (match == 0) {
+				/* by key and occurrence when both have an entry (R-KEY-1), else by file name, as upstream */
+				bool match =
+					search_data->entry && current_data->entry
+						? search_data->entry->occurrence == current_data->entry->occurrence &&
+							  strcmp(search_data->entry->key, current_data->entry->key) == 0
+						: strcmp(search_data->filename, current_data->filename) == 0;
+				if (match) {
 					return i;
 				}
 			}
