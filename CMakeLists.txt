@@ -50,8 +50,20 @@ target_sources(
     src/core/audio-queue.c
     src/core/command-queue.h
     src/core/command-queue.c
+    src/core/entry.h
+    src/core/entry-list.c
+    src/core/filter.h
+    src/core/filter.c
+    src/core/keys.h
+    src/core/keys.c
     src/core/load-tracker.h
     src/core/load-tracker.c
+    src/core/modes.h
+    src/core/modes.c
+    src/core/natural.h
+    src/core/natural.c
+    src/core/sort.h
+    src/core/sort.c
 )
 # sources in src/obs/ include the shared headers by their path under src/ (core/..., shuffler.h, playlist.h)
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE src)

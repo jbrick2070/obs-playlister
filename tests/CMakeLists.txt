@@ -45,6 +45,14 @@ obs_playlister_add_test(test-command-queue test-command-queue.c "${CMAKE_SOURCE_
 obs_playlister_add_test(test-load-tracker test-load-tracker.c "${CMAKE_SOURCE_DIR}/src/core/load-tracker.c")
 # The child's audio on its way from the capture callback to video_tick
 obs_playlister_add_test(test-audio-queue test-audio-queue.c "${CMAKE_SOURCE_DIR}/src/core/audio-queue.c")
+# Container entries: copies, natural order, the extension filter, display order, modes and occurrence keys
+set(_core "${CMAKE_SOURCE_DIR}/src/core")
+obs_playlister_add_test(test-entry test-entry.c "${_core}/entry-list.c")
+obs_playlister_add_test(test-natural test-natural.c "${_core}/natural.c")
+obs_playlister_add_test(test-filter test-filter.c "${_core}/filter.c")
+obs_playlister_add_test(test-sort test-sort.c "${_core}/sort.c" "${_core}/natural.c" "${_core}/entry-list.c")
+obs_playlister_add_test(test-modes test-modes.c "${_core}/modes.c" "${_core}/sort.c" "${_core}/natural.c")
+obs_playlister_add_test(test-keys test-keys.c "${_core}/keys.c" "${_core}/sort.c" "${_core}/natural.c")
 
 # Every locale key used in src/ is in en-US.ini (R-TST-1); the second test proves the check fails on a missing key
 add_test(
