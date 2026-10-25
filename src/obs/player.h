@@ -33,6 +33,8 @@ struct pl_player {
 	os_event_t *child_updated;   /* signaled by the child's "update" signal */
 	volatile bool shutting_down; /* stops waiting for child updates */
 	struct pl_load_tracker tracker;
+	volatile long applied_epoch; /* the load whose child update has applied: its startup is judged (R-BEH-5) */
+	volatile long audio_epoch;   /* the applied load when the child last delivered audio */
 
 	/* player thread only */
 	struct pl_child_settings settings;
@@ -62,3 +64,14 @@ void pl_player_withdraw(struct pl_player *player);
 void pl_player_child_ended(struct pl_player *player);
 /* For video_tick: consumes a pending end; true once when it belongs to the load that may auto-advance */
 bool pl_player_take_end(struct pl_player *player);
+
+/* The child's audio capture callback: audio arrived (R-BEH-5 evidence for the applied load) */
+void pl_player_child_audio(struct pl_player *player);
+
+/* For video_tick, without consuming anything: whether the child ended this load, and whether it may still
+ * auto-advance (a stop, clear, hide or newer load withdraws it, and then its startup is not judged) */
+bool pl_player_load_ended(struct pl_player *player, long epoch);
+bool pl_player_load_eligible(struct pl_player *player, long epoch);
+
+/* Logs "<what> <path>", a URL with scheme, host and path only (it can carry credentials) */
+void pl_player_log_location(int level, const char *what, const char *path);

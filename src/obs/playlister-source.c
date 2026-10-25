@@ -44,6 +44,8 @@ static void clear_media_source(void *data);
 static void update_media_source(void *data, bool forced);
 static void cancel_resume(struct media_playlist_source *mps);
 static bool key_pending(const struct media_file_data *row, const char *key);
+static void retry_failed_on_request(struct media_playlist_source *mps);
+static bool nothing_playable(struct media_playlist_source *mps);
 
 static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index);
 
@@ -223,11 +225,58 @@ static bool item_pending(const struct media_file_data *item)
 	return item && item->parent && item->entry && key_pending(item->parent, item->entry->key);
 }
 
+/* R-BEH-5: what a failure mark is kept by. A folder item's location with its size and date, so a replaced file is
+ * tried again; a file row or URL by its location, until the list changes. */
+static char *failure_key(const struct media_file_data *item)
+{
+	struct dstr key = {0};
+	if (item->entry && item->parent)
+		dstr_printf(&key, "%s\x1f%llu\x1f%lld", item->path, (unsigned long long)item->entry->size,
+			    (long long)item->entry->date_unix_ms);
+	else
+		dstr_printf(&key, "%s", item->path);
+	return key.array;
+}
+
+static bool item_failed(const struct media_playlist_source *mps, const struct media_file_data *item)
+{
+	if (!mps->failed.num || !item)
+		return false;
+	char *key = failure_key(item);
+	bool found = false;
+	for (size_t i = 0; i < mps->failed.num && !found; i++)
+		found = strcmp(mps->failed.array[i], key) == 0;
+	bfree(key);
+	return found;
+}
+
+static void mark_failed(struct media_playlist_source *mps, const struct media_file_data *item)
+{
+	if (item_failed(mps, item))
+		return;
+	char *key = failure_key(item);
+	da_push_back(mps->failed, &key);
+}
+
+static void clear_failures(struct media_playlist_source *mps)
+{
+	for (size_t i = 0; i < mps->failed.num; i++)
+		bfree(mps->failed.array[i]);
+	da_free(mps->failed);
+}
+
+/* Neither being rewritten (R-DIR-4) nor failed to play (R-BEH-5): auto-advance and navigation may load it */
+static bool item_loadable(const struct media_playlist_source *mps, const struct media_file_data *item)
+{
+	return item && !item_pending(item) && !item_failed(mps, item);
+}
+
 /* The first item of the row at index or after it (before it when backward) that may be loaded, or DARRAY_INVALID */
-static size_t loadable_item(const struct media_file_data *row, size_t index, bool backward)
+static size_t loadable_item(const struct media_playlist_source *mps, const struct media_file_data *row, size_t index,
+			    bool backward)
 {
 	for (size_t i = index; i < row->folder_items.num; i = backward ? i - 1 : i + 1) {
-		if (!item_pending(&row->folder_items.array[i]))
+		if (item_loadable(mps, &row->folder_items.array[i]))
 			return i;
 		if (backward && i == 0)
 			break;
@@ -235,10 +284,12 @@ static size_t loadable_item(const struct media_file_data *row, size_t index, boo
 	return DARRAY_INVALID;
 }
 
-/* A file row, or a folder row with an item that may be loaded */
-static bool row_playable(const struct media_file_data *row)
+/* A file row that has not failed, or a folder row with an item that may be loaded */
+static bool row_playable(const struct media_playlist_source *mps, const struct media_file_data *row)
 {
-	return !row->is_folder || loadable_item(row, 0, false) != DARRAY_INVALID;
+	if (!row->is_folder)
+		return !item_failed(mps, row);
+	return loadable_item(mps, row, 0, false) != DARRAY_INVALID;
 }
 
 static inline void set_current_media_index(struct media_playlist_source *mps, size_t index)
@@ -369,8 +420,10 @@ static void update_media_source(void *data, bool forced)
 	if (forced) {
 		pl_player_load(&mps->player, mps->actual_media->path, mps->actual_media->is_url);
 		mps->state = OBS_MEDIA_STATE_PLAYING;
-		/* any load decides what plays, so a wait for a folder row to settle is over (R-KEY-2) */
+		/* any load decides what plays, so a wait for a folder row to settle is over (R-KEY-2), and a stop after
+		 * everything failed is lifted (R-BEH-5) */
 		cancel_resume(mps);
+		mps->all_failed = false;
 	}
 }
 
@@ -492,7 +545,7 @@ static size_t skip_empty_folder_rows(struct media_playlist_source *mps, size_t i
 	for (size_t tries = 0; index < num && tries < num; tries++) {
 		struct media_file_data *row = &mps->files.array[index];
 		/* a folder row whose only items are being rewritten counts as empty for now (R-DIR-4) */
-		if (row_playable(row))
+		if (row_playable(mps, row))
 			return index;
 		if (backward)
 			index = index > 0 ? index - 1 : (mps->loop ? num - 1 : num);
@@ -524,9 +577,9 @@ static void play_media_at_index(void *data, size_t index, bool play_last_folder_
 		/* the first (or last) item that may be loaded; the row is playable, so there is one */
 		if (play_last_folder_item) {
 			mps->current_folder_item_index =
-				loadable_item(mps->current_media, mps->current_media->folder_items.num - 1, true);
+				loadable_item(mps, mps->current_media, mps->current_media->folder_items.num - 1, true);
 		} else {
-			mps->current_folder_item_index = loadable_item(mps->current_media, 0, false);
+			mps->current_folder_item_index = loadable_item(mps, mps->current_media, 0, false);
 		}
 
 		play_folder_item_at_index(mps, mps->current_folder_item_index);
@@ -618,6 +671,7 @@ void mps_audio_callback(void *data, obs_source_t *source, const struct audio_dat
 	UNUSED_PARAMETER(muted);
 	UNUSED_PARAMETER(source);
 	struct media_playlist_source *mps = data;
+	pl_player_child_audio(&mps->player);
 	pl_audio_queue_push(&mps->audio, audio_data->data, audio_data->frames, audio_data->timestamp);
 }
 
@@ -760,9 +814,9 @@ static bool point_at_playable_item(struct media_playlist_source *mps)
 		return false;
 	if (!mps->current_media->is_folder)
 		return true;
-	size_t index = loadable_item(mps->current_media, mps->current_folder_item_index, false);
+	size_t index = loadable_item(mps, mps->current_media, mps->current_folder_item_index, false);
 	if (index == DARRAY_INVALID)
-		index = loadable_item(mps->current_media, 0, false);
+		index = loadable_item(mps, mps->current_media, 0, false);
 	if (index == DARRAY_INVALID)
 		return false;
 	mps->current_folder_item_index = index;
@@ -837,10 +891,13 @@ static void mps_play_pause(void *data, bool pause)
 		if (!stopped) {
 			pl_player_play_pause(&mps->player, false);
 			set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
-		} else if (point_at_playable_item(mps)) {
-			/* Play from stopped or ended is a playback trigger: kept folder lists are published (R-DIR-11) */
-			os_atomic_set_bool(&mps->release_held, true);
-			update_media_source(mps, true);
+		} else {
+			retry_failed_on_request(mps);
+			if (point_at_playable_item(mps)) {
+				/* Play from stopped or ended is a playback trigger: kept folder lists are published (R-DIR-11) */
+				os_atomic_set_bool(&mps->release_held, true);
+				update_media_source(mps, true);
+			}
 		}
 	} else if (!stopped) {
 		pl_player_play_pause(&mps->player, true);
@@ -856,6 +913,7 @@ static void mps_restart(void *data)
 	/* a playback trigger: kept folder lists are published (R-DIR-11); video_tick asks the providers */
 	os_atomic_set_bool(&mps->release_held, true);
 	pthread_mutex_lock(&mps->mutex);
+	retry_failed_on_request(mps);
 	/* RESTART is a new load (R-BEH-6); after the list ended, the current item is the first one, as upstream did.
 	 * The loads set the PLAYING state; nothing playable leaves it as it was. */
 	if (mps->restart_behavior == RESTART_BEHAVIOR_FIRST_FILE) {
@@ -876,8 +934,10 @@ static void mps_stop(void *data)
 	pthread_mutex_lock(&mps->mutex);
 	pl_player_stop(&mps->player);
 	set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
-	/* a user stop: a folder row that settles later does not start by itself (R-KEY-2) */
+	/* a user stop: a folder row that settles later does not start by itself (R-KEY-2), nor does a list change after
+	 * everything failed (R-BEH-5) */
 	cancel_resume(mps);
+	mps->all_failed = false;
 	pthread_mutex_unlock(&mps->mutex);
 }
 
@@ -894,7 +954,7 @@ static bool playlist_next_locked(struct media_playlist_source *mps)
 		 * in a later round. With nothing loadable at all the shuffler is left alone. */
 		bool any_loadable = false;
 		for (size_t i = 0; i < mps->files.num && !any_loadable; i++)
-			any_loadable = row_playable(&mps->files.array[i]);
+			any_loadable = row_playable(mps, &mps->files.array[i]);
 		if (!any_loadable)
 			return false;
 		struct media_file_data *next = NULL;
@@ -902,7 +962,7 @@ static bool playlist_next_locked(struct media_playlist_source *mps)
 			if (!shuffler_has_next(&mps->shuffler))
 				return false;
 			next = shuffler_next(&mps->shuffler);
-			if (item_pending(next))
+			if (!item_loadable(mps, next))
 				next = NULL;
 		}
 		if (!next)
@@ -924,7 +984,7 @@ static bool playlist_next_locked(struct media_playlist_source *mps)
 
 	if (mps->current_media->is_folder && mps->current_media->folder_items.num > 0 &&
 	    mps->current_folder_item_index < mps->current_media->folder_items.num - 1) {
-		size_t next_item = loadable_item(mps->current_media, mps->current_folder_item_index + 1, false);
+		size_t next_item = loadable_item(mps, mps->current_media, mps->current_folder_item_index + 1, false);
 		if (next_item != DARRAY_INVALID) {
 			mps->current_folder_item_index = next_item;
 			play_folder_item_at_index(mps, mps->current_folder_item_index);
@@ -975,7 +1035,7 @@ static void mps_playlist_prev(void *data)
 		for (size_t tries = get_total_file_count(mps); tries > 0 && !prev && shuffler_has_prev(&mps->shuffler);
 		     tries--) {
 			prev = shuffler_prev(&mps->shuffler);
-			if (item_pending(prev))
+			if (!item_loadable(mps, prev))
 				prev = NULL;
 		}
 		if (!prev)
@@ -998,9 +1058,10 @@ static void mps_playlist_prev(void *data)
 	}
 
 	if (mps->current_media->is_folder) {
-		size_t prev_item = mps->current_folder_item_index > 0
-					   ? loadable_item(mps->current_media, mps->current_folder_item_index - 1, true)
-					   : DARRAY_INVALID;
+		size_t prev_item =
+			mps->current_folder_item_index > 0
+				? loadable_item(mps, mps->current_media, mps->current_folder_item_index - 1, true)
+				: DARRAY_INVALID;
 		if (prev_item != DARRAY_INVALID) {
 			mps->current_folder_item_index = prev_item;
 			play_folder_item_at_index(mps, mps->current_folder_item_index);
@@ -1242,7 +1303,7 @@ static void move_past_removed(struct media_playlist_source *mps, struct media_fi
 		for (size_t j = position + 1; j < old_items.num; j++) {
 			const struct pl_entry *entry = old_items.array[j].entry;
 			size_t successor = exact_item_index(row, entry->key, entry->occurrence);
-			if (successor != DARRAY_INVALID && !item_pending(&row->folder_items.array[successor])) {
+			if (successor != DARRAY_INVALID && item_loadable(mps, &row->folder_items.array[successor])) {
 				obs_log(LOG_INFO, "row %zu: the playing item is gone; playing the one that followed it",
 					row_index + 1);
 				play_folder_item_at_index(mps, successor);
@@ -1277,7 +1338,7 @@ static void resume_in_row(struct media_playlist_source *mps, struct media_file_d
 		if (mps->resume.item_key)
 			obs_log(LOG_INFO, "row %zu: the saved item is not there; starting at the row's first item",
 				row_index + 1);
-		found = loadable_item(row, 0, false);
+		found = loadable_item(mps, row, 0, false);
 		/* every item is being rewritten: the snapshot that admits one comes back here */
 		if (found == DARRAY_INVALID)
 			return;
@@ -1300,7 +1361,7 @@ static void resume_after_row(struct media_playlist_source *mps, size_t row_index
 	for (size_t step = 1; step <= num; step++) {
 		size_t index = (row_index + step) % num;
 		const struct media_file_data *candidate = &mps->files.array[index];
-		if (row_playable(candidate)) {
+		if (row_playable(mps, candidate)) {
 			obs_log(LOG_INFO, "row %zu has nothing to play; starting at row %zu", row_index + 1, index + 1);
 			play_media_at_index(mps, index, false, false);
 			return;
@@ -1405,7 +1466,7 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 					const struct pl_entry *entry = old_items.array[j].entry;
 					size_t successor = exact_item_index(row, entry->key, entry->occurrence);
 					if (successor != DARRAY_INVALID &&
-					    !item_pending(&row->folder_items.array[successor])) {
+					    item_loadable(mps, &row->folder_items.array[successor])) {
 						mps->current_folder_item_index = successor;
 						break;
 					}
@@ -1426,6 +1487,12 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 
 	if (mps->resume.pending)
 		settle_resume(mps, row, row_index, snapshot);
+	/* R-BEH-5: after everything failed, a listing with something that may play resumes playback */
+	if (mps->all_failed && !nothing_playable(mps)) {
+		size_t first = skip_empty_folder_rows(mps, 0, false);
+		obs_log(LOG_INFO, "row %zu changed and has something to play; playing again", row_index + 1);
+		play_media_at_index(mps, first, false, false);
+	}
 	/* the first items of a list that had none: the first row with something becomes the current one, without a
 	 * load (with no current row, next and previous would have nothing to go from) */
 	if (!mps->current_media && get_total_file_count(mps)) {
@@ -1617,6 +1684,7 @@ static void mps_destroy(void *data)
 	da_free(mps->providers);
 	cancel_resume(mps);
 	bfree(mps->container_filter);
+	clear_failures(mps);
 
 	/* R-UP-70: stop the player thread, disconnect the child's handler and audio callback (both wait for a
 	 * callback in flight), and only then release the child */
@@ -1758,6 +1826,121 @@ static bool mps_audio_render(void *data, uint64_t *ts_out, struct obs_source_aud
 	return true;
 }
 
+/* A still ends at once by nature (R-DIR-9) */
+static bool item_is_still(const struct media_file_data *item)
+{
+	if (!item)
+		return false;
+	if (item->entry)
+		return item->entry->kind == PL_ENTRY_STILL;
+	return pl_filter_kind(item->path) == PL_ENTRY_STILL;
+}
+
+/* Nothing in the list may play now (everything failed, is being rewritten, or is an empty or awaiting row) */
+static bool nothing_playable(struct media_playlist_source *mps)
+{
+	for (size_t i = 0; i < mps->files.num; i++) {
+		if (row_playable(mps, &mps->files.array[i]))
+			return false;
+	}
+	return true;
+}
+
+/* R-BEH-5: the loaded entry did not play. It is logged, marked and skipped; when nothing is left that may play, auto-
+ * advance stops and the child is cleared instead of cycling through a broken list. Called from video_tick with no
+ * lock held. */
+static void skip_failed_load(struct media_playlist_source *mps, long epoch, bool ended)
+{
+	pthread_mutex_lock(&mps->mutex);
+	/* a snapshot apply or a stop may have replaced the load since it was judged: then it is no longer ours */
+	if (!pl_player_load_eligible(&mps->player, epoch)) {
+		pthread_mutex_unlock(&mps->mutex);
+		return;
+	}
+	if (mps->actual_media) {
+		pl_player_log_location(LOG_WARNING,
+				       ended ? "skipped, as it ended before playing:"
+					     : "skipped, as it did not start playing within its startup window:",
+				       mps->actual_media->path);
+		mark_failed(mps, mps->actual_media);
+	}
+	/* its end, if it ended, belongs to this failure, not to a normal advance */
+	pl_load_tracker_withdraw(&mps->player.tracker);
+	bool moved = playlist_next_locked(mps);
+	bool stopped = false;
+	if (!moved && nothing_playable(mps)) {
+		obs_log(LOG_WARNING,
+			"nothing in the list could be played; stopped until the list changes or Play is pressed");
+		clear_media_source(mps);
+		mps->all_failed = true;
+		stopped = true;
+	} else if (!moved) {
+		/* the end of the list: a load that timed out may still start later (OBS retries a URL by itself), so the
+		 * child is stopped rather than left to play under an ended source */
+		pl_player_stop(&mps->player);
+	}
+	pthread_mutex_unlock(&mps->mutex);
+	if (moved)
+		signal_media_next(mps);
+	else if (!stopped)
+		mps_end_reached(mps);
+}
+
+/* Play or Restart when nothing may play because everything failed: the user asks, so the failed entries are tried
+ * again (R-BEH-5) */
+static void retry_failed_on_request(struct media_playlist_source *mps)
+{
+	if (mps->failed.num && nothing_playable(mps)) {
+		obs_log(LOG_INFO, "trying the entries that failed to play again");
+		clear_failures(mps);
+	}
+}
+
+/* R-BEH-5: judges the startup of the load that applied last, before its end is consumed. Evidence is progress only:
+ * the media time past 0, or audio after the load; the window runs while the source plays and is active, or plays
+ * hidden (Always play without close-when-inactive). */
+static void judge_startup(struct media_playlist_source *mps)
+{
+	long applied = os_atomic_load_long(&mps->player.applied_epoch);
+	int64_t now_ms = (int64_t)(os_gettime_ns() / 1000000);
+	if (applied && applied != mps->startup.epoch) {
+		pthread_mutex_lock(&mps->mutex);
+		const struct media_file_data *loaded = mps->actual_media;
+		bool long_window = loaded && (loaded->is_url || pl_path_is_unc(loaded->path));
+		bool still = item_is_still(loaded);
+		pthread_mutex_unlock(&mps->mutex);
+		pl_startup_begin(&mps->startup, applied, long_window, still, now_ms);
+	}
+	if (!mps->startup.epoch || mps->startup.settled)
+		return;
+	/* stopped, cleared, hidden or replaced: not judged */
+	if (!pl_player_load_eligible(&mps->player, mps->startup.epoch)) {
+		mps->startup.settled = true;
+		return;
+	}
+	bool active = obs_source_active(mps->source) ||
+		      (mps->visibility_behavior == VISIBILITY_BEHAVIOR_ALWAYS_PLAY && !mps->close_when_inactive);
+	struct pl_startup_evidence evidence = {
+		.media_time = obs_source_media_get_time(mps->current_media_source),
+		.audio = os_atomic_load_long(&mps->player.audio_epoch) == mps->startup.epoch,
+		.ended = pl_player_load_ended(&mps->player, mps->startup.epoch),
+		.may_advance = mps->state == OBS_MEDIA_STATE_PLAYING && active,
+	};
+	if (pl_startup_evaluate(&mps->startup, &evidence, now_ms) == PL_STARTUP_FAILED)
+		/* a still fails only by its window, whether or not it ended */
+		skip_failed_load(mps, mps->startup.epoch, evidence.ended && !mps->startup.still);
+}
+
+/* An end waits while the load it may belong to is not judged yet: the newest load before its startup began (its end
+ * can come before the player records it), or a still before its progress or window decides (a still ends at once,
+ * and a corrupt one must fail rather than advance at tick rate) */
+static bool end_waits_for_startup(struct media_playlist_source *mps)
+{
+	if (os_atomic_load_long(&mps->player.tracker.load_epoch) != mps->startup.epoch)
+		return true;
+	return mps->startup.epoch && !mps->startup.settled && mps->startup.still;
+}
+
 static void mps_video_tick(void *data, float seconds)
 {
 	struct media_playlist_source *mps = data;
@@ -1776,11 +1959,13 @@ static void mps_video_tick(void *data, float seconds)
 			obs_source_output_audio(mps->source, &audio);
 	}
 
+	judge_startup(mps);
+
 	/* Automatic advance is decided here, from the end the child recorded, and executed by the player thread, so
 	 * nothing recurses on the media thread and the graphics thread never waits on a load (R-THR-1). Next runs
 	 * directly rather than as a queued media action, so a stop queued meanwhile still comes after it; the
 	 * parent's next and ended signals are raised with no plugin lock held. */
-	if (os_atomic_load_long(&mps->player.tracker.ended_epoch) != 0) {
+	if (os_atomic_load_long(&mps->player.tracker.ended_epoch) != 0 && !end_waits_for_startup(mps)) {
 		/* the end is taken and acted on under the list lock, so a selection made meanwhile either withdraws it
 		 * first or comes after the advance; never both */
 		pthread_mutex_lock(&mps->mutex);
@@ -2311,6 +2496,8 @@ static void mps_update(void *data, obs_data_t *settings)
 	mps->shuffle = shuffle;
 	mps->loop = loop;
 	shuffler_set_loop(&mps->shuffler, loop);
+	/* R-BEH-5: a list change tries the entries that failed again */
+	clear_failures(mps);
 	if (mps->first_update) {
 		/* R-KEY-2: the row by its uuid (current_media_index only when the uuid is gone), and in a folder row the
 		 * item by key and occurrence */
@@ -2427,7 +2614,7 @@ static void mps_update(void *data, obs_data_t *settings)
 			mps->current_folder_item_index = 0;
 		} else if (mps->current_media && mps->current_media->is_folder) {
 			/* without the remembered item, the first item that may be loaded (R-DIR-4) */
-			size_t first = loadable_item(mps->current_media, 0, false);
+			size_t first = loadable_item(mps, mps->current_media, 0, false);
 			mps->current_folder_item_index = first != DARRAY_INVALID ? first : 0;
 
 			/* Find that file in the folder */
@@ -2442,7 +2629,7 @@ static void mps_update(void *data, obs_data_t *settings)
 				}
 			}
 
-			if (!row_playable(mps->current_media)) {
+			if (!row_playable(mps, mps->current_media)) {
 				/* the current folder row has nothing to play now (empty, or only items being rewritten): move
 				 * on, or clear when nothing follows */
 				if (!playlist_next_locked(mps))
@@ -2473,6 +2660,11 @@ static void mps_update(void *data, obs_data_t *settings)
 	} else if (!mps->first_update) {
 		remember_item(mps, NULL);
 		clear_media_source(mps);
+	}
+	/* R-BEH-5: stopped after everything failed, and this update loaded nothing: the list changed, so play again */
+	if (mps->all_failed && !nothing_playable(mps)) {
+		size_t first = skip_empty_folder_rows(mps, 0, false);
+		play_media_at_index(mps, first, false, false);
 	}
 	mark_save_dirty(mps);
 

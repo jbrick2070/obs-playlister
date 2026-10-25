@@ -19,7 +19,9 @@ param(
 	[Parameter(Mandatory = $true)][string[]]$Files,
 	[string]$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
 	[string]$SceneCollection = 'Untitled',
-	[int]$TimeoutSeconds = 180
+	[int]$TimeoutSeconds = 180,
+	# another script in this folder, run the same way (spike-child-signals.lua records the child's behavior)
+	[string]$Script = 'playlister-harness.lua'
 )
 $ErrorActionPreference = 'Stop'
 if ($Files.Count -ne 3) { throw 'pass exactly three media files, each of a different duration' }
@@ -80,9 +82,10 @@ try {
 	$mediaJunction = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-linked-' + [guid]::NewGuid().ToString('N') + '.mp4')
 	New-Item -ItemType Junction -Path $mediaJunction -Target $mediaFolder | Out-Null
 	$env:PLAYLISTER_HARNESS_MEDIA_JUNCTION = $mediaJunction -replace '\\', '/'
-	$script = (Join-Path $PSScriptRoot 'playlister-harness.lua') -replace '\\', '/'
+	# PowerShell names are case-insensitive: a $script here would overwrite the -Script parameter
+	$scriptPath = (Join-Path $PSScriptRoot $Script) -replace '\\', '/'
 	$json = Get-Content $collection -Raw | ConvertFrom-Json
-	$json.modules.'scripts-tool' = @([pscustomobject]@{ path = $script; settings = [pscustomobject]@{} })
+	$json.modules.'scripts-tool' = @([pscustomobject]@{ path = $scriptPath; settings = [pscustomobject]@{} })
 	[IO.File]::WriteAllText($collection, ($json | ConvertTo-Json -Depth 64), (New-Object Text.UTF8Encoding $false))
 
 	$env:PLAYLISTER_HARNESS_FILES = (($Files | ForEach-Object { (Resolve-Path $_).Path -replace '\\', '/' }) -join '|')
@@ -115,10 +118,20 @@ try {
 	$fails = @(Select-String -Path $log.FullName -Pattern 'HARNESS FAIL').Count
 	# the player logs every load; the empty folder, the absent one and the junction are never loaded themselves (a
 	# file inside the junction is), so such a load means a folder row was taken for a file
-	$folderLoads = @(Select-String -Path $log.FullName -Pattern 'playing .*playlister-harness-(empty|gone)-|playing .*playlister-harness-linked-[0-9a-f]+\.mp4$').Count
+	# loads only: the player's own "playing <path>" line (a skip message names its path after "playing" too)
+	$folderLoads = @(Select-String -Path $log.FullName -Pattern '\[obs-playlister\] playing .*playlister-harness-(empty|gone)-|\[obs-playlister\] playing .*playlister-harness-linked-[0-9a-f]+\.mp4$').Count
 	if ($folderLoads -gt 0) { "FAIL a folder row was loaded as a file ($folderLoads loads)" }
+	# R-BEH-5: the corrupt file is loaded once by each failing source and once more by Play, the corrupt still once; a
+	# list that cycles through its failures loads them again and again, and a Play that did nothing loads one less
+	$loadCountsWrong = $false
+	if ($Script -eq 'playlister-harness.lua') {
+		$corruptLoads = @(Select-String -Path $log.FullName -Pattern '\[obs-playlister\] playing .*playlister-harness-corrupt\.mp4').Count
+		$stillLoads = @(Select-String -Path $log.FullName -Pattern '\[obs-playlister\] playing .*playlister-harness-corrupt\.jpg').Count
+		if ($corruptLoads -ne 3) { "FAIL the corrupt file was loaded $corruptLoads times, not 3"; $loadCountsWrong = $true }
+		if ($stillLoads -ne 1) { "FAIL the corrupt still was loaded $stillLoads times, not once"; $loadCountsWrong = $true }
+	}
 	"summary: $passes passed, $fails failed"
-	$failed = (-not $done) -or $fails -gt 0 -or $folderLoads -gt 0
+	$failed = (-not $done) -or $fails -gt 0 -or $folderLoads -gt 0 -or $loadCountsWrong
 }
 finally {
 	Remove-Item Env:\PLAYLISTER_HARNESS_FILES -ErrorAction SilentlyContinue

@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "player.h"
 #include "shuffler.h"
 #include "core/audio-queue.h"
+#include "core/startup.h"
 #include "providers/provider.h"
 
 /* A folder row's provider (PLAN section 3.2). It stays across updates while the row keeps its uuid and path; the
@@ -117,4 +118,9 @@ struct media_playlist_source {
 	char *container_filter;
 	struct resume_target resume;
 	volatile bool release_held; /* a playback trigger: video_tick has the providers publish kept lists (R-DIR-11) */
+
+	/* R-BEH-5 */
+	struct pl_startup startup; /* the startup of the load that applied last; video_tick only */
+	DARRAY(char *) failed;     /* entries that failed to play (failure_key), under the list lock */
+	bool all_failed;           /* nothing left that may play: auto-advance stopped until something changes */
 };

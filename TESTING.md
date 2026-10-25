@@ -29,7 +29,10 @@ order) and while a new file is copied in (it joins once admitted), pass over a h
 still being written and play it once admitted, and with loop off keep the ended last item through a folder change; its migrated predecessor uses a junction named like a media file, which only the kind the
 migration saves keeps a folder. A fourth source has a row saved as a folder that does not exist: it must stay a
 folder and be passed over (the runner fails the run if a folder path is ever loaded as a file), and a row saved
-without a uuid must be given one and play when chosen by it. It needs a portable
+without a uuid must be given one and play when chosen by it. Two more sources check R-BEH-5: a missing file and a
+file that is no media are skipped for the file after them, and a list of only those stops instead of cycling (Play
+tries them once more and stops again); a corrupt still fails by its 5 s startup window and the list stops; the runner
+fails the run unless the corrupt file was loaded exactly 3 times and the corrupt still once. It needs a portable
 OBS 33 (with `portable_mode.txt`) and three local media files of different durations, and exits with 0 only
 when every check passed.
 
@@ -46,6 +49,33 @@ when every check passed.
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 4 (part 2) | 69 passed, 0 failed, no memory leaks, three runs in a row; the runner's temporary folders and junction removed and the three media files unchanged. Mutation check: without the migration saving folder kinds, 5 checks fail and the runner reports the junction loaded as a file (314 loads, as loop is on and the unopenable row is the only one: the full-pass stop of R-BEH-5 is Phase 2 step 6) |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 5 (part 2) | 76 passed, 0 failed, no memory leaks, three runs in a row; folder rows now come from the folder provider asynchronously, and every earlier folder check passed unchanged |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 5 (part 3) | 79 passed, 0 failed, no memory leaks, three runs in a row. Mutation check: with the pending check disabled, Next loads the file still being rewritten (1 check fails) |
+| 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 1) | 84 passed, 0 failed, no memory leaks, three runs in a row (before the QA fixes; see the next row); the corrupt file loaded 3 times. Mutation check: with the failure marks ignored, the list of failing entries cycles (31 loads of the corrupt file) and 2 checks plus the runner's load guard fail |
+| 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 1), after QA | 86 passed, 0 failed, no memory leaks, three runs in a row; the corrupt file loaded exactly 3 times and the corrupt still once. Mutation check: without a still's end waiting for its startup, the corrupt still loads 50 times and the run fails |
+
+## OBS 33 child behavior (Phase 2 step 6 spike)
+
+`tests/obs/spike-child-signals.lua` (run with `run-harness.ps1 -Script spike-child-signals.lua`, with
+`PLAYLISTER_SPIKE_JPG` naming a valid JPEG) drives a plain Media Source and logs every media signal and every change
+of state, time, duration and size against the moment of each update. Recorded 2026-10-24 in portable OBS 33.0.0:
+
+| Case | What OBS 33 does |
+| --- | --- |
+| Any load | `obs_source_update` returns at once; on the next tick the update is applied, `media_started` fires (for every case below, a missing file included) and then the `update` signal |
+| Valid mp4 | media time past 0 about 30 ms after the update, video size about 100 ms after |
+| Missing file | `media_ended` about 20 ms after the update; state ENDED, time 0, size 0 |
+| Corrupt mp4 | `media_ended` about 3 ms after the update; time 0 |
+| Valid jpg, `clear_on_media_end` on (the default) | `media_ended` about 3 ms after the update; time 40 afterwards; the size never shows (the frame is cleared at the end) |
+| Valid jpg, `clear_on_media_end` off | ends the same way; time 40, and the size stays (320x180) |
+| Empty path after a kept jpg | the size stays: an unload does not blank a latched still |
+| `obs_source_media_stop` after a kept jpg | `media_stopped`, state STOPPED, size 0 |
+| Corrupt jpg | `media_ended` about 2 ms after the update; time 0 |
+| Dead URL (`http://127.0.0.1:9/...`) | reports PLAYING with time 0 for 5.5 s, then `media_ended`; OBS starts it again by itself about 10 s later (another `media_started`) |
+| Valid mp4 after the URL | for about 60 ms the size reads the earlier jpg's (320x180), then the mp4's |
+
+So `media_started` proves nothing (R-BEH-5), the media time separates every case (a valid jpg reads 40, a corrupt one
+0), and the video size is no evidence: it can come back from an earlier still. The player judges startup by the time
+(or audio) only, so it needs no blanking call; `obs_source_media_stop` would blank, but as a queued media action it
+could reach the next load.
 
 ## Manual checks
 
@@ -90,6 +120,9 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 
 ## Known residual risks
 
+- Startup is judged by media time or audio only (R-BEH-5, step 6 spike). A live stream that delivers video but whose
+  media time stays 0 and that has no audio would be skipped after its 15 s window; not observed, as no such stream
+  was at hand.
 - The plugin DLL and installer are unsigned (R-PLAT-10, D-10).
 - Upstream defects R-UP-60 to R-UP-67, R-UP-69 to R-UP-72 and R-UP-76 to R-UP-78 are still
   present in 0.2.0 and are fixed in Phase 2 step 1 (for example selecting an

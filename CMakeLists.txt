@@ -70,6 +70,8 @@ target_sources(
     src/core/row-kind.c
     src/core/sort.h
     src/core/sort.c
+    src/core/startup.h
+    src/core/startup.c
     src/providers/fold-key-win.h
     src/providers/fold-key-win.c
     src/providers/provider.h

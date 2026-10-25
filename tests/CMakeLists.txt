@@ -60,6 +60,7 @@ obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/p
 # The folder provider's write-complete gate and watch modes against a fake folder (R-DIR-3, R-DIR-4)
 obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")
 obs_playlister_add_test(test-row-kind test-row-kind.c "${_core}/row-kind.c" "${_core}/filter.c")
+obs_playlister_add_test(test-startup test-startup.c "${_core}/startup.c")
 set(_providers "${CMAKE_SOURCE_DIR}/src/providers")
 obs_playlister_add_test(test-provider-folder test-provider-folder.c "${_providers}/provider.c" "${_providers}/provider-folder-win.c" "${_providers}/fold-key-win.c" "${_core}/entry-list.c" "${_core}/filter.c" "${_core}/folder-state.c" "${_core}/keys.c" "${_core}/merge.c" "${_core}/modes.c" "${_core}/natural.c" "${_core}/sort.c")
 # the provider logs through obs_log

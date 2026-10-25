@@ -48,11 +48,11 @@ static bool child_settings_equal(const struct pl_child_settings *a, const struct
 }
 
 /* URLs can carry credentials or signed query strings, so the log keeps scheme, host and path only */
-static void log_playing(const char *path)
+void pl_player_log_location(int level, const char *what, const char *path)
 {
 	const char *scheme_end = strstr(path, "://");
 	if (!scheme_end) {
-		obs_log(LOG_INFO, "playing %s", path);
+		obs_log(level, "%s %s", what, path);
 		return;
 	}
 	const char *authority = scheme_end + 3;
@@ -67,7 +67,7 @@ static void log_playing(const char *path)
 	dstr_ncopy(&shown, path, (size_t)(scheme_end + 3 - path));
 	dstr_ncat(&shown, authority, (size_t)(path_start - authority));
 	dstr_ncat(&shown, path_start, strcspn(path_start, "?#"));
-	obs_log(LOG_INFO, "playing %s", shown.array);
+	obs_log(level, "%s %s", what, shown.array);
 	dstr_free(&shown);
 }
 
@@ -131,7 +131,7 @@ static void execute_load(struct pl_player *player, const struct pl_command *comm
 
 	/* From here an end counts, including one raised while the child opens the new media: that is the new media
 	 * failing to open, and advancing past it keeps upstream's skip of unopenable files */
-	pl_load_tracker_begin_load(&player->tracker, command->request);
+	long epoch = pl_load_tracker_begin_load(&player->tracker, command->request);
 
 	obs_data_t *data = obs_data_create();
 	obs_data_set_bool(data, S_FFMPEG_IS_LOCAL_FILE, !command->is_url);
@@ -139,10 +139,12 @@ static void execute_load(struct pl_player *player, const struct pl_command *comm
 	write_child_settings(data, &player->settings);
 	update_child(player, data);
 	obs_data_release(data);
+	/* the new media's evidence counts from here: the old media was destroyed by the unload (R-BEH-5) */
+	os_atomic_set_long(&player->applied_epoch, epoch);
 	player->starting = true;
 	player->starting_url = command->is_url;
 	player->loaded_ns = os_gettime_ns();
-	log_playing(command->path);
+	pl_player_log_location(LOG_INFO, "playing", command->path);
 }
 
 #define STARTUP_WINDOW_LOCAL_MS 5000 /* R-BEH-5 */
@@ -370,4 +372,19 @@ void pl_player_child_ended(struct pl_player *player)
 bool pl_player_take_end(struct pl_player *player)
 {
 	return pl_load_tracker_take_end(&player->tracker);
+}
+
+void pl_player_child_audio(struct pl_player *player)
+{
+	os_atomic_set_long(&player->audio_epoch, os_atomic_load_long(&player->applied_epoch));
+}
+
+bool pl_player_load_ended(struct pl_player *player, long epoch)
+{
+	return epoch && os_atomic_load_long(&player->tracker.ended_epoch) == epoch;
+}
+
+bool pl_player_load_eligible(struct pl_player *player, long epoch)
+{
+	return epoch && os_atomic_load_long(&player->tracker.eligible_epoch) == epoch;
 }

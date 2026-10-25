@@ -18,6 +18,11 @@ local EMPTY_FOLDER = os.getenv("PLAYLISTER_HARNESS_EMPTY_FOLDER")
 local MEDIA_FOLDER = os.getenv("PLAYLISTER_HARNESS_MEDIA_FOLDER") -- 1.mp4 to 3.mp4: the three files, in order
 local MISSING_FOLDER = os.getenv("PLAYLISTER_HARNESS_MISSING_FOLDER") -- never created
 local MEDIA_JUNCTION = os.getenv("PLAYLISTER_HARNESS_MEDIA_JUNCTION") -- MEDIA_FOLDER again, named "<...>.mp4"
+-- entries that cannot play (R-BEH-5): one that does not exist, and one the script writes that is no media
+local HARNESS_TEMP = (os.getenv("TEMP") or "."):gsub("\\", "/")
+local MISSING_FILE = HARNESS_TEMP .. "/playlister-harness-missing.mp4"
+local CORRUPT_FILE = HARNESS_TEMP .. "/playlister-harness-corrupt.mp4"
+local CORRUPT_STILL = HARNESS_TEMP .. "/playlister-harness-corrupt.jpg"
 local PLAYING, PAUSED, STOPPED, ENDED = 1, 4, 5, 6
 local src, item = nil, nil
 local D = {}
@@ -805,7 +810,58 @@ step("absent folder passed over", 1000, 15000, function() return st() == PLAYING
 	remove_source()
 end)
 
+-- R-BEH-5: entries that cannot play are skipped: a missing file ends at once, and so does a file that is no media
+step("source with failing rows", 1500, 1500, nil, function()
+	create_source("playlister-harness-failing", function(settings)
+		set_playlist(settings, { { MISSING_FILE, "m" }, { CORRUPT_FILE, "c" }, { FILES[1], "f1" } })
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	check("source with failing rows created and shown", src ~= nil and item ~= nil)
+end)
+
+step("failing rows skipped", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
+	check("a missing file and a corrupt one are skipped for the file after them", dur() == D[1] and st() == PLAYING,
+		status())
+	remove_source()
+end)
+
+-- with nothing that can play, auto-advance stops instead of cycling (loop is on); Play tries once more
+step("source with only failing rows", 1500, 1500, nil, function()
+	create_source("playlister-harness-all-failing", function(settings)
+		set_playlist(settings, { { MISSING_FILE, "m" }, { CORRUPT_FILE, "c" } })
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	check("source with only failing rows created and shown", src ~= nil and item ~= nil)
+end)
+
+step("everything failed", 3000, 3000, nil, function()
+	check("a list where nothing plays stops instead of cycling", st() == STOPPED, status())
+	obs.obs_source_media_play_pause(src, false)
+end)
+
+step("play after everything failed", 3000, 3000, nil, function()
+	check("play tries the failed entries once more and stops again", st() == STOPPED, status())
+	remove_source()
+end)
+
+-- a still ends at once by nature, so a corrupt one fails by its startup window (5 s), not by its end; until then it
+-- is not advanced past at tick rate (loop is on, and it is the only row)
+step("source with a corrupt still", 1500, 1500, nil, function()
+	create_source("playlister-harness-corrupt-still", function(settings)
+		set_playlist(settings, { { CORRUPT_STILL, "s" } })
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	check("source with a corrupt still created and shown", src ~= nil and item ~= nil)
+end)
+
+step("corrupt still failed", 7000, 7000, nil, function()
+	check("a corrupt still fails by its startup window and the list stops", st() == STOPPED, status())
+	remove_source()
+end)
+
 step("removed", 1500, 1500, nil, function()
+	os.remove(CORRUPT_FILE)
+	os.remove(CORRUPT_STILL)
 	log("DONE")
 end)
 
@@ -841,6 +897,12 @@ function script_description()
 end
 
 function script_load(settings)
+	for _, path in ipairs({ CORRUPT_FILE, CORRUPT_STILL }) do
+		local corrupt = assert(io.open(path, "wb"))
+		corrupt:write(string.rep("not media ", 2000))
+		corrupt:close()
+	end
+	os.remove(MISSING_FILE)
 	step_start = now_ms()
 	obs.timer_add(tick, 100)
 end
