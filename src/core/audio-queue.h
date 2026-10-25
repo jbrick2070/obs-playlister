@@ -24,7 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/deque.h>
 #include <util/threading.h>
 
-/* The most planes a chunk can have: libobs's MAX_AV_PLANES, which media-playlist-source.c checks */
+/* The most planes a chunk can have: libobs's MAX_AV_PLANES, which obs/playlister-source.c checks */
 #define PL_AUDIO_MAX_PLANES 8
 
 /* Audio the child's capture callback hands over on the audio thread, replayed by the source from video_tick

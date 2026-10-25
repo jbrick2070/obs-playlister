@@ -40,10 +40,10 @@ target_sources(
   PRIVATE
     src/plugin-main.c
     src/playlist.h
-    src/media-playlist-source.h
-    src/media-playlist-source.c
-    src/player.h
-    src/player.c
+    src/obs/playlister-source.h
+    src/obs/playlister-source.c
+    src/obs/player.h
+    src/obs/player.c
     src/shuffler.h
     src/shuffler.c
     src/core/audio-queue.h
@@ -53,6 +53,8 @@ target_sources(
     src/core/load-tracker.h
     src/core/load-tracker.c
 )
+# sources in src/obs/ include the shared headers by their path under src/ (core/..., shuffler.h, playlist.h)
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE src)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 

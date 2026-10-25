@@ -17,7 +17,7 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include "media-playlist-source.h"
+#include "playlister-source.h"
 
 /* the audio queue's planes go straight into struct obs_source_audio */
 _Static_assert(PL_AUDIO_MAX_PLANES == MAX_AV_PLANES, "the audio queue must have as many planes as libobs");
