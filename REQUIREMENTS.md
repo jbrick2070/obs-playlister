@@ -1,7 +1,7 @@
 # obs-playlister -- Requirements
 
-Status: 2026-10-24. Approved by the operator; decisions are recorded in section 14.
-Phase 1 (0.2.0) is implemented; Phases 2-4 are not started.
+Status: 2026-10-25. Approved by the operator on 2026-10-24; decisions are recorded in section 14.
+Phase 1 (0.2.0) and Phase 2 (0.3.0) are implemented; the manual checks of both phases (TESTING.md) are pending; Phases 3-4 are not started.
 Revision: four-round panel review folded in (kibitz-runs/2026-10-24-obs-playlister-plan/;
 reviewers: Codex GPT-5.6-Sol and GPT-6.1-Sol, Antigravity Gemini 4 Argon, Claude Fable 5.1,
 Meta Muse Wonder 1.0; judge: Claude Opus 5.5).

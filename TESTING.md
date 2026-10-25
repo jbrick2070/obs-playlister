@@ -68,6 +68,7 @@ when every check passed.
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 7 (part 1) | 105 passed, 0 failed, no memory leaks, three runs in a row; the new file waited 5 s with the list locked and joined within one poll of the button. Mutation checks: with the button's request removed, the file is still waiting 15 s later (1 check fails); with the lock option ignored, the file joins at once (1 check fails) |
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 7 (part 2) | 116 passed, 0 failed, no memory leaks, three runs in a row, and once more after the stale-choice check also read the info type. Mutation checks: with the snapshot's change count left at 0, the waiting-change check fails; without the status update in Play Selected, the stale notice is missing from the open Properties and 2 checks fail. How the dialog draws the block is item 2.1 |
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 8 (part 2) | 117 passed, 0 failed, no memory leaks, four runs (the last after the QA fixes); Play then Pause at once from stop left item 2 paused at 120 ms. Mutation check: without the pending-load rule the pause is dropped and the item plays on to 2.4 s (1 check fails) |
+| 2026-10-25 | 33.0.0 portable | 0.3.0 (version bump) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.3.0)` |
 
 ## Phase 2 acceptance (automated, needs OBS)
 
@@ -143,33 +144,34 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 `C:\ProgramData\obs-studio\plugins\obs-playlister\` from
 `release/RelWithDebInfo/obs-playlister`, so the folder holds exactly
 `obs-playlister.dll`, `obs-playlister.pdb`, `data\manifest.json` and
-`data\locale\en-US.ini`.
+`data\locale\en-US.ini`. From Phase 2 on these run on the current build (the waiver in PLAN section 7), so the
+version expected in 1.1 and 1.2 is that build's: 0.3.0 now.
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
-| 1.1 | Start OBS 33 and open the log | `[obs-playlister] plugin loaded successfully (version 0.2.0)`; module list shows `obs-playlister.dll`; source list shows `'OBS Playlister' (obs_playlister_source)` | 2026-10-24, OBS 33.0.0 portable (plugin in `plugins\obs-playlister\`): pass. Load line logged; the Plugin Manager's modules.json lists OBS Playlister 0.2.0 with source `obs_playlister_source`; clean exit, 0 leaks. 2026-10-24, OBS 33.0.0 system install (plugin in `C:\ProgramData\obs-studio\plugins\obs-playlister\`, Phase 1 build): pass. Load line logged next to `[media-playlist-source] plugin loaded successfully (version 0.1.3)`. |
-| 1.2 | Tools > Plugin Manager | "OBS Playlister", version 0.2.0, no Legacy chip; Media Playlist Source still shows its Legacy chip. Note which manifest fields are displayed (PLAN V7) and whether the Discover tab is still "Coming soon" (D-10) | |
-| 1.3 | Windows security (R-PLAT-10) | `Get-AuthenticodeSignature` on the DLL reports NotSigned; Windows Security protection history and the Code Integrity log show nothing for `obs64.exe` or `obs-playlister.dll` | |
-| 1.4 | Add an "OBS Playlister" source; open Properties | Labels read "Loop Playlist", "Shuffle", "Use hardware decoding when available" (checked by default, D-11), never raw keys | |
-| 1.5 | Add two video files; play | first file plays; Current File shows `1: <path>` after Refresh Filename | |
-| 1.6 | Hardware decoding | Task Manager > GPU shows "Video Decode" activity while a file plays | |
-| 1.7 | Next / Previous (media controls and hotkeys) | moves between the two files; hotkeys appear under the source as "Next" / "Previous" | |
-| 1.8 | Loop on, let the last file end | wraps to the first file | |
-| 1.9 | Loop off, let the last file end | stops; restart plays again per Restart behavior | |
-| 1.10 | Shuffle on, Loop on, two files: both play once, then one starts the second pass; pick the other file in Select File, press Play Selected File and let it play to the end (R-UP-75) | no crash; a new shuffled pass starts | |
-| 1.11 | Shuffle on, Loop on, three files: all three play once; while the fourth file plays (the first of the second pass), remove it from the list, then add it back (R-UP-73) | no crash at either edit; playback continues | |
-| 1.12 | Speed 50% and 150% | playback speed changes (the video restarts, as the warning says) | |
-| 1.13 | Each visibility behavior: hide and show the source | Stop/restart, Pause/unpause, Always play, Stop/play next behave as named | |
-| 1.14 | Restart behavior: current file vs first file | Restart replays the current file, or starts at file 1 | |
-| 1.15 | Add a folder row; play | its files play in order; Select File lists them as `N-M: <path>` | |
-| 1.16 | Play Selected File with a chosen item | jumps to that item | |
-| 1.17 | Move a listed file away, restart OBS | the missing-files dialog offers to find or remove it | |
-| 1.17a | As 1.17, but before acting in the dialog add a row to the playlist and apply, then point the dialog at the moved file (R-UP-67, Phase 2 step 1.4 build) | the row is relocated; no crash | |
-| 1.17b | Add a folder row and apply, close OBS, rename that folder, start OBS (R-UP-34, R-LIST-1; Phase 2 step 4 build) | the missing-files dialog does not list the folder; the folder row is passed over; renaming the folder back and pressing OK in Properties plays its files again | |
-| 1.18 | Close OBS while item 2 plays, start OBS again | item 2 resumes | |
-| 1.19 | Script `select_index` with `media_index` past the end | nothing happens (R-UP-5) | |
-| 1.20 | Both plugins at once | a Media Playlist Source and an OBS Playlister source work side by side | |
-| 1.21 | Packaging (D-2, PLAN V9) | each zip extracts to the layout above; the Inno installer (unsigned, SmartScreen prompt expected) installs the same tree; the portable zip loads in a portable OBS 33 | |
+| 1.1 | Start OBS 33 and open the log | `[obs-playlister] plugin loaded successfully (version 0.2.0)` on the Phase 1 build, `(version 0.3.0)` on the current one; module list shows `obs-playlister.dll`; source list shows `'OBS Playlister' (obs_playlister_source)` | 2026-10-24, OBS 33.0.0 portable (plugin in `plugins\obs-playlister\`): pass. Load line logged; the Plugin Manager's modules.json lists OBS Playlister 0.2.0 with source `obs_playlister_source`; clean exit, 0 leaks. 2026-10-24, OBS 33.0.0 system install (plugin in `C:\ProgramData\obs-studio\plugins\obs-playlister\`, Phase 1 build): pass. Load line logged next to `[media-playlist-source] plugin loaded successfully (version 0.1.3)`. |
+| 1.2 | Tools > Plugin Manager | "OBS Playlister", version 0.2.0 on the Phase 1 build and 0.3.0 on the current one, no Legacy chip; Media Playlist Source still shows its Legacy chip. Note which manifest fields are displayed (PLAN V7) and whether the Discover tab is still "Coming soon" (D-10) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.3 | Windows security (R-PLAT-10) | `Get-AuthenticodeSignature` on the DLL reports NotSigned; Windows Security protection history and the Code Integrity log show nothing for `obs64.exe` or `obs-playlister.dll` | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.4 | Add an "OBS Playlister" source; open Properties | Labels read "Loop Playlist", "Shuffle", "Use hardware decoding when available" (checked by default, D-11), never raw keys | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.5 | Add two video files; play | first file plays; Current File shows `1: <path>` after Refresh Filename | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.6 | Hardware decoding | Task Manager > GPU shows "Video Decode" activity while a file plays | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.7 | Next / Previous (media controls and hotkeys) | moves between the two files; hotkeys appear under the source as "Next" / "Previous" | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.8 | Loop on, let the last file end | wraps to the first file | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.9 | Loop off, let the last file end | stops; restart plays again per Restart behavior | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.10 | Shuffle on, Loop on, two files: both play once, then one starts the second pass; pick the other file in Select File, press Play Selected File and let it play to the end (R-UP-75) | no crash; a new shuffled pass starts | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.11 | Shuffle on, Loop on, three files: all three play once; while the fourth file plays (the first of the second pass), remove it from the list, then add it back (R-UP-73) | no crash at either edit; playback continues | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.12 | Speed 50% and 150% | playback speed changes (the video restarts, as the warning says) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.13 | Each visibility behavior: hide and show the source | Stop/restart, Pause/unpause, Always play, Stop/play next behave as named | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.14 | Restart behavior: current file vs first file | Restart replays the current file, or starts at file 1 | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.15 | Add a folder row; play | its files play in order; Select File lists them as `N-M: <path>` | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.16 | Play Selected File with a chosen item | jumps to that item | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.17 | Move a listed file away, restart OBS | the missing-files dialog offers to find or remove it | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.17a | As 1.17, but before acting in the dialog add a row to the playlist and apply, then point the dialog at the moved file (R-UP-67, Phase 2 step 1.4 build) | the row is relocated; no crash | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.17b | Add a folder row and apply, close OBS, rename that folder, start OBS (R-UP-34, R-LIST-1; Phase 2 step 4 build) | the missing-files dialog does not list the folder; the folder row is passed over; renaming the folder back and pressing OK in Properties plays its files again | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.18 | Close OBS while item 2 plays, start OBS again | item 2 resumes | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.19 | Script `select_index` with `media_index` past the end | nothing happens (R-UP-5) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.20 | Both plugins at once | a Media Playlist Source and an OBS Playlister source work side by side | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.21 | Packaging (D-2, PLAN V9) | each zip extracts to the layout above; the Inno installer (unsigned, SmartScreen prompt expected) installs the same tree; the portable zip loads in a portable OBS 33 | 2026-10-24, Phase 1 build (CI run 40134077740): partial. Both zip layouts are as above, and the CI portable zip loads in a portable OBS 33.0.0. The Inno installer was not run (it needs an administrator); that part is pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 
 ## Phase 2 (version 0.3.0)
 
@@ -177,16 +179,16 @@ Setup as Phase 1, with the Phase 2 build. Items the runtime harness covers are n
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
-| 2.1 | Open Properties of a source whose list has a file, a folder and a missing file; press Esc without changing anything; then choose an item, remove it from the folder, press Play Selected File | the Status block under the playlist shows one row per line (`1: file`, `2: folder - N files`, `3: file - could not be played` once it failed), in the error color when a row failed; Esc closes Properties without asking to save; after Play Selected File the block shows the "list changed" notice in the warning color, and Refresh Filename clears it | |
-| 2.12 | Close OBS while a folder item plays; start it again | the same folder item resumes, not the folder's first item |
-| 2.13 | OBS hotkeys for Play/Pause, Restart, Stop, Next and Previous on a folder row; Next then Play/Pause at once | each acts as its button does; the load and the pause both happen; Stop never advances |
-| 2.15 | A watched folder on a removable drive: unplug it, plug it back | "the folder went away" with the last list kept; the row recovers when the drive is back |
-| 2.16 | A watched folder on another machine's share; stall the share (pull its network) during a scan, then remove the source | the row shows the error and keeps its list; removing the source returns at once (otherwise record a residual risk); on a share without change notifications the log says `rescan-only` and the 10 s check still finds a new render |
-| 2.17 | A OneDrive folder with cloud-only files as a folder row | "N cloud-only files not downloaded ..." as a warning; no download starts |
-| 2.18 | A still followed by a video in a folder row | no still frame lingers into the video |
-| 2.20 | The operator's OTR scene: replace the Directory Sorter script with a folder row on the render folder, default options | the same order as the script gave (date modified, ascending); a new render joins in about 3 s; the script is no longer needed |
-| 2.21 | A render held open for writing for a whole session (a stuck render process), then an OBS restart | the other renders play and the list resumes where it was; the held file joins once released |
-| 2.22 | Start OBS while a 300 MB render is being copied into the watched folder (with Defender scanning it) | the admitted renders play within about 3 s; the new one joins when its copy and the scan finish (2.14 checks the plugin's side) |
+| 2.1 | Open Properties of a source whose list has a file, a folder and a missing file; press Esc without changing anything; then choose an item, remove it from the folder, press Play Selected File | the Status block under the playlist shows one row per line (`1: file`, `2: folder - N files`, `3: file - could not be played` once it failed), in the error color when a row failed; Esc closes Properties without asking to save; after Play Selected File the block shows the "list changed" notice in the warning color, and Refresh Filename clears it | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.12 | Close OBS while a folder item plays; start it again | the same folder item resumes, not the folder's first item | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.13 | OBS hotkeys for Play/Pause, Restart, Stop, Next and Previous on a folder row; Next then Play/Pause at once | each acts as its button does; the load and the pause both happen; Stop never advances | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.15 | A watched folder on a removable drive: unplug it, plug it back | "the folder went away" with the last list kept; the row recovers when the drive is back | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.16 | A watched folder on another machine's share; stall the share (pull its network) during a scan, then remove the source | the row shows the error and keeps its list; removing the source returns at once (otherwise record a residual risk); on a share without change notifications the log says `rescan-only` and the 10 s check still finds a new render | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.17 | A OneDrive folder with cloud-only files as a folder row | "N cloud-only files not downloaded ..." as a warning; no download starts | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.18 | A still followed by a video in a folder row | no still frame lingers into the video | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.20 | The operator's OTR scene: replace the Directory Sorter script with a folder row on the render folder, default options | the same order as the script gave (date modified, ascending); a new render joins in about 3 s; the script is no longer needed | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.21 | A render held open for writing for a whole session (a stuck render process), then an OBS restart | the other renders play and the list resumes where it was; the held file joins once released | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.22 | Start OBS while a 300 MB render is being copied into the watched folder (with Defender scanning it) | the admitted renders play within about 3 s; the new one joins when its copy and the scan finish (2.14 checks the plugin's side) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 
 ## Known residual risks
 
@@ -194,8 +196,11 @@ Setup as Phase 1, with the Phase 2 build. Items the runtime harness covers are n
   media time stays 0 and that has no audio would be skipped after its 15 s window; not observed, as no such stream
   was at hand.
 - The plugin DLL and installer are unsigned (R-PLAT-10, D-10).
-- Upstream defects R-UP-60 to R-UP-67, R-UP-69 to R-UP-72 and R-UP-76 to R-UP-78 are still
-  present in 0.2.0 and are fixed in Phase 2 step 1 (for example selecting an
-  empty folder row crashes OBS, R-UP-64). Until then, avoid empty folder rows,
-  and with shuffle on, do not edit the playing row's path in the same Apply as
-  other list changes (R-UP-76).
+- Upstream defects R-UP-60 to R-UP-67, R-UP-69 to R-UP-72 and R-UP-76 to R-UP-78 were present in 0.2.0; 0.3.0
+  fixes them (Phase 2 steps 1 to 6).
+- The version was bumped to 0.3.0 (operator decision, 2026-10-25) before the manual checks above were run: Phase 1 items 1.2 to
+  1.20 and the installer part of 1.21, and Phase 2 items 2.1, 2.12, 2.13, 2.15 to 2.18 and 2.20 to 2.22. Until they
+  are, what only they cover is unverified, among it: Windows security and the Plugin Manager entry, the Properties
+  dialog as drawn, hotkeys, hardware decoding, a real OBS restart, a render held open across one, removable
+  drives, another machine's share and its stalls, OneDrive cloud-only files, still-to-video transitions, OBS started
+  during a large copy, the installer, and the operator's OTR scene without the Directory Sorter script.

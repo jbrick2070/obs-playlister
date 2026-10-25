@@ -12,9 +12,15 @@ folders that keep themselves up to date) and to add remote playlists; see
 
 ## Status
 
-Version 0.2.0 (Phase 1): the original plugin renamed, built against OBS 33 in
-the OBS 33 plugin layout, with four shuffle crash fixes and hardware decoding
-on by default. Watched folders come in Phase 2; remote playlists in Phase 3.
+Version 0.3.0 (Phase 2): folder rows follow their folders as files are added,
+renamed or deleted, and a file still being written joins once it is complete;
+folders can be sorted by date or name and shown in full, newest only or newest
+N; "Lock list at start" holds changes until the next Play (or "Apply waiting
+changes now"); Properties shows a
+status line per row; entries that cannot play are skipped; still images are
+held for a set time. The manual checks in OBS (TESTING.md) are still pending.
+Version 0.2.0 (Phase 1) was the original plugin renamed and built for OBS 33.
+Remote playlists come in Phase 3.
 
 ## Features (from Media Playlist Source)
 

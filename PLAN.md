@@ -1,7 +1,7 @@
 # obs-playlister -- Plan
 
-Status: 2026-10-24. Approved by the operator (decisions: REQUIREMENTS section 14).
-Phase 1 (0.2.0) is implemented; Phases 2-4 are not started.
+Status: 2026-10-25. Approved by the operator on 2026-10-24 (decisions: REQUIREMENTS section 14).
+Phase 1 (0.2.0) and Phase 2 (0.3.0) are implemented; the manual checks of both phases (TESTING.md) are pending; Phases 3-4 are not started.
 Revision: four-round panel review folded in (kibitz-runs/2026-10-24-obs-playlister-plan/).
 Companion to REQUIREMENTS.md; requirement IDs (R-...) and decisions (D-...)
 refer to that file. "src N" means src/media-playlist-source.c line N at f8d90bd.
@@ -314,7 +314,7 @@ Order matters: each step is releasable on its own.
    - The recommended producer contract (temp name then rename).
    As built, in parts: (1) `tests/obs/phase2-acceptance.lua`, run by `run-harness.ps1 -Otr <render folder>` on hard links to every render (the renders themselves are never touched), automates the render-folder modes and order, a new render, the producer contract, write-complete (a slow copy, a file held open), a case-only rename, A -> B -> C with shuffle and the lock, deleting the playing file, a sort change mid-play, a burst of 2,000 files, a folder moved away and back, a folder the user may no longer read, and a UNC path (this machine's admin share). It found the share reporting an overflow as `ERROR_MORE_DATA` (fixed, R-DIR-3, with a ctest case; a run of overflows now falls back to rescan-only) and rule (5) taking a folder the user may not read for a file (fixed: it asks for the attributes, R-LIST-1). The items that need the operator at the PC are TESTING.md 2.12 on. (2) Two of those automated as well: a first listing while a render is still being copied (2.14, the plugin's side of OBS starting during a copy) and no startup judging while a source is hidden, with Close file when inactive too (2.19); writing the paused case found Play then Pause at once from stopped losing the pause (fixed, R-UP-79, with a harness check).
 
-Acceptance: `ctest` covers every Phase 2 core module, the locale keys and the shuffler; all TESTING.md Phase 1 and 2 items pass; the Python script is no longer needed for the OTR scene.
+Acceptance: `ctest` covers every Phase 2 core module, the locale keys and the shuffler; all TESTING.md Phase 1 and 2 items pass; the Python script is no longer needed for the OTR scene. (0.3.0 was bumped before the manual items ran, by the operator's decision; see section 7.)
 
 ### Phase 3 -- remote sources, in three increments
 
@@ -351,7 +351,7 @@ Nothing is built. The only commitment is R-VJ-2: everything that touches the chi
 
 ## 7. Order of work
 
-Phase 1 is one commit series on `master` (personal fork, no PR flow). Phases 2 and 3 each start with a REQUIREMENTS.md check (R-STD-6) and end with a version bump (0.3.0 after Phase 2; 0.4.0, 0.5.0, 0.6.0 after 3a, 3b, 3c). Nothing in Phase 2 starts until the Phase 1 acceptance list is green on OBS 33.0.0. (Waived by the operator on 2026-10-24: Phase 2 started with only TESTING.md 1.1 and the packaging checks done; the remaining Phase 1 items run on Phase 2 builds.) Decisions are needed at the first phase that depends on them (REQUIREMENTS section 14).
+Phase 1 is one commit series on `master` (personal fork, no PR flow). Phases 2 and 3 each start with a REQUIREMENTS.md check (R-STD-6) and end with a version bump (0.3.0 after Phase 2; 0.4.0, 0.5.0, 0.6.0 after 3a, 3b, 3c). Nothing in Phase 2 starts until the Phase 1 acceptance list is green on OBS 33.0.0. (Waived by the operator on 2026-10-24: Phase 2 started with only TESTING.md 1.1 and the packaging checks done; the remaining Phase 1 items run on Phase 2 builds.) (Operator decision on 2026-10-25: 0.3.0 was bumped with the Phase 2 manual checks and the remaining Phase 1 items still to run; TESTING.md marks them pending.) Decisions are needed at the first phase that depends on them (REQUIREMENTS section 14).
 
 ## 8. Verify-at-build checklist
 
