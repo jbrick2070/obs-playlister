@@ -58,6 +58,8 @@ target_sources(
     src/core/keys.c
     src/core/load-tracker.h
     src/core/load-tracker.c
+    src/core/merge.h
+    src/core/merge.c
     src/core/modes.h
     src/core/modes.c
     src/core/natural.h

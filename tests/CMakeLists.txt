@@ -53,6 +53,8 @@ obs_playlister_add_test(test-filter test-filter.c "${_core}/filter.c")
 obs_playlister_add_test(test-sort test-sort.c "${_core}/sort.c" "${_core}/natural.c" "${_core}/entry-list.c")
 obs_playlister_add_test(test-modes test-modes.c "${_core}/modes.c" "${_core}/sort.c" "${_core}/natural.c")
 obs_playlister_add_test(test-keys test-keys.c "${_core}/keys.c" "${_core}/sort.c" "${_core}/natural.c")
+# What a row does with a new snapshot while an item plays: delete, eviction and renames (R-DIR-8)
+obs_playlister_add_test(test-merge test-merge.c "${_core}/merge.c" "${_core}/entry-list.c")
 
 # Every locale key used in src/ is in en-US.ini (R-TST-1); the second test proves the check fails on a missing key
 add_test(
