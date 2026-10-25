@@ -11,7 +11,13 @@ ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure --no-tests=erro
 `tests/obs/run-harness.ps1` runs `tests/obs/playlister-harness.lua` inside a portable OBS 33 and drives one
 OBS Playlister source through: play, auto-advance at the end of a file, next and previous, stop (no advance),
 play after stop, pause, seek, restart, a speed change, hide and show (stop/restart and stop/play-next), end of
-the list with loop off, wrap-around with loop on, next then pause in a row, and removal. It needs a portable
+the list with loop off, wrap-around with loop on, next then pause in a row, Properties (the Select File list,
+Refresh Filename, Play Selected File) and save, and removal; then a second source whose saved current row is an
+empty folder: it must move on to the next row, next and wrap must pass over the empty row, next with shuffle on
+and loop off must leave the last row, removing the playing row while turning shuffle off must fall back past the
+empty row, a row with an empty path added above the playing row must neither move nor restart it, and editing the
+playing row's path must play the new file. The runner fails the run if the empty folder is ever loaded as a file.
+It needs a portable
 OBS 33 (with `portable_mode.txt`) and three local media files of different durations, and exits with 0 only
 when every check passed.
 
@@ -22,6 +28,7 @@ when every check passed.
 | Date | OBS | Build | Result |
 |------|-----|-------|--------|
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 1.2 | 23 passed, 0 failed, no memory leaks |
+| 2026-10-24 | 33.0.0 portable | Phase 2 step 1.3 | 37 passed, 0 failed, no memory leaks. Mutation checks: with upstream's `actual_media` test put back into `play_media_at_index`, 5 checks fail; with upstream's settings-array index in `update` (R-UP-77), 3 fail |
 
 ## Manual checks
 
@@ -65,8 +72,8 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 ## Known residual risks
 
 - The plugin DLL and installer are unsigned (R-PLAT-10, D-10).
-- Upstream defects R-UP-60 to R-UP-67, R-UP-69 to R-UP-72 and R-UP-76 are still
-  present in 0.2.0 and are fixed in Phase 2 step 1 (for example an empty folder
-  row can deadlock next/previous, R-UP-61). Until then, avoid empty folder rows,
+- Upstream defects R-UP-60 to R-UP-67, R-UP-69 to R-UP-72 and R-UP-76 to R-UP-78 are still
+  present in 0.2.0 and are fixed in Phase 2 step 1 (for example selecting an
+  empty folder row crashes OBS, R-UP-64). Until then, avoid empty folder rows,
   and with shuffle on, do not edit the playing row's path in the same Apply as
   other list changes (R-UP-76).

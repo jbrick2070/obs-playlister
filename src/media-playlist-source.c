@@ -82,7 +82,6 @@ static void update_current_filename_property(struct media_playlist_source *mps, 
 static obs_properties_t *mps_properties(void *data);
 static void mps_update(void *data, obs_data_t *settings);
 static void mps_save(void *data, obs_data_t *settings);
-static void mps_load(void *data, obs_data_t *settings);
 static void missing_file_callback(void *src, const char *new_path, void *data);
 static obs_missing_files_t *mps_missingfiles(void *data);
 
@@ -99,7 +98,6 @@ struct obs_source_info media_playlist_source_info = {
 	.destroy = mps_destroy,
 	.update = mps_update,
 	.save = mps_save,
-	//.load = mps_load,
 	.activate = mps_activate,
 	.deactivate = mps_deactivate,
 	.video_render = mps_video_render,
@@ -274,6 +272,7 @@ static bool valid_extension(const char *ext)
 	return valid;
 }
 
+/* The caller holds the list lock */
 static void update_current_filename_setting(struct media_playlist_source *mps, obs_data_t *data)
 {
 	struct dstr long_desc = {0};
@@ -407,11 +406,9 @@ static void play_media_at_index(void *data, size_t index, bool play_last_folder_
 		}
 		return;
 	}
+	/* index is a playable row, so the loads below set actual_media. Upstream tested actual_media here, before
+	 * anything set it: a stale or cleared pointer then decided between loading and clearing. */
 	set_current_media_index(mps, index);
-	if (!mps->actual_media) {
-		clear_media_source(mps);
-		return;
-	}
 
 	if (mps->current_media->is_folder) {
 		// when Previous Item is clicked to go back to a folder
@@ -453,14 +450,10 @@ static void set_media_state(void *data, enum obs_media_state state)
 static enum obs_media_state mps_get_state(void *data)
 {
 	struct media_playlist_source *mps = data;
-	enum obs_media_state media_state;
-	if (get_total_file_count(mps) > 0) {
-		media_state = obs_source_media_get_state(mps->current_media_source);
-	} else {
-		media_state = OBS_MEDIA_STATE_NONE;
-	}
-	UNUSED_PARAMETER(mps);
-	return media_state;
+	pthread_mutex_lock(&mps->mutex);
+	bool has_files = get_total_file_count(mps) > 0;
+	pthread_mutex_unlock(&mps->mutex);
+	return has_files ? obs_source_media_get_state(mps->current_media_source) : OBS_MEDIA_STATE_NONE;
 }
 
 /* Called from video_tick with no lock held; the parent's media_ended signal is emitted outside the lock */
@@ -525,10 +518,13 @@ static bool play_selected_clicked(obs_properties_t *props, obs_property_t *prope
 
 		strlist_free(indexes);
 	}
-	obs_data_release(settings);
 	/*update_current_filename_property(
 		mps, obs_properties_get(props, S_CURRENT_FILE_NAME));*/
+	pthread_mutex_lock(&mps->mutex);
 	update_current_filename_setting(mps, settings);
+	pthread_mutex_unlock(&mps->mutex);
+	/* released after its last use (R-UP-71) */
+	obs_data_release(settings);
 	//obs_source_update_properties(mps->source);
 
 	signal_handler_signal(sh, "media_next", NULL);
@@ -541,7 +537,9 @@ static bool refresh_filename_clicked(obs_properties_t *props, obs_property_t *pr
 	UNUSED_PARAMETER(property);
 	struct media_playlist_source *mps = data;
 	obs_data_t *settings = obs_source_get_settings(mps->source);
+	pthread_mutex_lock(&mps->mutex);
 	update_current_filename_setting(mps, settings);
+	pthread_mutex_unlock(&mps->mutex);
 	obs_source_update_properties(mps->source);
 	obs_data_release(settings);
 	return true;
@@ -928,6 +926,15 @@ static void *mps_create(obs_data_t *settings, obs_source_t *source)
 
 	shuffler_init(&mps->shuffler);
 
+	/* before any callback that takes them is registered; both hold a valid value before either init, because the
+	 * error path destroys both */
+	pthread_mutex_init_value(&mps->mutex);
+	pthread_mutex_init_value(&mps->audio_mutex);
+	if (pthread_mutex_init(&mps->mutex, NULL) != 0)
+		goto error;
+	if (pthread_mutex_init(&mps->audio_mutex, NULL) != 0)
+		goto error;
+
 	/* Internal media source */
 	obs_data_t *media_source_data = obs_data_create();
 	obs_data_set_bool(media_source_data, "log_changes", false);
@@ -958,14 +965,6 @@ static void *mps_create(obs_data_t *settings, obs_source_t *source)
 	proc_handler_t *ph = obs_source_get_proc_handler(source);
 	proc_handler_add(ph, "void select_index(int media_index, int folder_item_index)", select_index_proc, mps);
 
-	pthread_mutex_init_value(&mps->mutex);
-	if (pthread_mutex_init(&mps->mutex, NULL) != 0)
-		goto error;
-
-	pthread_mutex_init_value(&mps->audio_mutex);
-	if (pthread_mutex_init(&mps->audio_mutex, NULL) != 0)
-		goto error;
-
 	/* before the first update, which queues the first load */
 	if (!pl_player_start(&mps->player, mps->current_media_source))
 		goto error;
@@ -982,7 +981,11 @@ error:
 static void mps_video_render(void *data, gs_effect_t *effect)
 {
 	struct media_playlist_source *mps = data;
-	if (mps->actual_media) {
+	/* only the check is locked; rendering the child must not hold the list lock */
+	pthread_mutex_lock(&mps->mutex);
+	bool has_media = mps->actual_media != NULL;
+	pthread_mutex_unlock(&mps->mutex);
+	if (has_media) {
 		obs_source_video_render(mps->current_media_source);
 	} else {
 		obs_source_video_render(NULL);
@@ -1187,6 +1190,7 @@ static void add_media_to_selection(obs_property_t *list, struct media_file_data 
 	dstr_free(&key);
 }
 
+/* The caller holds the list lock (no caller today; upstream's calls are commented out) */
 static void update_current_filename_property(struct media_playlist_source *mps, obs_property_t *p)
 {
 	struct dstr long_desc = {0};
@@ -1209,8 +1213,6 @@ static obs_properties_t *mps_properties(void *data)
 {
 	obs_properties_t *props = obs_properties_create();
 	struct media_playlist_source *mps = data;
-	obs_data_t *settings = obs_source_get_settings(mps->source);
-	obs_data_array_t *array = obs_data_get_array(settings, S_PLAYLIST);
 	struct dstr filter = {0};
 	struct dstr exts = {0};
 	struct dstr path = {0};
@@ -1277,9 +1279,11 @@ static obs_properties_t *mps_properties(void *data)
 	p = obs_properties_add_list(props, S_SELECT_FILE, T_SELECT_FILE, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(p, T_NO_FILE_SELECTED, "0");
 	if (mps) {
+		pthread_mutex_lock(&mps->mutex);
 		for (size_t i = 0; i < mps->files.num; i++) {
 			add_media_to_selection(p, &mps->files.array[i]);
 		}
+		pthread_mutex_unlock(&mps->mutex);
 	}
 
 	obs_properties_add_button2(props, "play_selected", "Play Selected File", play_selected_clicked, mps);
@@ -1288,9 +1292,6 @@ static obs_properties_t *mps_properties(void *data)
 	obs_property_int_set_suffix(p, "%");
 	p = obs_properties_add_text(props, "", T_SPEED_WARNING, OBS_TEXT_INFO);
 	obs_property_text_set_info_type(p, OBS_TEXT_INFO_WARNING);
-
-	obs_data_array_release(array);
-	obs_data_release(settings);
 
 	return props;
 }
@@ -1372,11 +1373,11 @@ static void mps_update(void *data, obs_data_t *settings)
 	size_t count;
 	bool shuffle = false;
 	bool shuffle_changed = false;
+	bool loop = false;
 	enum visibility_behavior visibility_behavior = mps->visibility_behavior;
 	bool visibility_behavior_changed = false;
 	bool item_edited = false;
 	bool restart_on_activate = true;
-	const char *old_media_path = NULL;
 	long long new_speed;
 	//const char *mode;
 
@@ -1390,11 +1391,9 @@ static void mps_update(void *data, obs_data_t *settings)
 		visibility_behavior_changed = true;
 	}
 	mps->restart_behavior = obs_data_get_int(settings, S_RESTART_BEHAVIOR);
+	/* shuffle and loop are list state and are applied under the list lock below */
 	shuffle = obs_data_get_bool(settings, S_SHUFFLE);
-	shuffle_changed = mps->shuffle != shuffle;
-	mps->shuffle = shuffle;
-	mps->loop = obs_data_get_bool(settings, S_LOOP);
-	shuffler_set_loop(&mps->shuffler, mps->loop);
+	loop = obs_data_get_bool(settings, S_LOOP);
 	new_speed = obs_data_get_int(settings, S_SPEED);
 	mps->speed = new_speed;
 
@@ -1413,7 +1412,8 @@ static void mps_update(void *data, obs_data_t *settings)
 		.speed_percent = mps->speed,
 	};
 	pl_player_set_child_settings(&mps->player, &child_settings);
-	/* the child's state is only read here; our own state is set when requests are made */
+	/* the child's state is only read here; our own state is set when requests are made. This calls our own
+	 * get_state, which takes the list lock, so it must stay before the lock below. */
 	enum obs_media_state child_state = obs_source_media_get_state(mps->source);
 	if (visibility_behavior_changed && !obs_source_active(mps->source) &&
 	    (child_state == OBS_MEDIA_STATE_PLAYING || child_state == OBS_MEDIA_STATE_PAUSED)) {
@@ -1423,44 +1423,47 @@ static void mps_update(void *data, obs_data_t *settings)
 	array = obs_data_get_array(settings, S_PLAYLIST);
 	count = obs_data_array_count(array);
 
-	if (!mps->first_update && mps->current_media) {
-		old_media_path = mps->current_media->path;
+	/* The new list, folder listings included, is built before the lock, so nothing waits on disk I/O through it */
+	for (size_t i = 0; i < count; i++) {
+		obs_data_t *item = obs_data_array_item(array, i);
+		const char *path = obs_data_get_string(item, "value");
+
+		if (path && *path)
+			add_file(&new_files.da, path, obs_data_get_string(item, S_ID));
+		obs_data_release(item);
 	}
+	set_parents(&new_files.da);
+
+	/* R-UP-44, R-THR-1: the list, the current-item pointers and the shuffler change together under the list lock,
+	 * and the old list is freed only after every pointer has moved to the new one */
+	pthread_mutex_lock(&mps->mutex);
+	shuffle_changed = mps->shuffle != shuffle;
+	mps->shuffle = shuffle;
+	mps->loop = loop;
+	shuffler_set_loop(&mps->shuffler, loop);
 	if (mps->first_update) {
 		mps->current_media_filename = bstrdup(obs_data_get_string(settings, S_CURRENT_FOLDER_ITEM_FILENAME));
 		mps->current_media_index = obs_data_get_int(settings, S_CURRENT_MEDIA_INDEX);
 	}
 
 	bool found = false;
-	pthread_mutex_lock(&mps->mutex);
-	for (size_t i = 0; i < count; i++) {
-		obs_data_t *item = obs_data_array_item(array, i);
-		const char *path = obs_data_get_string(item, "value");
-		const char *id = obs_data_get_string(item, S_ID);
-
-		if (!path || !*path) {
-			obs_data_release(item);
-			continue;
+	if (!mps->first_update && mps->current_media) {
+		// check for current_media->id only if media isn't changed, allowing scripts to set the index.
+		/* The index is the row's position in the new list, which leaves out rows with an empty path (R-UP-77) */
+		for (size_t i = 0; i < new_files.num; i++) {
+			if (strcmp(new_files.array[i].id, mps->current_media->id) == 0) {
+				mps->current_media_index = i;
+				found = true;
+				item_edited = strcmp(mps->current_media->path, new_files.array[i].path) != 0;
+			}
 		}
-
-		if (!mps->first_update && mps->current_media && strcmp(id, mps->current_media->id) == 0) {
-			// check for current_media->id only if media isn't changed, allowing scripts to set the index.
-			mps->current_media_index = i;
-			found = true;
-			if (old_media_path)
-				item_edited = strcmp(old_media_path, path) != 0;
-		}
-		add_file(&new_files.da, path, id);
-		obs_data_release(item);
 	}
-	set_parents(&new_files.da);
 
-	if (mps->shuffle) {
-		if (shuffle_changed) {
-			shuffler_reshuffle(&mps->shuffler);
-		}
-		shuffler_update_files(&mps->shuffler, &new_files.da);
-	} else if (shuffle_changed) {
+	/* R-THR-4: the shuffler follows every list change, shuffle on or off, while the old items are still alive */
+	if (mps->shuffle && shuffle_changed)
+		shuffler_reshuffle(&mps->shuffler);
+	shuffler_update_files(&mps->shuffler, &new_files.da);
+	if (!mps->shuffle && shuffle_changed) {
 		bfree(mps->current_media_filename);
 		if (mps->actual_media && mps->actual_media->parent_id)
 			mps->current_media_filename = bstrdup(mps->actual_media->filename);
@@ -1469,9 +1472,8 @@ static void mps_update(void *data, obs_data_t *settings)
 	}
 	old_files.da = mps->files.da;
 	mps->files.da = new_files.da;
-	pthread_mutex_unlock(&mps->mutex);
-
-	free_files(&old_files.da);
+	/* points into the old list until a branch below sets it again; none may leave it dangling */
+	mps->actual_media = NULL;
 
 	if (found || mps->first_update) {
 		set_current_media_index(mps, mps->current_media_index);
@@ -1479,6 +1481,7 @@ static void mps_update(void *data, obs_data_t *settings)
 		set_current_media_index(mps, 0);
 	}
 
+	bool handled = false;
 	if (get_total_file_count(mps)) {
 		if (item_edited) {
 			mps->current_folder_item_index = 0;
@@ -1497,7 +1500,10 @@ static void mps_update(void *data, obs_data_t *settings)
 			}
 
 			if (mps->current_media->folder_items.num == 0) {
-				mps_playlist_next(mps);
+				/* the current folder row is empty now: move on, or clear when nothing follows */
+				if (!playlist_next_locked(mps))
+					clear_media_source(mps);
+				handled = true;
 			} else {
 				set_current_folder_item_index(mps, mps->current_folder_item_index);
 				if (mps->shuffle)
@@ -1509,7 +1515,7 @@ static void mps_update(void *data, obs_data_t *settings)
 				shuffler_select(&mps->shuffler, mps->actual_media);
 		}
 
-		if (mps->first_update || !found || item_edited) {
+		if (!handled && (mps->first_update || !found || item_edited)) {
 			/* Clear if last file is a folder and is empty */
 			if (mps->current_media->is_folder && mps->current_media->folder_items.num == 0) {
 				clear_media_source(mps);
@@ -1526,6 +1532,9 @@ static void mps_update(void *data, obs_data_t *settings)
 
 	/* So Current File Name is updated */
 	update_current_filename_setting(mps, settings);
+	pthread_mutex_unlock(&mps->mutex);
+
+	free_files(&old_files.da);
 	/* ------------------------- */
 
 	//if (mps->files.num) {
@@ -1545,17 +1554,11 @@ static void mps_update(void *data, obs_data_t *settings)
 static void mps_save(void *data, obs_data_t *settings)
 {
 	struct media_playlist_source *mps = data;
+	pthread_mutex_lock(&mps->mutex);
 	obs_data_set_int(settings, S_CURRENT_MEDIA_INDEX, mps->current_media_index);
 	obs_data_set_string(settings, S_CURRENT_FOLDER_ITEM_FILENAME, mps->current_media_filename);
 	update_current_filename_setting(mps, settings);
-}
-
-static void mps_load(void *data, obs_data_t *settings)
-{
-	struct media_playlist_source *mps = data;
-	mps->current_media_index = obs_data_get_int(settings, S_CURRENT_MEDIA_INDEX);
-	if (mps->files.num)
-		obs_log(LOG_DEBUG, "%s", mps->files.array[mps->current_media_index].id);
+	pthread_mutex_unlock(&mps->mutex);
 }
 
 static void missing_file_callback(void *src, const char *new_path, void *data)

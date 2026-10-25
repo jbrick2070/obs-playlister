@@ -4,8 +4,9 @@
 #
 # Runs playlister-harness.lua in a portable OBS 33 (TESTING.md, "Runtime harness"). It builds and installs the
 # current build (build_x64, RelWithDebInfo) into <ObsRoot>\plugins\obs-playlister, registers the harness in the
-# scene collection for this run only, starts OBS, waits for "HARNESS DONE", closes OBS, restores the scene
-# collection and prints the results with the plugin's log lines. Exit code 0 only when every check passed.
+# scene collection for this run only, creates an empty folder for the empty-folder checks, starts OBS, waits for
+# "HARNESS DONE", closes OBS, restores the scene collection, removes the folder and prints the results with the
+# plugin's log lines. Exit code 0 only when every check passed.
 #
 # The three files need different durations, and the second one must be longer than about 35 s (one step seeks to
 # 30 s). -SceneCollection must name the collection OBS opens, or the harness never loads.
@@ -47,7 +48,11 @@ finally {
 
 Copy-Item $collection $backup
 $failed = $true
+$emptyFolder = $null
 try {
+	$emptyFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-empty-' + [guid]::NewGuid().ToString('N'))
+	New-Item -ItemType Directory $emptyFolder | Out-Null
+	$env:PLAYLISTER_HARNESS_EMPTY_FOLDER = $emptyFolder -replace '\\', '/'
 	$script = (Join-Path $PSScriptRoot 'playlister-harness.lua') -replace '\\', '/'
 	$json = Get-Content $collection -Raw | ConvertFrom-Json
 	$json.modules.'scripts-tool' = @([pscustomobject]@{ path = $script; settings = [pscustomobject]@{} })
@@ -81,12 +86,21 @@ try {
 		ForEach-Object { '  ' + $_.Line.Trim() }
 	$passes = @(Select-String -Path $log.FullName -Pattern 'HARNESS PASS').Count
 	$fails = @(Select-String -Path $log.FullName -Pattern 'HARNESS FAIL').Count
+	# the player logs every load; an empty folder row is never loaded, so a load of it means it was taken for a file
+	$folderLoads = @(Select-String -Path $log.FullName -Pattern 'playing .*playlister-harness-empty-').Count
+	if ($folderLoads -gt 0) { "FAIL the empty folder row was loaded as a file ($folderLoads loads)" }
 	"summary: $passes passed, $fails failed"
-	$failed = (-not $done) -or $fails -gt 0
+	$failed = (-not $done) -or $fails -gt 0 -or $folderLoads -gt 0
 }
 finally {
 	Remove-Item Env:\PLAYLISTER_HARNESS_FILES -ErrorAction SilentlyContinue
+	Remove-Item Env:\PLAYLISTER_HARNESS_EMPTY_FOLDER -ErrorAction SilentlyContinue
 	Copy-Item $backup $collection -Force
 	Remove-Item $backup -Force
+	# created by this run and still empty; Directory.Delete refuses a folder that is not empty, so anything put into
+	# it is kept and reported, never deleted
+	if ($emptyFolder -and (Test-Path $emptyFolder)) {
+		try { [IO.Directory]::Delete($emptyFolder) } catch { "warning: could not remove ${emptyFolder}: $_" }
+	}
 }
 if ($failed) { exit 1 }
