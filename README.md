@@ -4,11 +4,25 @@ A playlist source for OBS Studio 33 and later. It plays a list of local files,
 folders and URLs through OBS's own Media Source, and editing the list does not
 restart the clip that is playing.
 
-OBS Playlister is a fork of [Media Playlist Source](https://github.com/CodeYan01/media-playlist-source)
-by Ian Rodriguez, and it installs next to it without either one replacing the
-other. The plan is for it to also replace the Directory Sorter script (watched
-folders that keep themselves up to date) and to add remote playlists; see
-[PLAN.md](PLAN.md) and [REQUIREMENTS.md](REQUIREMENTS.md).
+**If you use Media Playlist Source or the Directory Sorter for OBS script (both
+by Ian Rodriguez, CodeYan01 on GitHub), this is the one tool that does both
+jobs.** OBS Playlister is a fork of
+[Media Playlist Source](https://github.com/CodeYan01/media-playlist-source), and
+its watched folders take over what the
+[Directory Sorter for OBS](https://github.com/CodeYan01/directory_sorter_for_obs)
+script did for a playlist: sorted folders that update themselves (by date
+modified, oldest first, by default), with no Stop needed. That part is written
+from scratch, and folders play in OBS Playlister itself (the script could also
+fill a VLC Video Source or an Image Slideshow). OBS Playlister is its
+own source type and installs next to Media Playlist Source without either one
+replacing the other; existing Media Playlist Source sources are left as they
+are. Remote playlists come next; see [PLAN.md](PLAN.md) and
+[REQUIREMENTS.md](REQUIREMENTS.md).
+
+**Bonus: no Python runtime needed.** The Directory Sorter script runs in OBS's
+Python scripting, which needs a matching Python installed and set in
+Tools > Scripts > Python Settings. OBS Playlister is a native plugin, so there
+is nothing else to install or configure.
 
 ## Status
 
@@ -16,9 +30,9 @@ Version 0.3.0 (Phase 2): folder rows follow their folders as files are added,
 renamed or deleted, and a file still being written joins once it is complete;
 folders can be sorted by date or name and shown in full, newest only or newest
 N; "Lock list at start" holds changes until the next Play (or "Apply waiting
-changes now"); Properties shows a
-status line per row; entries that cannot play are skipped; still images are
-held for a set time. The manual checks in OBS (TESTING.md) are still pending.
+changes now"); Properties shows a status line per row; entries that cannot play
+are skipped; still images are held for a set time. The manual checks in OBS
+(TESTING.md) are still pending.
 Version 0.2.0 (Phase 1) was the original plugin renamed and built for OBS 33.
 Remote playlists come in Phase 3.
 
@@ -62,8 +76,10 @@ In OBS, add a source of type **OBS Playlister**.
   when a video ends, because that can crash OBS while the window is open.
   Reopen the window or press Refresh Filename.
 - No audio track or subtitle selection.
-- Folder contents refresh when the settings are saved again (automatic
-  watching arrives in Phase 2).
+- Folders play in this source only. The Directory Sorter script could also
+  fill a VLC Video Source or an Image Slideshow; OBS Playlister does not.
+- Windows will not rename or delete a file while it plays (OBS holds it open);
+  do that after it has played.
 
 ## For developers
 
@@ -114,6 +130,9 @@ GPL-2.0-or-later (see [LICENSE](LICENSE)).
   https://github.com/CodeYan01/media-playlist-source.
 - The shuffler is based on VLC's playlist randomizer.
 - obs-playlister changes: Copyright (C) 2026 Jeffrey A. Brick.
-- The folder-watching feature planned for Phase 2 is written from scratch. It
-  does not use code from the Directory Sorter for OBS script, which has no
-  license.
+- The folder watching (Phase 2, in 0.3.0) is written from scratch. It takes
+  over the job of the Directory Sorter for OBS script by Ian Rodriguez
+  (https://github.com/CodeYan01/directory_sorter_for_obs) but uses none of its
+  code, as that script has no license.
+- The build system and CI come from the OBS Plugin Template,
+  https://github.com/obsproject/obs-plugintemplate (see PLUGIN-TEMPLATE.md).
