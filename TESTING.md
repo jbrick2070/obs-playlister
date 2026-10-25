@@ -32,7 +32,10 @@ folder and be passed over (the runner fails the run if a folder path is ever loa
 without a uuid must be given one and play when chosen by it. Two more sources check R-BEH-5: a missing file and a
 file that is no media are skipped for the file after them, and a list of only those stops instead of cycling (Play
 tries them once more and stops again); a corrupt still fails by its 5 s startup window and the list stops; the runner
-fails the run unless the corrupt file was loaded exactly 3 times and the corrupt still once. It needs a portable
+fails the run unless the corrupt file was loaded exactly 3 times and the corrupt still once. A last source holds a
+valid still the runner makes (R-DIR-9) for 4 s: playing with the hold as its duration and on screen, a seek inside it
+ignored, a pause that freezes the hold, a stop after which nothing moves on, Play that holds it again from the start,
+and then the next row. It needs a portable
 OBS 33 (with `portable_mode.txt`) and three local media files of different durations, and exits with 0 only
 when every check passed.
 
@@ -51,6 +54,7 @@ when every check passed.
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 5 (part 3) | 79 passed, 0 failed, no memory leaks, three runs in a row. Mutation check: with the pending check disabled, Next loads the file still being rewritten (1 check fails) |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 1) | 84 passed, 0 failed, no memory leaks, three runs in a row (before the QA fixes; see the next row); the corrupt file loaded 3 times. Mutation check: with the failure marks ignored, the list of failing entries cycles (31 loads of the corrupt file) and 2 checks plus the runner's load guard fail |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 1), after QA | 86 passed, 0 failed, no memory leaks, three runs in a row; the corrupt file loaded exactly 3 times and the corrupt still once. Mutation check: without a still's end waiting for its startup, the corrupt still loads 50 times and the run fails |
+| 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 2) | 95 passed, 0 failed, no memory leaks, three runs in a row; the still held 4 s, paused and resumed, stayed stopped after a stop, and was held again after Play |
 
 ## OBS 33 child behavior (Phase 2 step 6 spike)
 

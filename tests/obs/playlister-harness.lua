@@ -23,6 +23,7 @@ local HARNESS_TEMP = (os.getenv("TEMP") or "."):gsub("\\", "/")
 local MISSING_FILE = HARNESS_TEMP .. "/playlister-harness-missing.mp4"
 local CORRUPT_FILE = HARNESS_TEMP .. "/playlister-harness-corrupt.mp4"
 local CORRUPT_STILL = HARNESS_TEMP .. "/playlister-harness-corrupt.jpg"
+local STILL = os.getenv("PLAYLISTER_HARNESS_STILL") -- a valid 320x180 jpg the runner makes
 local PLAYING, PAUSED, STOPPED, ENDED = 1, 4, 5, 6
 local src, item = nil, nil
 local D = {}
@@ -205,6 +206,9 @@ step("create", 1000, 1000, nil, function()
 	end
 	if not MEDIA_JUNCTION then
 		error("PLAYLISTER_HARNESS_MEDIA_JUNCTION must name a junction to the media folder")
+	end
+	if not STILL then
+		error("PLAYLISTER_HARNESS_STILL must name a valid jpg")
 	end
 	create_source("playlister-harness", function(settings)
 		set_playlist(settings, { { FILES[1], "row-1" }, { FILES[2], "row-2" }, { FILES[3], "row-3" } })
@@ -856,6 +860,61 @@ end)
 
 step("corrupt still failed", 7000, 7000, nil, function()
 	check("a corrupt still fails by its startup window and the list stops", st() == STOPPED, status())
+	remove_source()
+end)
+
+-- R-DIR-9: a still is held for the still duration (4 s here) with the source's own state, duration and time; a seek
+-- inside it is ignored, a pause freezes the hold, and then playback moves on
+step("source with a still", 1500, 1500, nil, function()
+	create_source("playlister-harness-still", function(settings)
+		set_playlist(settings, { { STILL, "still" }, { FILES[1], "f1" } })
+		obs.obs_data_set_int(settings, "still_duration_s", 4)
+		obs.obs_data_set_bool(settings, "loop", false)
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	check("source with a still created and shown", src ~= nil and item ~= nil)
+end)
+
+step("still held", 300, 10000, function() return st() == PLAYING and dur() == 4000 end, function()
+	check("a still is held: playing, its duration the hold, on screen", st() == PLAYING and dur() == 4000 and
+		obs.obs_source_get_width(src) == 320, status() .. " width=" .. obs.obs_source_get_width(src))
+	obs.obs_source_media_set_time(src, 3500)
+end)
+
+step("seek in a still", 300, 300, nil, function()
+	check("a seek inside a still is ignored", dur() == 4000 and tm() < 3000, status())
+	obs.obs_source_media_play_pause(src, true)
+end)
+
+step("still paused", 1000, 1000, nil, function()
+	check("a held still pauses", st() == PAUSED and dur() == 4000, status())
+	mark.still_paused_at = tm()
+end)
+
+step("still stays paused", 1000, 1000, nil, function()
+	check("a paused hold does not run", st() == PAUSED and tm() == mark.still_paused_at,
+		status() .. " paused at " .. mark.still_paused_at)
+	obs.obs_source_media_play_pause(src, false)
+end)
+
+step("still resumed", 500, 500, nil, function()
+	check("the hold runs again after unpause", st() == PLAYING and tm() > mark.still_paused_at, status())
+	obs.obs_source_media_stop(src)
+end)
+
+-- a stop ends the hold: nothing moves on by itself, however long; Play holds the still again from the start
+step("still stopped", 4500, 4500, nil, function()
+	check("a stopped still stays stopped: the hold ended, nothing moved on", st() == STOPPED, status())
+	obs.obs_source_media_play_pause(src, false)
+end)
+
+step("still played again", 300, 10000, function() return st() == PLAYING and dur() == 4000 end, function()
+	check("play after a stop holds the still again from the start", st() == PLAYING and dur() == 4000 and
+		tm() < 2000, status())
+end)
+
+step("hold over", 500, 10000, function() return dur() == D[1] and st() == PLAYING end, function()
+	check("after the hold, playback moves on to the next row", dur() == D[1] and st() == PLAYING, status())
 	remove_source()
 end)
 

@@ -47,6 +47,7 @@ struct pl_command {
 	enum pl_command_type type;
 	char *path;                     /* LOAD: owned, freed by pl_command_free */
 	bool is_url;                    /* LOAD */
+	bool still;                     /* LOAD: a still image, kept on screen after its end (R-DIR-9) */
 	long request;                   /* LOAD, STOP, CLEAR: request number, see load-tracker.h */
 	bool pause;                     /* PLAY_PAUSE */
 	int64_t time_ms;                /* SET_TIME */

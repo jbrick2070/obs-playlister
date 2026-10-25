@@ -123,4 +123,12 @@ struct media_playlist_source {
 	struct pl_startup startup; /* the startup of the load that applied last; video_tick only */
 	DARRAY(char *) failed;     /* entries that failed to play (failure_key), under the list lock */
 	bool all_failed;           /* nothing left that may play: auto-advance stopped until something changes */
+
+	/* R-DIR-9: the still being held, set by video_tick and read by the media callbacks */
+	volatile bool hold_active;
+	volatile long hold_elapsed_ms;
+	volatile long hold_duration_ms;
+	volatile long hold_epoch; /* the held load */
+	int64_t hold_last_ms;     /* video_tick only */
+	long still_duration_ms;   /* the still duration option */
 };

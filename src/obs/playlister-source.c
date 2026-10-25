@@ -46,6 +46,8 @@ static void cancel_resume(struct media_playlist_source *mps);
 static bool key_pending(const struct media_file_data *row, const char *key);
 static void retry_failed_on_request(struct media_playlist_source *mps);
 static bool nothing_playable(struct media_playlist_source *mps);
+static bool item_is_still(const struct media_file_data *item);
+static bool hold_shown(struct media_playlist_source *mps);
 
 static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index);
 
@@ -418,7 +420,8 @@ static void update_media_source(void *data, bool forced)
 	/* The player thread updates the child (R-THR-1). It writes the speed and the other child settings with the
 	 * path, and unloads first, so an unchanged path restarts too (upstream's should_restart). */
 	if (forced) {
-		pl_player_load(&mps->player, mps->actual_media->path, mps->actual_media->is_url);
+		pl_player_load(&mps->player, mps->actual_media->path, mps->actual_media->is_url,
+			       item_is_still(mps->actual_media));
 		mps->state = OBS_MEDIA_STATE_PLAYING;
 		/* any load decides what plays, so a wait for a folder row to settle is over (R-KEY-2), and a stop after
 		 * everything failed is lifted (R-BEH-5) */
@@ -637,6 +640,9 @@ static enum obs_media_state mps_get_state(void *data)
 		return OBS_MEDIA_STATE_NONE;
 	if (!loaded)
 		return OBS_MEDIA_STATE_STOPPED;
+	/* a held still is playing or paused by our own state (R-DIR-9) */
+	if (hold_shown(mps))
+		return mps->state == OBS_MEDIA_STATE_PAUSED ? OBS_MEDIA_STATE_PAUSED : OBS_MEDIA_STATE_PLAYING;
 	return obs_source_media_get_state(mps->current_media_source);
 }
 
@@ -772,17 +778,24 @@ static void free_files(struct darray *array)
 	da_free(files);
 }
 
+/* R-DIR-9: while a still is held the source reports the hold, not the child (which ended at once) */
 static int64_t mps_get_duration(void *data)
 {
 	struct media_playlist_source *mps = data;
 
-	return obs_source_media_get_duration(mps->current_media_source);
+	if (hold_shown(mps))
+		return os_atomic_load_long(&mps->hold_duration_ms);
+	/* a still's child reports ffmpeg's "no timestamp" as a large negative duration: no duration is 0 */
+	int64_t duration = obs_source_media_get_duration(mps->current_media_source);
+	return duration > 0 ? duration : 0;
 }
 
 static int64_t mps_get_time(void *data)
 {
 	struct media_playlist_source *mps = data;
 
+	if (hold_shown(mps))
+		return os_atomic_load_long(&mps->hold_elapsed_ms);
 	return obs_source_media_get_time(mps->current_media_source);
 }
 
@@ -790,6 +803,9 @@ static void mps_set_time(void *data, int64_t ms)
 {
 	struct media_playlist_source *mps = data;
 
+	/* nothing to seek in a still (R-DIR-9) */
+	if (hold_shown(mps))
+		return;
 	pl_player_set_time(&mps->player, ms);
 }
 
@@ -799,13 +815,24 @@ static bool state_stopped(enum obs_media_state state)
 }
 
 /* Stopped by our own state, set when a request is made, or by the child's, set when it ran: the child applies
- * queued actions a tick or more later, and reports PLAYING or PAUSED even for media it ignored */
-static bool playback_stopped(struct media_playlist_source *mps)
+ * queued actions a tick or more later, and reports PLAYING or PAUSED even for media it ignored. A held still goes by
+ * our own state alone, as the child ended at once (R-DIR-9). */
+static bool playback_stopped(struct media_playlist_source *mps, bool held)
 {
+	if (held)
+		return state_stopped(mps->state);
 	return state_stopped(mps->state) || state_stopped(obs_source_media_get_state(mps->current_media_source));
 }
 
-/* The current row is a file, or a folder whose current item exists */
+/* R-DIR-9: the hold is the source's playback while its load is the current one and the source is not stopped (the
+ * flag itself is cleared by the next tick) */
+static bool hold_shown(struct media_playlist_source *mps)
+{
+	return os_atomic_load_bool(&mps->hold_active) &&
+	       pl_player_load_eligible(&mps->player, os_atomic_load_long(&mps->hold_epoch)) &&
+	       !state_stopped(mps->state);
+}
+
 /* Whether the current item can be loaded. In a folder row an item being rewritten is passed for the next one that
  * may be loaded, from the row's start if none follows (R-DIR-4); the index moves to it. */
 static bool point_at_playable_item(struct media_playlist_source *mps)
@@ -886,10 +913,14 @@ static void mps_play_pause(void *data, bool pause)
 	/* Play while stopped, ended or empty is a new load of the current item, as OBS's own media controls do with
 	 * restart: the child ignores an unpause once stopped, and a new load may auto-advance again (R-BEH-6). A pause
 	 * then would only make the child report PAUSED for media that cannot resume, so it is ignored. */
-	bool stopped = playback_stopped(mps);
+	/* read once: the hold can start between two reads */
+	bool held = hold_shown(mps);
+	bool stopped = playback_stopped(mps, held);
 	if (!pause) {
 		if (!stopped) {
-			pl_player_play_pause(&mps->player, false);
+			/* the child of a held still has ended: only the hold resumes (R-DIR-9) */
+			if (!held)
+				pl_player_play_pause(&mps->player, false);
 			set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 		} else {
 			retry_failed_on_request(mps);
@@ -900,7 +931,8 @@ static void mps_play_pause(void *data, bool pause)
 			}
 		}
 	} else if (!stopped) {
-		pl_player_play_pause(&mps->player, true);
+		if (!held)
+			pl_player_play_pause(&mps->player, true);
 		set_media_state(mps, OBS_MEDIA_STATE_PAUSED);
 	}
 	pthread_mutex_unlock(&mps->mutex);
@@ -1926,9 +1958,65 @@ static void judge_startup(struct media_playlist_source *mps)
 		.ended = pl_player_load_ended(&mps->player, mps->startup.epoch),
 		.may_advance = mps->state == OBS_MEDIA_STATE_PLAYING && active,
 	};
-	if (pl_startup_evaluate(&mps->startup, &evidence, now_ms) == PL_STARTUP_FAILED)
+	enum pl_startup_verdict verdict = pl_startup_evaluate(&mps->startup, &evidence, now_ms);
+	if (verdict == PL_STARTUP_FAILED) {
 		/* a still fails only by its window, whether or not it ended */
 		skip_failed_load(mps, mps->startup.epoch, evidence.ended && !mps->startup.still);
+	} else if (verdict == PL_STARTUP_SUCCEEDED && mps->startup.still) {
+		/* R-DIR-9: the still is on screen; it is held for the still duration */
+		os_atomic_set_long(&mps->hold_epoch, mps->startup.epoch);
+		mps->hold_last_ms = now_ms;
+		os_atomic_set_long(&mps->hold_elapsed_ms, 0);
+		os_atomic_set_long(&mps->hold_duration_ms, mps->still_duration_ms);
+		os_atomic_set_bool(&mps->hold_active, true);
+	}
+}
+
+/* The held still's time is up: playback moves on as after an end, and at the end of the list the child is stopped,
+ * which takes the still off the screen as a media file's end does. With no lock held. */
+static void advance_after_hold(struct media_playlist_source *mps, long epoch)
+{
+	pthread_mutex_lock(&mps->mutex);
+	/* a stop, next or selection may have come since the hold ran out: then the advance is not ours to make */
+	if (!pl_player_load_eligible(&mps->player, epoch)) {
+		pthread_mutex_unlock(&mps->mutex);
+		return;
+	}
+	/* the child's end, kept waiting during the hold, belongs to this advance */
+	pl_load_tracker_withdraw(&mps->player.tracker);
+	bool moved = playlist_next_locked(mps);
+	if (!moved)
+		pl_player_stop(&mps->player);
+	pthread_mutex_unlock(&mps->mutex);
+	if (moved)
+		signal_media_next(mps);
+	else
+		mps_end_reached(mps);
+}
+
+/* R-DIR-9: the hold runs while the source plays; a pause freezes it (a hide does too under Pause/unpause), and a stop,
+ * clear, hide that stops, or any new load ends it */
+static void tend_still_hold(struct media_playlist_source *mps)
+{
+	if (!os_atomic_load_bool(&mps->hold_active))
+		return;
+	long epoch = os_atomic_load_long(&mps->hold_epoch);
+	if (!pl_player_load_eligible(&mps->player, epoch)) {
+		os_atomic_set_bool(&mps->hold_active, false);
+		return;
+	}
+	int64_t now_ms = (int64_t)(os_gettime_ns() / 1000000);
+	int64_t step = now_ms > mps->hold_last_ms ? now_ms - mps->hold_last_ms : 0;
+	mps->hold_last_ms = now_ms;
+	if (mps->state != OBS_MEDIA_STATE_PLAYING)
+		return;
+	long elapsed = os_atomic_load_long(&mps->hold_elapsed_ms) + (long)step;
+	long duration = os_atomic_load_long(&mps->hold_duration_ms);
+	os_atomic_set_long(&mps->hold_elapsed_ms, elapsed < duration ? elapsed : duration);
+	if (elapsed >= duration) {
+		os_atomic_set_bool(&mps->hold_active, false);
+		advance_after_hold(mps, epoch);
+	}
 }
 
 /* An end waits while the load it may belong to is not judged yet: the newest load before its startup began (its end
@@ -1937,6 +2025,9 @@ static void judge_startup(struct media_playlist_source *mps)
 static bool end_waits_for_startup(struct media_playlist_source *mps)
 {
 	if (os_atomic_load_long(&mps->player.tracker.load_epoch) != mps->startup.epoch)
+		return true;
+	/* a held still's end waits for the hold (R-DIR-9) */
+	if (os_atomic_load_bool(&mps->hold_active))
 		return true;
 	return mps->startup.epoch && !mps->startup.settled && mps->startup.still;
 }
@@ -1960,6 +2051,7 @@ static void mps_video_tick(void *data, float seconds)
 	}
 
 	judge_startup(mps);
+	tend_still_hold(mps);
 
 	/* Automatic advance is decided here, from the end the child recorded, and executed by the player thread, so
 	 * nothing recurses on the media thread and the graphics thread never waits on a load (R-THR-1). Next runs
@@ -2433,6 +2525,9 @@ static void mps_update(void *data, obs_data_t *settings)
 	loop = obs_data_get_bool(settings, S_LOOP);
 	new_speed = obs_data_get_int(settings, S_SPEED);
 	mps->speed = new_speed;
+	/* R-DIR-9, PLAN section 3.4: 1 to 3600 s; a hold in progress keeps the length it started with */
+	long long still_s = obs_data_get_int(settings, S_STILL_DURATION);
+	mps->still_duration_ms = (long)(still_s < 1 ? 1 : still_s > 3600 ? 3600 : still_s) * 1000;
 
 	/* Internal media source settings */
 	mps->use_hw_decoding = obs_data_get_bool(settings, S_FFMPEG_HW_DECODE);

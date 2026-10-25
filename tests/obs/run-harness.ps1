@@ -59,6 +59,7 @@ $failed = $true
 $emptyFolder = $null
 $mediaFolder = $null
 $mediaJunction = $null
+$stillFile = $null
 $mediaLinks = @()
 try {
 	$emptyFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-empty-' + [guid]::NewGuid().ToString('N'))
@@ -82,6 +83,16 @@ try {
 	$mediaJunction = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-linked-' + [guid]::NewGuid().ToString('N') + '.mp4')
 	New-Item -ItemType Junction -Path $mediaJunction -Target $mediaFolder | Out-Null
 	$env:PLAYLISTER_HARNESS_MEDIA_JUNCTION = $mediaJunction -replace '\\', '/'
+	# a small valid still image for the still hold (R-DIR-9)
+	Add-Type -AssemblyName System.Drawing
+	$stillFile = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-still-' + [guid]::NewGuid().ToString('N') + '.jpg')
+	$bitmap = New-Object System.Drawing.Bitmap 320, 180
+	$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+	$graphics.Clear([System.Drawing.Color]::SteelBlue)
+	$graphics.Dispose()
+	$bitmap.Save($stillFile, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+	$bitmap.Dispose()
+	$env:PLAYLISTER_HARNESS_STILL = $stillFile -replace '\\', '/'
 	# PowerShell names are case-insensitive: a $script here would overwrite the -Script parameter
 	$scriptPath = (Join-Path $PSScriptRoot $Script) -replace '\\', '/'
 	$json = Get-Content $collection -Raw | ConvertFrom-Json
@@ -139,6 +150,10 @@ finally {
 	Remove-Item Env:\PLAYLISTER_HARNESS_MEDIA_FOLDER -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_MISSING_FOLDER -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_MEDIA_JUNCTION -ErrorAction SilentlyContinue
+	Remove-Item Env:\PLAYLISTER_HARNESS_STILL -ErrorAction SilentlyContinue
+	if ($stillFile -and (Test-Path $stillFile)) {
+		try { [IO.File]::Delete($stillFile) } catch { "warning: could not remove ${stillFile}: $_" }
+	}
 	Copy-Item $backup $collection -Force
 	Remove-Item $backup -Force
 	# created by this run and still empty; Directory.Delete refuses a folder that is not empty, so anything put into

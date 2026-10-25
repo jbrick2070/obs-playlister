@@ -49,7 +49,7 @@ bool pl_player_start(struct pl_player *player, obs_source_t *child);
 void pl_player_shutdown(struct pl_player *player);
 
 /* Loads path into the child; loading the path the child already has restarts it, so this is also restart */
-void pl_player_load(struct pl_player *player, const char *path, bool is_url);
+void pl_player_load(struct pl_player *player, const char *path, bool is_url, bool still);
 void pl_player_play_pause(struct pl_player *player, bool pause);
 void pl_player_stop(struct pl_player *player);
 /* Empties the child's path and stops the child (never the playlist source itself) */

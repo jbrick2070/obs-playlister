@@ -32,6 +32,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #define S_FFMPEG_CLOSE_WHEN_INACTIVE "close_when_inactive"
 #define S_FFMPEG_RESTART_ON_ACTIVATE "restart_on_activate"
 #define S_FFMPEG_SPEED "speed_percent"
+#define S_FFMPEG_CLEAR_ON_MEDIA_END "clear_on_media_end"
 
 static void write_child_settings(obs_data_t *data, const struct pl_child_settings *settings)
 {
@@ -137,6 +138,9 @@ static void execute_load(struct pl_player *player, const struct pl_command *comm
 	obs_data_set_bool(data, S_FFMPEG_IS_LOCAL_FILE, !command->is_url);
 	obs_data_set_string(data, command->is_url ? S_FFMPEG_INPUT : S_FFMPEG_LOCAL_FILE, command->path);
 	write_child_settings(data, &player->settings);
+	/* R-DIR-9, on every load: a still stays on screen after its end (it ends at once) while the source holds it;
+	 * everything else is cleared at its end, as the child does by default (upstream never wrote it, R-UP-21) */
+	obs_data_set_bool(data, S_FFMPEG_CLEAR_ON_MEDIA_END, !command->still);
 	update_child(player, data);
 	obs_data_release(data);
 	/* the new media's evidence counts from here: the old media was destroyed by the unload (R-BEH-5) */
@@ -323,9 +327,9 @@ static void push_request(struct pl_player *player, struct pl_command *command)
 	pl_load_tracker_withdraw(&player->tracker);
 }
 
-void pl_player_load(struct pl_player *player, const char *path, bool is_url)
+void pl_player_load(struct pl_player *player, const char *path, bool is_url, bool still)
 {
-	struct pl_command command = {.type = PL_COMMAND_LOAD, .path = bstrdup(path), .is_url = is_url};
+	struct pl_command command = {.type = PL_COMMAND_LOAD, .path = bstrdup(path), .is_url = is_url, .still = still};
 	push_request(player, &command);
 }
 
