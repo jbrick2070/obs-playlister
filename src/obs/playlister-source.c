@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "core/filter.h"
 #include "core/keys.h"
+#include "core/merge.h"
 #include "core/modes.h"
 #include "core/row-kind.h"
 #include "core/sort.h"
@@ -39,10 +40,9 @@ static size_t get_total_file_count(struct media_playlist_source *mps);
 
 static inline void reset_folder_item_index(struct media_playlist_source *mps);
 
-static bool valid_extension(const char *ext);
-
 static void clear_media_source(void *data);
 static void update_media_source(void *data, bool forced);
+static void cancel_resume(struct media_playlist_source *mps);
 
 static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index);
 
@@ -286,29 +286,6 @@ static inline void reset_folder_item_index(struct media_playlist_source *mps)
 	remember_item(mps, NULL);
 }
 
-static bool valid_extension(const char *ext)
-{
-	struct dstr haystack = {0};
-	struct dstr needle = {0};
-	bool valid = false;
-
-	if (!ext || !*ext)
-		return false;
-
-	dstr_copy(&haystack, media_filter);
-	dstr_cat(&haystack, video_filter);
-	dstr_cat(&haystack, audio_filter);
-
-	dstr_cat_ch(&needle, '*');
-	dstr_cat(&needle, ext);
-
-	valid = dstr_find_i(&haystack, needle.array);
-
-	dstr_free(&haystack);
-	dstr_free(&needle);
-	return valid;
-}
-
 /* The caller holds the list lock */
 static void update_current_filename_setting(struct media_playlist_source *mps, obs_data_t *data)
 {
@@ -366,6 +343,8 @@ static void update_media_source(void *data, bool forced)
 	if (forced) {
 		pl_player_load(&mps->player, mps->actual_media->path, mps->actual_media->is_url);
 		mps->state = OBS_MEDIA_STATE_PLAYING;
+		/* any load decides what plays, so a wait for a folder row to settle is over (R-KEY-2) */
+		cancel_resume(mps);
 	}
 }
 
@@ -684,6 +663,9 @@ static void free_files(struct darray *array)
 		bfree(file->path);
 		bfree(file->id);
 		free_entry(file->entry);
+		for (size_t k = 0; k < file->pending_count; k++)
+			bfree(file->pending_keys[k]);
+		bfree(file->pending_keys);
 		if (file->is_folder) {
 			for (size_t j = 0; j < file->folder_items.num; j++) {
 				struct media_file_data *folder_item = &file->folder_items.array[j];
@@ -808,6 +790,8 @@ static void mps_play_pause(void *data, bool pause)
 			pl_player_play_pause(&mps->player, false);
 			set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 		} else if (current_item_playable(mps)) {
+			/* Play from stopped or ended is a playback trigger: kept folder lists are published (R-DIR-11) */
+			os_atomic_set_bool(&mps->release_held, true);
 			update_media_source(mps, true);
 		}
 	} else if (!stopped) {
@@ -821,6 +805,8 @@ static void mps_restart(void *data)
 {
 	struct media_playlist_source *mps = data;
 
+	/* a playback trigger: kept folder lists are published (R-DIR-11); video_tick asks the providers */
+	os_atomic_set_bool(&mps->release_held, true);
 	pthread_mutex_lock(&mps->mutex);
 	/* RESTART is a new load (R-BEH-6); after the list ended, the current item is the first one, as upstream did.
 	 * The loads set the PLAYING state; nothing playable leaves it as it was. */
@@ -842,6 +828,8 @@ static void mps_stop(void *data)
 	pthread_mutex_lock(&mps->mutex);
 	pl_player_stop(&mps->player);
 	set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
+	/* a user stop: a folder row that settles later does not start by itself (R-KEY-2) */
+	cancel_resume(mps);
 	pthread_mutex_unlock(&mps->mutex);
 }
 
@@ -985,6 +973,8 @@ static void mps_activate(void *data)
 		pthread_mutex_unlock(&mps->mutex);
 	} else if (mps->visibility_behavior == VISIBILITY_BEHAVIOR_STOP_PLAY_NEXT) {
 		// we only play next when the source is deactivated so we don't do anything here
+		/* showing it is still a playback trigger for kept folder lists (R-DIR-11) */
+		os_atomic_set_bool(&mps->release_held, true);
 	}
 }
 
@@ -1007,9 +997,541 @@ static void mps_deactivate(void *data)
 	}
 }
 
+/* ------------------------------------------------------------------------- */
+/* Folder rows and their providers (PLAN section 3.3). The callers hold the list lock unless a function says
+ * otherwise. */
+
+#define RESUME_WAIT_NS (30ULL * 1000000000ULL) /* R-KEY-2: how long a saved item still being written is waited for */
+
+struct provider_start {
+	char *row_uuid;
+	char *location;
+	uint64_t instance_id;
+};
+
+static void cancel_resume(struct media_playlist_source *mps)
+{
+	bfree(mps->resume.row_uuid);
+	bfree(mps->resume.item_key);
+	memset(&mps->resume, 0, sizeof(mps->resume));
+}
+
+static void start_resume(struct media_playlist_source *mps, const char *row_uuid, const char *item_key,
+			 uint32_t item_occurrence, bool from_start)
+{
+	cancel_resume(mps);
+	mps->resume.pending = true;
+	mps->resume.from_start = from_start;
+	mps->resume.row_uuid = bstrdup(row_uuid);
+	mps->resume.item_key = item_key ? bstrdup(item_key) : NULL;
+	mps->resume.item_occurrence = item_occurrence;
+}
+
+/* The folder row with this uuid, or NULL */
+static struct media_file_data *folder_row(struct media_playlist_source *mps, const char *row_uuid, size_t *index)
+{
+	for (size_t i = 0; i < mps->files.num; i++) {
+		struct media_file_data *row = &mps->files.array[i];
+		if (row->is_folder && strcmp(row->id, row_uuid) == 0) {
+			if (index)
+				*index = i;
+			return row;
+		}
+	}
+	return NULL;
+}
+
+static bool key_pending(const struct media_file_data *row, const char *key)
+{
+	for (size_t i = 0; i < row->pending_count; i++) {
+		if (strcmp(row->pending_keys[i], key) == 0)
+			return true;
+	}
+	return false;
+}
+
+/* The item with exactly this key and occurrence, or DARRAY_INVALID: the playing item is that file or none */
+static size_t exact_item_index(const struct media_file_data *row, const char *key, uint32_t occurrence)
+{
+	for (size_t i = 0; i < row->folder_items.num; i++) {
+		const struct pl_entry *entry = row->folder_items.array[i].entry;
+		if (entry && entry->occurrence == occurrence && strcmp(entry->key, key) == 0)
+			return i;
+	}
+	return DARRAY_INVALID;
+}
+
+static void free_items(struct darray *array)
+{
+	DARRAY(struct media_file_data) items;
+	items.da = *array;
+	for (size_t i = 0; i < items.num; i++) {
+		bfree(items.array[i].filename);
+		bfree(items.array[i].path);
+		bfree(items.array[i].id);
+		free_entry(items.array[i].entry);
+	}
+	da_free(items);
+	*array = items.da;
+}
+
+/* The row's items become the snapshot's visible entries, in display order (R-DIR-6, R-DIR-7), and its pending keys
+ * the snapshot's */
+static void install_items(struct media_file_data *row, const struct pl_snapshot *snapshot)
+{
+	DARRAY(struct media_file_data) items;
+	da_init(items);
+	da_reserve(items, snapshot->visible_count);
+	for (size_t v = 0; v < snapshot->visible_count; v++) {
+		const struct pl_entry *entry = &snapshot->entries[snapshot->visible[v]];
+		struct media_file_data item = {0};
+		item.path = bstrdup(entry->location);
+		const char *name = entry->location;
+		for (const char *c = entry->location; *c; c++) {
+			if (*c == '/' || *c == '\\')
+				name = c + 1;
+		}
+		item.filename = bstrdup(name);
+		item.parent_id = row->id;
+		item.index = v;
+		item.entry = bzalloc(sizeof(*item.entry));
+		pl_entry_copy(item.entry, entry);
+		/* a rename is carried once, when the snapshot is applied */
+		bfree(item.entry->previous_key);
+		item.entry->previous_key = NULL;
+		da_push_back(items, &item);
+	}
+	row->folder_items.da = items.da;
+
+	for (size_t i = 0; i < row->pending_count; i++)
+		bfree(row->pending_keys[i]);
+	bfree(row->pending_keys);
+	row->pending_keys = bmalloc((snapshot->pending_count ? snapshot->pending_count : 1) * sizeof(char *));
+	for (size_t i = 0; i < snapshot->pending_count; i++)
+		row->pending_keys[i] = bstrdup(snapshot->pending_keys[i]);
+	row->pending_count = snapshot->pending_count;
+}
+
+/* R-DIR-8: before the shuffler matches old items with new ones, the old items take the keys they were renamed to,
+ * all renames of the snapshot at once (a swap swaps); one a rename overwrote matches nothing. The remembered and
+ * resume identities follow too. */
+static void follow_renames(struct media_playlist_source *mps, struct media_file_data *row, struct darray *old_array,
+			   const struct pl_snapshot *snapshot)
+{
+	DARRAY(struct media_file_data) old_items;
+	old_items.da = *old_array;
+	/* a shallow view: the rekey replaces (and frees) key strings, which go back into the items, an overwritten
+	 * one as "" so it matches nothing */
+	struct pl_entry *view = bmalloc((old_items.num ? old_items.num : 1) * sizeof(*view));
+	for (size_t i = 0; i < old_items.num; i++)
+		view[i] = *old_items.array[i].entry;
+	pl_merge_rekey(view, old_items.num, snapshot->entries, snapshot->count);
+	for (size_t i = 0; i < old_items.num; i++)
+		old_items.array[i].entry->key = view[i].key ? view[i].key : bstrdup("");
+	bfree(view);
+
+	if (mps->current_media == row && mps->current_item_key) {
+		struct pl_item_id id = {mps->current_item_key, mps->current_item_occurrence};
+		if (pl_merge_follow_rename(&id, snapshot->entries, snapshot->count)) {
+			char *key = bstrdup(id.key);
+			bfree(mps->current_item_key);
+			mps->current_item_key = key;
+			mps->current_item_occurrence = id.occurrence;
+		}
+	}
+	if (mps->resume.pending && mps->resume.item_key && strcmp(mps->resume.row_uuid, row->id) == 0) {
+		struct pl_item_id id = {mps->resume.item_key, mps->resume.item_occurrence};
+		if (pl_merge_follow_rename(&id, snapshot->entries, snapshot->count)) {
+			char *key = bstrdup(id.key);
+			bfree(mps->resume.item_key);
+			mps->resume.item_key = key;
+			mps->resume.item_occurrence = id.occurrence;
+		}
+	}
+}
+
+/* R-DIR-8: the playing item left its row (deleted, moved away or filtered out). Playback moves to the first item
+ * that followed it in the previous order and is still listed (with shuffle on, the shuffler's next), else on past
+ * the row as at its end; with nothing to go on to, the child is cleared. */
+static void move_past_removed(struct media_playlist_source *mps, struct media_file_data *row, size_t row_index,
+			      const struct darray *old_array, size_t position)
+{
+	DARRAY(struct media_file_data) old_items;
+	old_items.da = *old_array;
+	if (!mps->shuffle) {
+		for (size_t j = position + 1; j < old_items.num; j++) {
+			const struct pl_entry *entry = old_items.array[j].entry;
+			size_t successor = exact_item_index(row, entry->key, entry->occurrence);
+			if (successor != DARRAY_INVALID) {
+				obs_log(LOG_INFO, "row %zu: the playing item is gone; playing the one that followed it",
+					row_index + 1);
+				play_folder_item_at_index(mps, successor);
+				return;
+			}
+		}
+		/* as at the row's end */
+		mps->current_folder_item_index = row->folder_items.num ? row->folder_items.num - 1 : 0;
+	}
+	obs_log(LOG_INFO, "row %zu: the playing item is gone; going on past it", row_index + 1);
+	if (!playlist_next_locked(mps))
+		clear_media_source(mps);
+}
+
+/* Plays the resume target in its settled row: the saved item, or with it still being written a wait of up to 30 s,
+ * or else the row's first item, each fallback logged (R-KEY-2) */
+static void resume_in_row(struct media_playlist_source *mps, struct media_file_data *row, size_t row_index)
+{
+	size_t found = mps->resume.item_key ? find_folder_item_index(&row->folder_items.da, mps->resume.item_key,
+								     mps->resume.item_occurrence)
+					    : DARRAY_INVALID;
+	if (found == DARRAY_INVALID && mps->resume.item_key && key_pending(row, mps->resume.item_key)) {
+		if (!mps->resume.wait_until_ns) {
+			mps->resume.wait_until_ns = os_gettime_ns() + RESUME_WAIT_NS;
+			obs_log(LOG_INFO, "row %zu: the saved item is still being written; waiting up to 30 s for it",
+				row_index + 1);
+		}
+		return;
+	}
+	if (found == DARRAY_INVALID) {
+		if (mps->resume.item_key)
+			obs_log(LOG_INFO, "row %zu: the saved item is not there; starting at the row's first item",
+				row_index + 1);
+		found = 0;
+	}
+	set_current_media_index(mps, row_index);
+	set_current_folder_item_index(mps, found);
+	if (mps->shuffle)
+		shuffler_select(&mps->shuffler, mps->actual_media);
+	/* the load ends the resume */
+	update_media_source(mps, true);
+	mark_save_dirty(mps);
+}
+
+/* From the start, the saved row has nothing to play (it settled empty, or its folder is missing): the next row with
+ * something to play starts, as for an empty folder row at startup (R-UP-33); with none yet, the first row that
+ * settles with items does (R-KEY-2) */
+static void resume_after_row(struct media_playlist_source *mps, size_t row_index)
+{
+	size_t num = mps->files.num;
+	for (size_t step = 1; step <= num; step++) {
+		size_t index = (row_index + step) % num;
+		const struct media_file_data *candidate = &mps->files.array[index];
+		if (!candidate->is_folder || candidate->folder_items.num) {
+			obs_log(LOG_INFO, "row %zu has nothing to play; starting at row %zu", row_index + 1, index + 1);
+			play_media_at_index(mps, index, false, false);
+			return;
+		}
+	}
+}
+
+/* The resume target's row has nothing to play: it settled empty, its folder is missing, or it cannot be watched.
+ * From the start it is passed over (R-UP-33); after an edit the child is cleared, as upstream (R-UP-78). */
+static void resume_row_has_nothing(struct media_playlist_source *mps, size_t target_index)
+{
+	if (!mps->resume.from_start) {
+		cancel_resume(mps);
+		clear_media_source(mps);
+		return;
+	}
+	mps->resume.row_unavailable = true;
+	resume_after_row(mps, target_index);
+}
+
+/* After a snapshot of row (at row_index) was applied: settle the resume target if it waits on this row, or on a
+ * row that had nothing to play */
+static void settle_resume(struct media_playlist_source *mps, struct media_file_data *row, size_t row_index,
+			  const struct pl_snapshot *snapshot)
+{
+	size_t target_index = 0;
+	struct media_file_data *target = folder_row(mps, mps->resume.row_uuid, &target_index);
+	if (!target) {
+		cancel_resume(mps);
+		return;
+	}
+	if (target == row) {
+		bool settled = snapshot->initial_scan_complete;
+		bool missing = !settled && snapshot->level == PL_STATUS_ERROR;
+		if (settled && row->folder_items.num) {
+			resume_in_row(mps, row, row_index);
+			return;
+		}
+		if (!settled && !missing)
+			return;
+		resume_row_has_nothing(mps, target_index);
+		return;
+	}
+	if (mps->resume.row_unavailable)
+		resume_after_row(mps, target_index);
+}
+
+/* The publish callback (PLAN section 3.3), on the provider's worker: under the list lock the snapshot replaces the
+ * row's items, unless it comes from an instance the row no longer expects (R-THR-2). The playing item keeps
+ * playing, found by key and occurrence (R-DIR-8), and the shuffler follows (R-THR-4). */
+static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
+{
+	struct media_playlist_source *mps = owner;
+	pthread_mutex_lock(&mps->mutex);
+	const struct row_provider *registration = NULL;
+	for (size_t i = 0; i < mps->providers.num && !registration; i++) {
+		if (mps->providers.array[i].instance_id == snapshot->instance_id)
+			registration = &mps->providers.array[i];
+	}
+	size_t row_index = 0;
+	struct media_file_data *row = registration ? folder_row(mps, registration->row_uuid, &row_index) : NULL;
+	if (!row) {
+		pthread_mutex_unlock(&mps->mutex);
+		pl_snapshot_free(snapshot);
+		return;
+	}
+
+	bool current_row = mps->current_media == row;
+	/* the item loaded last, whatever the state (after the list ended it stays on the last item); it is followed by
+	 * its own identity, which the renames below update */
+	struct media_file_data *loaded = mps->actual_media && mps->actual_media->parent == row ? mps->actual_media
+											       : NULL;
+	size_t loaded_position = loaded ? loaded->index : 0;
+
+	DARRAY(struct media_file_data) old_items;
+	old_items.da = row->folder_items.da;
+	follow_renames(mps, row, &old_items.da, snapshot);
+	install_items(row, snapshot);
+	/* a listing settles the row (R-KEY-2), and so does a missing folder: it shows its error and is passed over
+	 * until the folder comes back, rather than being waited for */
+	if (snapshot->initial_scan_complete || snapshot->level == PL_STATUS_ERROR)
+		row->awaiting = false;
+	set_parents(&mps->files.da);
+	shuffler_update_files(&mps->shuffler, &mps->files.da);
+
+	if (loaded) {
+		size_t found = loaded->entry ? exact_item_index(row, loaded->entry->key, loaded->entry->occurrence)
+					     : DARRAY_INVALID;
+		if (found != DARRAY_INVALID) {
+			mps->actual_media = &row->folder_items.array[found];
+			if (current_row)
+				mps->current_folder_item_index = found;
+		} else {
+			mps->actual_media = NULL;
+			if (current_row && mps->state == OBS_MEDIA_STATE_PLAYING) {
+				move_past_removed(mps, row, row_index, &old_items.da, loaded_position);
+			} else if (current_row) {
+				/* stopped, paused or ended: nothing starts by itself; Play goes on from the item that
+				 * followed it, if that is still listed */
+				mps->current_folder_item_index = 0;
+				for (size_t j = loaded_position + 1; j < old_items.num; j++) {
+					const struct pl_entry *entry = old_items.array[j].entry;
+					size_t successor = exact_item_index(row, entry->key, entry->occurrence);
+					if (successor != DARRAY_INVALID) {
+						mps->current_folder_item_index = successor;
+						break;
+					}
+				}
+				remember_item(mps, mps->current_folder_item_index < row->folder_items.num
+							   ? &row->folder_items.array[mps->current_folder_item_index]
+							   : NULL);
+			}
+			mark_save_dirty(mps);
+		}
+	} else if (current_row && mps->current_item_key) {
+		/* nothing of this row loaded: its position follows the remembered item */
+		size_t found = find_folder_item_index(&row->folder_items.da, mps->current_item_key,
+						      mps->current_item_occurrence);
+		mps->current_folder_item_index = found != DARRAY_INVALID ? found : 0;
+	}
+	free_items(&old_items.da);
+
+	if (mps->resume.pending)
+		settle_resume(mps, row, row_index, snapshot);
+	/* the first items of a list that had none: the first row with something becomes the current one, without a
+	 * load (with no current row, next and previous would have nothing to go from) */
+	if (!mps->current_media && get_total_file_count(mps)) {
+		size_t first = skip_empty_folder_rows(mps, 0, false);
+		set_current_media_index(mps, first < mps->files.num ? first : 0);
+		reset_folder_item_index(mps);
+	}
+	pthread_mutex_unlock(&mps->mutex);
+	pl_snapshot_free(snapshot);
+}
+
+/* R-THR-3, under the list lock: the new list's folder rows keep their providers, and their items, while their uuid
+ * and path are unchanged; a new folder row, or one whose path changed, gets a new instance id registered here, for
+ * the caller to create once the lock is released; the providers of rows that are gone come back to be destroyed. A
+ * change of include-subfolders re-creates every provider, and the rows keep their items until the new instances
+ * publish (R-THR-4). */
+static void reconcile_providers(struct media_playlist_source *mps, struct darray *new_rows_array,
+				bool include_subfolders, struct darray *starts_out, struct darray *retired_out)
+{
+	DARRAY(struct media_file_data) new_rows;
+	DARRAY(struct row_provider) kept;
+	DARRAY(struct provider_start) starts;
+	DARRAY(struct pl_provider *) retired;
+	new_rows.da = *new_rows_array;
+	da_init(kept);
+	da_init(starts);
+	da_init(retired);
+
+	for (size_t i = 0; i < new_rows.num; i++) {
+		struct media_file_data *row = &new_rows.array[i];
+		if (!row->is_folder)
+			continue;
+		struct row_provider *same = NULL;
+		for (size_t j = 0; j < mps->providers.num && !same; j++) {
+			struct row_provider *candidate = &mps->providers.array[j];
+			if (candidate->row_uuid && strcmp(candidate->row_uuid, row->id) == 0 &&
+			    strcmp(candidate->location, row->path) == 0)
+				same = candidate;
+		}
+		struct row_provider entry;
+		if (same) {
+			entry = *same;
+			memset(same, 0, sizeof(*same));
+			/* the items move from the old row; pointers into them stay valid */
+			struct media_file_data *old_row = folder_row(mps, row->id, NULL);
+			if (old_row) {
+				row->folder_items.da = old_row->folder_items.da;
+				da_init(old_row->folder_items);
+				row->awaiting = old_row->awaiting;
+				row->pending_keys = old_row->pending_keys;
+				row->pending_count = old_row->pending_count;
+				old_row->pending_keys = NULL;
+				old_row->pending_count = 0;
+			}
+			if (entry.include_subfolders != include_subfolders) {
+				if (entry.provider)
+					da_push_back(retired, &entry.provider);
+				entry.provider = NULL;
+				entry.include_subfolders = include_subfolders;
+				entry.instance_id = ++mps->last_instance_id;
+			}
+		} else {
+			entry.row_uuid = bstrdup(row->id);
+			entry.location = bstrdup(row->path);
+			entry.include_subfolders = include_subfolders;
+			entry.instance_id = ++mps->last_instance_id;
+			entry.provider = NULL;
+		}
+		if (!entry.provider) {
+			struct provider_start start = {bstrdup(entry.row_uuid), bstrdup(entry.location),
+						       entry.instance_id};
+			da_push_back(starts, &start);
+		}
+		da_push_back(kept, &entry);
+	}
+	/* rows that are gone, or whose path changed */
+	for (size_t j = 0; j < mps->providers.num; j++) {
+		struct row_provider *gone = &mps->providers.array[j];
+		if (gone->provider)
+			da_push_back(retired, &gone->provider);
+		bfree(gone->row_uuid);
+		bfree(gone->location);
+	}
+	da_free(mps->providers);
+	mps->providers.da = kept.da;
+	*starts_out = starts.da;
+	*retired_out = retired.da;
+}
+
+/* With no lock held: the retired providers are destroyed (joined), then the new ones created, each stored in its
+ * registration if that still expects it (R-THR-3) */
+static void start_and_stop_providers(struct media_playlist_source *mps, struct darray *starts_array,
+				     struct darray *retired_array, const struct pl_container_options *options)
+{
+	DARRAY(struct provider_start) starts;
+	DARRAY(struct pl_provider *) retired;
+	starts.da = *starts_array;
+	retired.da = *retired_array;
+	for (size_t i = 0; i < retired.num; i++)
+		pl_provider_destroy(retired.array[i]);
+	da_free(retired);
+
+	for (size_t i = 0; i < starts.num; i++) {
+		struct provider_start *start = &starts.array[i];
+		struct pl_provider *provider = pl_provider_create(PL_ROW_FOLDER, start->location, start->row_uuid,
+								  start->instance_id, options, apply_snapshot, mps);
+		if (!provider)
+			obs_log(LOG_ERROR, "the folder %s cannot be watched; its row stays empty", start->location);
+		pthread_mutex_lock(&mps->mutex);
+		size_t row_index = 0;
+		struct media_file_data *row = provider ? NULL : folder_row(mps, start->row_uuid, &row_index);
+		if (row) {
+			/* never listed: not waited for, but passed over like a missing folder */
+			row->awaiting = false;
+			if (mps->resume.pending && strcmp(mps->resume.row_uuid, row->id) == 0)
+				resume_row_has_nothing(mps, row_index);
+		}
+		bool stored = false;
+		for (size_t j = 0; j < mps->providers.num && provider; j++) {
+			if (mps->providers.array[j].instance_id == start->instance_id &&
+			    !mps->providers.array[j].provider) {
+				mps->providers.array[j].provider = provider;
+				stored = true;
+			}
+		}
+		pthread_mutex_unlock(&mps->mutex);
+		if (provider && !stored)
+			pl_provider_destroy(provider);
+		bfree(start->row_uuid);
+		bfree(start->location);
+	}
+	da_free(starts);
+	*starts_array = starts.da;
+	*retired_array = retired.da;
+}
+
+/* The shared container options (R-LIST-3, PLAN section 3.4), each clamped to its range; extension_filter points
+ * into settings */
+static void read_container_options(obs_data_t *settings, struct pl_container_options *options)
+{
+	memset(options, 0, sizeof(*options));
+	options->include_subfolders = obs_data_get_bool(settings, S_INCLUDE_SUBFOLDERS);
+	options->extension_filter = obs_data_get_string(settings, S_EXTENSION_FILTER);
+	long long sort = obs_data_get_int(settings, S_SORT_KEY);
+	options->sort_key = sort == PL_SORT_LIST || sort == PL_SORT_NAME ? (enum pl_sort_key)sort : PL_SORT_DATE;
+	options->sort_descending = obs_data_get_bool(settings, S_SORT_DESCENDING);
+	long long mode = obs_data_get_int(settings, S_CONTAINER_MODE);
+	options->mode = mode == PL_MODE_NEWEST_ONLY || mode == PL_MODE_NEWEST_N ? (enum pl_mode)mode : PL_MODE_FULL;
+	long long newest = obs_data_get_int(settings, S_NEWEST_COUNT);
+	options->newest_count = newest < 1 ? 1 : newest > 1000 ? 1000 : (uint32_t)newest;
+	options->folder_check_enabled = obs_data_get_bool(settings, S_FOLDER_CHECK_ENABLED);
+	long long interval = obs_data_get_int(settings, S_FOLDER_CHECK_INTERVAL);
+	options->folder_check_interval_s = interval < 2 ? 2 : interval > 3600 ? 3600 : (uint32_t)interval;
+	options->lock_list_at_start = obs_data_get_bool(settings, S_LOCK_LIST_AT_START);
+}
+
+/* Whether the running providers need these options (include-subfolders re-creates them instead) */
+static bool container_options_changed(const struct media_playlist_source *mps,
+				      const struct pl_container_options *options)
+{
+	const struct pl_container_options *kept = &mps->container_options;
+	return !mps->container_filter || strcmp(mps->container_filter, options->extension_filter) != 0 ||
+	       kept->sort_key != options->sort_key || kept->sort_descending != options->sort_descending ||
+	       kept->mode != options->mode || kept->newest_count != options->newest_count ||
+	       kept->folder_check_enabled != options->folder_check_enabled ||
+	       kept->folder_check_interval_s != options->folder_check_interval_s ||
+	       kept->lock_list_at_start != options->lock_list_at_start;
+}
+
+static void keep_container_options(struct media_playlist_source *mps, const struct pl_container_options *options)
+{
+	bfree(mps->container_filter);
+	mps->container_filter = bstrdup(options->extension_filter);
+	mps->container_options = *options;
+	mps->container_options.extension_filter = mps->container_filter;
+}
+
 static void mps_destroy(void *data)
 {
 	struct media_playlist_source *mps = data;
+
+	/* R-THR-3: every provider first, so none publishes into a source being torn down; no lock is held, as a
+	 * worker inside its publish waits for the list lock */
+	for (size_t i = 0; i < mps->providers.num; i++) {
+		pl_provider_destroy(mps->providers.array[i].provider);
+		bfree(mps->providers.array[i].row_uuid);
+		bfree(mps->providers.array[i].location);
+	}
+	da_free(mps->providers);
+	cancel_resume(mps);
+	bfree(mps->container_filter);
 
 	/* R-UP-70: stop the player thread, disconnect the child's handler and audio callback (both wait for a
 	 * callback in flight), and only then release the child */
@@ -1185,6 +1707,39 @@ static void mps_video_tick(void *data, float seconds)
 		} else if (ended) {
 			mps_end_reached(mps);
 		}
+	}
+
+	/* R-KEY-2: a saved item still being written is waited for 30 s at most, then the row starts at its first item */
+	if (mps->resume.wait_until_ns && os_gettime_ns() >= mps->resume.wait_until_ns) {
+		pthread_mutex_lock(&mps->mutex);
+		size_t row_index = 0;
+		struct media_file_data *row = mps->resume.pending && mps->resume.wait_until_ns &&
+							      os_gettime_ns() >= mps->resume.wait_until_ns
+						      ? folder_row(mps, mps->resume.row_uuid, &row_index)
+						      : NULL;
+		if (row) {
+			obs_log(LOG_INFO,
+				"row %zu: the saved item did not finish writing within 30 s; starting at the row's first item",
+				row_index + 1);
+			bfree(mps->resume.item_key);
+			mps->resume.item_key = NULL;
+			mps->resume.wait_until_ns = 0;
+			if (row->folder_items.num)
+				resume_in_row(mps, row, row_index);
+		}
+		pthread_mutex_unlock(&mps->mutex);
+	}
+
+	/* R-DIR-11: after a playback trigger, every provider publishes the list it kept; release only sets a request,
+	 * and providers change only in update and destroy, neither of which runs during a tick */
+	if (os_atomic_load_bool(&mps->release_held)) {
+		os_atomic_set_bool(&mps->release_held, false);
+		pthread_mutex_lock(&mps->mutex);
+		for (size_t i = 0; i < mps->providers.num; i++) {
+			if (mps->providers.array[i].provider)
+				pl_provider_release_held(mps->providers.array[i].provider);
+		}
+		pthread_mutex_unlock(&mps->mutex);
 	}
 
 	/* the resume point, at most once a second and with no plugin lock held (R-UP-43, R-UP-62) */
@@ -1432,6 +1987,7 @@ static obs_properties_t *mps_properties(void *data)
 
 /* Sets the parent field of each media_file_data. This is necessary to be
  * called AFTER the darray is size is modified (because of array reallocation)
+ * (and after a row's items moved to the row that replaced it, whose id string is its own)
  */
 static void set_parents(struct darray *array)
 {
@@ -1442,23 +1998,9 @@ static void set_parents(struct darray *array)
 		for (size_t j = 0; j < item->folder_items.num; j++) {
 			struct media_file_data *folder_item = &item->folder_items.array[j];
 			folder_item->parent = item;
+			folder_item->parent_id = item->id;
 		}
 	}
-}
-
-/* Numbers identical keys in a folder row 1, 2, ... in listing order (R-KEY-1) */
-static void assign_item_occurrences(struct media_file_data *row)
-{
-	size_t count = row->folder_items.num;
-	if (!count)
-		return;
-	struct pl_entry *view = bmalloc(count * sizeof(*view));
-	for (size_t i = 0; i < count; i++)
-		view[i] = *row->folder_items.array[i].entry;
-	pl_assign_occurrences(view, count);
-	for (size_t i = 0; i < count; i++)
-		row->folder_items.array[i].entry->occurrence = view[i].occurrence;
-	bfree(view);
 }
 
 /* libobs can only tell a directory by opening it, as upstream did */
@@ -1492,7 +2034,8 @@ static void save_folder_kind(obs_data_t *row_kinds, const char *id, const char *
 	obs_data_release(kind);
 }
 
-/* A folder row whose folder cannot be opened now (an absent watched folder, R-LIST-1) is a folder with no items */
+/* A folder row starts with no items: its provider lists the folder on its own worker (PLAN section 3.3), and until
+ * then the row is awaiting (R-KEY-2). Upstream listed the folder here, on the graphics thread, on every update. */
 static void add_file(struct darray *array, const char *path, const char *id, bool folder)
 {
 	DARRAY(struct media_file_data) new_files;
@@ -1504,70 +2047,43 @@ static void add_file(struct darray *array, const char *path, const char *id, boo
 	data->path = bstrdup(path);
 	data->is_url = strstr(path, "://") != NULL;
 	data->is_folder = folder;
+	data->awaiting = folder;
 	da_init(data->folder_items);
-
-	os_dir_t *dir = folder ? os_opendir(path) : NULL;
-
-	if (dir) {
-		struct dstr dir_path = {0};
-		struct os_dirent *ent;
-
-		while (true) {
-			const char *ext;
-
-			ent = os_readdir(dir);
-			if (!ent)
-				break;
-			if (ent->directory)
-				continue;
-
-			ext = os_get_path_extension(ent->d_name);
-			if (!valid_extension(ext))
-				continue;
-
-			struct media_file_data folder_item = {0};
-			folder_item.filename = bstrdup(ent->d_name);
-			folder_item.parent_id = data->id;
-			folder_item.index = data->folder_items.num;
-			dstr_copy(&dir_path, path);
-			dstr_cat_ch(&dir_path, '/');
-			dstr_cat(&dir_path, ent->d_name);
-			folder_item.path = bstrdup(dir_path.array);
-			/* R-KEY-1: one folder level, so the key is the folded file name */
-			folder_item.entry = bzalloc(sizeof(*folder_item.entry));
-			folder_item.entry->location = bstrdup(dir_path.array);
-			folder_item.entry->key = pl_fold_key(ent->d_name);
-			folder_item.entry->source_ordinal = (uint32_t)folder_item.index;
-			folder_item.entry->kind = pl_filter_kind(ent->d_name);
-
-			da_push_back(data->folder_items, &folder_item);
-		}
-
-		dstr_free(&dir_path);
-		os_closedir(dir);
-		assign_item_occurrences(data);
-	}
 
 	*array = new_files.da;
 }
 
-/* Every row gets a uuid: one saved without it (by an older OBS or a script) is given one here, written into the row,
- * so resume, Select File and row_kinds can name it (R-KEY-2, R-UP-20, R-LIST-1). Upstream matched every such row to
- * the first of them. */
+/* Every row gets a uuid of its own: one saved without it (by an older OBS or a script), or with the uuid of a row
+ * above it (copied settings), is given one here, written into the row, so resume, Select File, row_kinds and the
+ * folder providers can name it (R-KEY-2, R-UP-20, R-LIST-1, R-THR-2). Upstream matched every such row to the first
+ * of them. */
 static void assign_missing_row_uuids(obs_data_t *settings)
 {
 	obs_data_array_t *playlist = obs_data_get_array(settings, S_PLAYLIST);
 	size_t count = obs_data_array_count(playlist);
+	DARRAY(char *) seen;
+	da_init(seen);
 	for (size_t i = 0; i < count; i++) {
 		obs_data_t *row = obs_data_array_item(playlist, i);
-		if (!*obs_data_get_string(row, S_ID)) {
+		const char *id = obs_data_get_string(row, S_ID);
+		bool repeated = false;
+		for (size_t j = 0; j < seen.num && *id && !repeated; j++)
+			repeated = strcmp(seen.array[j], id) == 0;
+		if (!*id || repeated) {
 			char *uuid = os_generate_uuid();
+			obs_log(LOG_INFO, "playlist row %zu had %s; it now has %s", i + 1,
+				repeated ? "the uuid of a row above it" : "no uuid", uuid);
 			obs_data_set_string(row, S_ID, uuid);
-			obs_log(LOG_INFO, "playlist row %zu had no uuid; it now has %s", i + 1, uuid);
 			bfree(uuid);
+			id = obs_data_get_string(row, S_ID);
 		}
+		char *copy = bstrdup(id);
+		da_push_back(seen, &copy);
 		obs_data_release(row);
 	}
+	for (size_t j = 0; j < seen.num; j++)
+		bfree(seen.array[j]);
+	da_free(seen);
 	obs_data_array_release(playlist);
 }
 
@@ -1700,6 +2216,8 @@ static void mps_update(void *data, obs_data_t *settings)
 	obs_data_release(new_row_kinds);
 	obs_data_release(row_kinds);
 	set_parents(&new_files.da);
+	struct pl_container_options container_options;
+	read_container_options(settings, &container_options);
 
 	/* R-UP-44, R-THR-1: the list, the current-item pointers and the shuffler change together under the list lock,
 	 * and the old list is freed only after every pointer has moved to the new one */
@@ -1742,6 +2260,50 @@ static void mps_update(void *data, obs_data_t *settings)
 		}
 	}
 
+	/* Folder rows keep their providers and items while their uuid and path stay (R-THR-3); the options reach the
+	 * running providers once the lock is released */
+	DARRAY(struct provider_start) starts;
+	DARRAY(struct pl_provider *) retired;
+	DARRAY(struct pl_provider *) option_targets;
+	da_init(option_targets);
+	reconcile_providers(mps, &new_files.da, container_options.include_subfolders, &starts.da, &retired.da);
+	set_parents(&new_files.da);
+	if (container_options_changed(mps, &container_options)) {
+		keep_container_options(mps, &container_options);
+		for (size_t i = 0; i < mps->providers.num; i++) {
+			if (mps->providers.array[i].provider)
+				da_push_back(option_targets, &mps->providers.array[i].provider);
+		}
+	}
+
+	/* R-KEY-2: playback waits for a folder row its provider has not listed yet; what plays keeps playing. A wait
+	 * already on keeps its target while that row is still in the list. */
+	bool defer = false;
+	if (mps->resume.pending) {
+		struct media_file_data *resume_row = NULL;
+		for (size_t i = 0; i < new_files.num && !resume_row; i++) {
+			if (new_files.array[i].is_folder && strcmp(new_files.array[i].id, mps->resume.row_uuid) == 0)
+				resume_row = &new_files.array[i];
+		}
+		if (resume_row)
+			defer = true;
+		else
+			cancel_resume(mps);
+	}
+	if (!defer) {
+		size_t target_index = found || mps->first_update ? mps->current_media_index : 0;
+		if (target_index >= new_files.num)
+			target_index = 0;
+		struct media_file_data *target = new_files.num ? &new_files.array[target_index] : NULL;
+		if (target && target->is_folder && target->awaiting) {
+			/* the saved or playing item's key, unless the row is not the one it was kept for */
+			bool same_row = mps->first_update ? resumed_row : found && !item_edited;
+			start_resume(mps, target->id, same_row ? mps->current_item_key : NULL,
+				     mps->current_item_occurrence, mps->first_update);
+			defer = true;
+		}
+	}
+
 	/* the item key belongs to the row it was kept for: on another row (the playing row was deleted, or the saved row
 	 * is gone) a file of the same name is a different item, so that row starts at its first item */
 	if (!found && !resumed_row)
@@ -1766,7 +2328,16 @@ static void mps_update(void *data, obs_data_t *settings)
 	}
 
 	bool handled = false;
-	if (get_total_file_count(mps)) {
+	if (defer) {
+		/* nothing loads here; the snapshot that settles the row does. After an edit the playing row is gone or
+		 * moved, so the child is cleared now rather than left playing an item the list no longer has. A target
+		 * with nothing to play from the start lets any row with something to play start now. */
+		size_t resume_index = 0;
+		if (!mps->resume.from_start)
+			clear_media_source(mps);
+		else if (mps->resume.row_unavailable && folder_row(mps, mps->resume.row_uuid, &resume_index))
+			resume_after_row(mps, resume_index);
+	} else if (get_total_file_count(mps)) {
 		if (item_edited) {
 			mps->current_folder_item_index = 0;
 		} else if (mps->current_media && mps->current_media->is_folder) {
@@ -1823,6 +2394,11 @@ static void mps_update(void *data, obs_data_t *settings)
 	pthread_mutex_unlock(&mps->mutex);
 
 	free_files(&old_files.da);
+	/* R-THR-3: providers are destroyed and created with no lock held; the options reach the running ones */
+	start_and_stop_providers(mps, &starts.da, &retired.da, &container_options);
+	for (size_t i = 0; i < option_targets.num; i++)
+		pl_provider_set_options(option_targets.array[i], &container_options);
+	da_free(option_targets);
 	/* ------------------------- */
 
 	//if (mps->files.num) {
@@ -1849,12 +2425,21 @@ static void mps_save(void *data, obs_data_t *settings)
 		pthread_mutex_unlock(&mps->mutex);
 		return;
 	}
-	/* the resume point (R-KEY-2); current_folder_item_filename is no longer written (R-LIST-4) */
+	/* the resume point (R-KEY-2); current_folder_item_filename is no longer written (R-LIST-4). While playback waits
+	 * for a folder row to settle, the point it waits for is the one saved. */
 	obs_data_set_int(settings, S_SCHEMA_VERSION, SCHEMA_VERSION);
-	obs_data_set_int(settings, S_CURRENT_MEDIA_INDEX, mps->current_media_index);
-	obs_data_set_string(settings, S_CURRENT_ROW_UUID, mps->current_media ? mps->current_media->id : "");
-	obs_data_set_string(settings, S_CURRENT_ITEM_KEY, mps->current_item_key ? mps->current_item_key : "");
-	obs_data_set_int(settings, S_CURRENT_ITEM_OCCURRENCE, mps->current_item_occurrence);
+	size_t resume_index = 0;
+	if (mps->resume.pending && folder_row(mps, mps->resume.row_uuid, &resume_index)) {
+		obs_data_set_int(settings, S_CURRENT_MEDIA_INDEX, resume_index);
+		obs_data_set_string(settings, S_CURRENT_ROW_UUID, mps->resume.row_uuid);
+		obs_data_set_string(settings, S_CURRENT_ITEM_KEY, mps->resume.item_key ? mps->resume.item_key : "");
+		obs_data_set_int(settings, S_CURRENT_ITEM_OCCURRENCE, mps->resume.item_occurrence);
+	} else {
+		obs_data_set_int(settings, S_CURRENT_MEDIA_INDEX, mps->current_media_index);
+		obs_data_set_string(settings, S_CURRENT_ROW_UUID, mps->current_media ? mps->current_media->id : "");
+		obs_data_set_string(settings, S_CURRENT_ITEM_KEY, mps->current_item_key ? mps->current_item_key : "");
+		obs_data_set_int(settings, S_CURRENT_ITEM_OCCURRENCE, mps->current_item_occurrence);
+	}
 	update_current_filename_setting(mps, settings);
 	pthread_mutex_unlock(&mps->mutex);
 }

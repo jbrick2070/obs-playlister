@@ -35,4 +35,9 @@ struct media_file_data {
 	/* owned (bmem), freed by free_files: the item's identity and data (R-KEY-1); folder items have one from Phase 2
 	 * step 4, rows and the upstream shuffler tests do not */
 	struct pl_entry *entry;
+	/* folder rows: not listed by the row's provider yet, so not empty either (R-KEY-2); the keys still in its
+	 * write-complete gate (R-DIR-4) */
+	bool awaiting;
+	char **pending_keys;
+	size_t pending_count;
 };

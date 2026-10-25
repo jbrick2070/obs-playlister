@@ -30,6 +30,29 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "player.h"
 #include "shuffler.h"
 #include "core/audio-queue.h"
+#include "providers/provider.h"
+
+/* A folder row's provider (PLAN section 3.2). It stays across updates while the row keeps its uuid and path; the
+ * registry changes only under the list lock in update, and providers are created and destroyed outside it
+ * (R-THR-3). */
+struct row_provider {
+	char *row_uuid;
+	char *location;
+	bool include_subfolders;
+	uint64_t instance_id;         /* the only instance whose snapshots the row accepts (R-THR-2) */
+	struct pl_provider *provider; /* NULL until created, or when it could not be */
+};
+
+/* R-KEY-2: where playback resumes once a folder row that was not listed yet settles */
+struct resume_target {
+	bool pending;
+	bool from_start; /* the source's first update: a row that settles empty or missing is passed over */
+	char *row_uuid;
+	char *item_key; /* NULL: the row's first item */
+	uint32_t item_occurrence;
+	uint64_t wait_until_ns; /* the item is still being written: waited for until then (0: not waiting) */
+	bool row_unavailable;   /* from the start, the row settled empty or its folder is missing */
+};
 
 /* clang-format off */
 
@@ -86,4 +109,12 @@ struct media_playlist_source {
 
 	struct pl_audio_queue audio;  /* the child's audio, from its capture callback to video_tick (R-UP-60) */
 	DARRAY(char *) missing_paths; /* owned copies given to missing-file callbacks, freed in destroy (R-UP-67) */
+
+	/* folder rows (PLAN section 3.3), under the list lock */
+	DARRAY(struct row_provider) providers;
+	uint64_t last_instance_id;
+	struct pl_container_options container_options; /* extension_filter points at container_filter */
+	char *container_filter;
+	struct resume_target resume;
+	volatile bool release_held; /* a playback trigger: video_tick has the providers publish kept lists (R-DIR-11) */
 };
