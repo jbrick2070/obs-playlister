@@ -84,10 +84,34 @@ local function create_source(name, fill)
 	obs.obs_source_release(scene_source)
 end
 
+-- counts the source's media_next signals while connected. obslua connects signal handlers later, on its own
+-- thread, so a count is taken long after connecting, as the change across one call (signals come on this thread).
+local media_next_count = 0
+local media_next_connected = false
+local function count_media_next(cd)
+	media_next_count = media_next_count + 1
+end
+
+local function count_media_next_signals()
+	obs.signal_handler_connect(obs.obs_source_get_signal_handler(src), "media_next", count_media_next)
+	media_next_connected = true
+end
+
 local function remove_source()
+	if media_next_connected then
+		obs.signal_handler_disconnect(obs.obs_source_get_signal_handler(src), "media_next", count_media_next)
+		media_next_connected = false
+	end
 	obs.obs_sceneitem_remove(item)
 	obs.obs_source_release(src)
 	src, item = nil, nil
+end
+
+local function select_file_entries()
+	local props = obs.obs_source_properties(src)
+	local count = obs.obs_property_list_item_count(obs.obs_properties_get(props, "select_file"))
+	obs.obs_properties_destroy(props)
+	return count
 end
 
 local function seek_near_end()
@@ -111,6 +135,7 @@ step("create", 1000, 1000, nil, function()
 		obs.obs_data_set_bool(settings, "loop", true)
 	end)
 	check("source created and shown", src ~= nil and item ~= nil)
+	count_media_next_signals()
 end)
 
 step("first item plays", 1000, 8000, function() return st() == PLAYING and dur() > 0 end, function()
@@ -262,14 +287,37 @@ step("next then pause", 500, 8000, function() return dur() == D[3] and dur() > 0
 	obs.obs_data_set_string(settings, "current_file_name", "placeholder")
 	obs.obs_property_button_clicked(obs.obs_properties_get(props, "refresh_filename"), src)
 	check("refresh filename names item 3", current_file_name() == "3: " .. FILES[3], current_file_name())
-	obs.obs_data_set_string(settings, "select_file", "1")
+	-- R-UP-65, R-UP-71: with nothing chosen yet (No File Selected, the default) the button does nothing; upstream
+	-- split an empty value (a crash) and raised media_next anyway. The signal is raised inside the click.
+	local before = media_next_count
 	obs.obs_property_button_clicked(obs.obs_properties_get(props, "play_selected"), src)
+	check("play selected with nothing chosen raises no media_next", media_next_count == before,
+		"media_next raised " .. (media_next_count - before) .. " times")
 	obs.obs_properties_destroy(props)
 	obs.obs_data_set_int(settings, "current_media_index", 99)
 	obs.obs_source_save(src)
 	local saved = obs.obs_data_get_int(settings, "current_media_index")
 	obs.obs_data_release(settings)
-	check("save writes the resume point, item 1", saved == 0, "current_media_index=" .. saved)
+	check("save writes the resume point, item 3", saved == 2, "current_media_index=" .. saved)
+end)
+
+step("nothing chosen", 1000, 1000, nil, function()
+	check("play selected with nothing chosen leaves item 3 paused", dur() == D[3] and st() == PAUSED, status())
+	local props = obs.obs_source_properties(src)
+	local settings = obs.obs_source_get_settings(src)
+	-- an empty value, as a scene saved before anything was chosen can hold (R-UP-65's guard, not the default)
+	obs.obs_data_set_string(settings, "select_file", "")
+	local before = media_next_count
+	obs.obs_property_button_clicked(obs.obs_properties_get(props, "play_selected"), src)
+	check("play selected with an empty choice raises no media_next", media_next_count == before,
+		"media_next raised " .. (media_next_count - before) .. " times")
+	obs.obs_data_set_string(settings, "select_file", "1")
+	obs.obs_data_release(settings)
+	before = media_next_count
+	obs.obs_property_button_clicked(obs.obs_properties_get(props, "play_selected"), src)
+	obs.obs_properties_destroy(props)
+	check("play selected with item 1 chosen raises media_next once", media_next_count == before + 1,
+		"media_next raised " .. (media_next_count - before) .. " times")
 end)
 
 step("play selected", 500, 8000, function() return dur() == D[1] and st() == PLAYING end, function()
@@ -294,6 +342,10 @@ end)
 
 step("empty current folder", 1000, 8000, function() return st() == PLAYING and dur() > 0 end, function()
 	check("an empty current folder row moves on to the next row", st() == PLAYING and dur() == D[1], status())
+	-- R-UP-66: an empty folder has nothing to select; upstream listed it as a file
+	local entries = select_file_entries()
+	check("select file lists the two files after No File Selected, not the empty folder", entries == 3,
+		"entries=" .. entries)
 	obs.obs_source_media_next(src)
 end)
 
@@ -373,6 +425,20 @@ step("one file left", 500, 8000, function()
 end, function()
 	check("with one file left next replays it (shuffle and loop on)", dur() == D[3] and st() == PLAYING and
 		tm() < mark.before_next, status() .. " before=" .. mark.before_next)
+	-- the playing row's path becomes the empty folder, with a file after it: the child is cleared
+	update_settings(function(data)
+		set_playlist(data, { { "", "blank" }, { EMPTY_FOLDER, "empty" }, { EMPTY_FOLDER, "f2" }, { FILES[1], "f1" } })
+	end)
+end)
+
+step("playing row emptied", 1500, 1500, nil, function()
+	-- R-UP-78: nothing is loaded, but the child would still report the PLAYING of its last media
+	check("a cleared source reports stopped while the list still has files", st() == STOPPED, status())
+	obs.obs_source_media_next(src)
+end)
+
+step("next after a clear", 500, 8000, function() return dur() == D[1] and st() == PLAYING end, function()
+	check("next after a clear plays the file after the empty rows", dur() == D[1] and st() == PLAYING, status())
 	remove_source()
 end)
 

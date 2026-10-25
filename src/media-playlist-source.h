@@ -29,6 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "playlist.h"
 #include "player.h"
 #include "shuffler.h"
+#include "core/audio-queue.h"
 
 /* clang-format off */
 
@@ -80,9 +81,6 @@ struct media_playlist_source {
 	enum visibility_behavior visibility_behavior;
 	enum restart_behavior restart_behavior;
 
-	struct deque audio_data[MAX_AUDIO_CHANNELS];
-	struct deque audio_frames;
-	struct deque audio_timestamps;
-	size_t num_channels;
-	pthread_mutex_t audio_mutex;
+	struct pl_audio_queue audio;  /* the child's audio, from its capture callback to video_tick (R-UP-60) */
+	DARRAY(char *) missing_paths; /* owned copies given to missing-file callbacks, freed in destroy (R-UP-67) */
 };

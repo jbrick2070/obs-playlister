@@ -37,7 +37,28 @@ endfunction()
 
 # Upstream shuffler self-tests (shuffler.c TEST_SHUFFLER block) plus regression tests, see test-shuffler.c
 obs_playlister_add_test(test-shuffler test-shuffler.c)
+# The shuffler's guards as the plugin is built, with asserts compiled out (R-UP-74)
+obs_playlister_add_test(test-shuffler-release test-shuffler-release.c)
 # The player's command FIFO
 obs_playlister_add_test(test-command-queue test-command-queue.c "${CMAKE_SOURCE_DIR}/src/core/command-queue.c")
 # Which end of the child may auto-advance
 obs_playlister_add_test(test-load-tracker test-load-tracker.c "${CMAKE_SOURCE_DIR}/src/core/load-tracker.c")
+# The child's audio on its way from the capture callback to video_tick
+obs_playlister_add_test(test-audio-queue test-audio-queue.c "${CMAKE_SOURCE_DIR}/src/core/audio-queue.c")
+
+# Every locale key used in src/ is in en-US.ini (R-TST-1); the second test proves the check fails on a missing key
+add_test(
+  NAME check-locale-keys
+  COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/check-locale-keys.cmake"
+)
+add_test(
+  NAME check-locale-keys-fails-on-missing-key
+  COMMAND
+    "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+    "-DEXTRA_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/locale-missing-key.c" -P
+    "${CMAKE_CURRENT_SOURCE_DIR}/check-locale-keys.cmake"
+)
+set_tests_properties(
+  check-locale-keys-fails-on-missing-key
+  PROPERTIES PASS_REGULAR_EXPRESSION "LocaleKeyThatIsNotInTheLocaleFile \\(.*locale-missing-key\\.c\\)"
+)

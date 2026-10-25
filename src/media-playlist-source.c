@@ -19,6 +19,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "media-playlist-source.h"
 
+/* the audio queue's planes go straight into struct obs_source_audio */
+_Static_assert(PL_AUDIO_MAX_PLANES == MAX_AV_PLANES, "the audio queue must have as many planes as libobs");
+
 static const char *media_filter =
 	" (*.mp4 *.mpg *.m4v *.ts *.mov *.mxf *.flv *.mkv *.avi *.gif *.webm *.mp3 *.m4a *.ogg *.aac *.wav *.opus *.flac);;";
 static const char *video_filter = " (*.mp4 *.mpg *.m4v *.ts *.mov *.mxf *.flv *.mkv *.avi *.gif *.webm);;";
@@ -34,7 +37,7 @@ static bool valid_extension(const char *ext);
 static void clear_media_source(void *data);
 static void update_media_source(void *data, bool forced);
 
-static void select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index);
+static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index);
 
 static void select_index_proc(void *data, calldata_t *cd);
 static void play_folder_item_at_index(void *data, size_t index);
@@ -166,8 +169,6 @@ struct obs_source_info media_playlist_source_info = {
 #define T_PLAY_PAUSE T_("PlayPause")
 #define T_RESTART T_("Restart")
 #define T_STOP T_("Stop")
-#define T_PLAYLIST_NEXT T_("Next")
-#define T_PLAYLIST_PREV T_("Previous")
 
 /* The resume point is saved from video_tick, never under the list lock (R-UP-43, R-UP-62) */
 static inline void mark_save_dirty(struct media_playlist_source *mps)
@@ -299,6 +300,8 @@ static void clear_media_source(void *data)
 {
 	struct media_playlist_source *mps = data;
 	pl_player_clear(&mps->player);
+	/* nothing is playing now; get_state and video_render go by this (R-UP-78). Callers hold the list lock. */
+	mps->actual_media = NULL;
 	mps->state = OBS_MEDIA_STATE_STOPPED;
 }
 
@@ -330,8 +333,10 @@ static void update_media_source(void *data, bool forced)
 	}
 }
 
-static void select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index)
+/* Returns whether a selection was played */
+static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index)
 {
+	bool played = false;
 	pthread_mutex_lock(&mps->mutex);
 	if (media_index < mps->files.num && mps->files.array[media_index].is_folder &&
 	    !mps->files.array[media_index].folder_items.num) {
@@ -346,9 +351,21 @@ static void select_index_proc_(struct media_playlist_source *mps, size_t media_i
 				shuffler_select(&mps->shuffler, mps->actual_media);
 			}
 			mark_save_dirty(mps);
+			played = true;
 		}
 	}
 	pthread_mutex_unlock(&mps->mutex);
+	return played;
+}
+
+/* Tells listeners that the source moved to another item, with the calldata libobs gives its own media signals.
+ * Raised with no plugin lock held. */
+static void signal_media_next(struct media_playlist_source *mps)
+{
+	calldata_t cd = {0};
+	calldata_set_ptr(&cd, "source", mps->source);
+	signal_handler_signal(obs_source_get_signal_handler(mps->source), "media_next", &cd);
+	calldata_free(&cd);
 }
 
 static void select_index_proc(void *data, calldata_t *cd)
@@ -452,8 +469,15 @@ static enum obs_media_state mps_get_state(void *data)
 	struct media_playlist_source *mps = data;
 	pthread_mutex_lock(&mps->mutex);
 	bool has_files = get_total_file_count(mps) > 0;
+	/* R-UP-78: after a clear nothing is loaded (no playing item), but the child keeps the state of the media it
+	 * had, PLAYING included: its stop acts only on media it still has */
+	bool loaded = mps->actual_media != NULL;
 	pthread_mutex_unlock(&mps->mutex);
-	return has_files ? obs_source_media_get_state(mps->current_media_source) : OBS_MEDIA_STATE_NONE;
+	if (!has_files)
+		return OBS_MEDIA_STATE_NONE;
+	if (!loaded)
+		return OBS_MEDIA_STATE_STOPPED;
+	return obs_source_media_get_state(mps->current_media_source);
 }
 
 /* Called from video_tick with no lock held; the parent's media_ended signal is emitted outside the lock */
@@ -487,14 +511,7 @@ void mps_audio_callback(void *data, obs_source_t *source, const struct audio_dat
 	UNUSED_PARAMETER(muted);
 	UNUSED_PARAMETER(source);
 	struct media_playlist_source *mps = data;
-	pthread_mutex_lock(&mps->audio_mutex);
-	size_t size = audio_data->frames * sizeof(float);
-	for (size_t i = 0; i < mps->num_channels; i++) {
-		deque_push_back(&mps->audio_data[i], audio_data->data[i], size);
-	}
-	deque_push_back(&mps->audio_frames, &audio_data->frames, sizeof(audio_data->frames));
-	deque_push_back(&mps->audio_timestamps, &audio_data->timestamp, sizeof(audio_data->timestamp));
-	pthread_mutex_unlock(&mps->audio_mutex);
+	pl_audio_queue_push(&mps->audio, audio_data->data, audio_data->frames, audio_data->timestamp);
 }
 
 static bool play_selected_clicked(obs_properties_t *props, obs_property_t *property, void *data)
@@ -502,19 +519,23 @@ static bool play_selected_clicked(obs_properties_t *props, obs_property_t *prope
 	UNUSED_PARAMETER(props);
 	UNUSED_PARAMETER(property);
 	struct media_playlist_source *mps = data;
-	signal_handler_t *sh = obs_source_get_signal_handler(mps->source);
 	obs_data_t *settings = obs_source_get_settings(mps->source);
 	size_t media_index = 0;
 	size_t folder_item_index = 0;
+	bool played = false;
+	/* "0" is No File Selected, also the default (R-UP-65) */
 	const char *index_str = obs_data_get_string(settings, S_SELECT_FILE);
 	if (strcmp(index_str, "0") != 0) {
 		char **indexes = strlist_split(index_str, '-', false);
 
-		media_index = strtol(indexes[0], NULL, 10) - 1;
-		if (indexes[1]) {
-			folder_item_index = strtol(indexes[1], NULL, 10) - 1;
+		/* R-UP-65: an empty value splits into no parts */
+		if (indexes && indexes[0]) {
+			media_index = strtol(indexes[0], NULL, 10) - 1;
+			if (indexes[1]) {
+				folder_item_index = strtol(indexes[1], NULL, 10) - 1;
+			}
+			played = select_index_proc_(mps, media_index, folder_item_index);
 		}
-		select_index_proc_(mps, media_index, folder_item_index);
 
 		strlist_free(indexes);
 	}
@@ -527,7 +548,9 @@ static bool play_selected_clicked(obs_properties_t *props, obs_property_t *prope
 	obs_data_release(settings);
 	//obs_source_update_properties(mps->source);
 
-	signal_handler_signal(sh, "media_next", NULL);
+	/* R-UP-71: only a selection that was played is a move to another item */
+	if (played)
+		signal_media_next(mps);
 	return true;
 }
 
@@ -904,13 +927,11 @@ static void mps_destroy(void *data)
 	obs_source_release(mps->current_media_source);
 	shuffler_destroy(&mps->shuffler);
 	free_files(&mps->files.da);
-	for (size_t i = 0; i < MAX_AUDIO_CHANNELS; i++) {
-		deque_free(&mps->audio_data[i]);
-	}
-	deque_free(&mps->audio_frames);
-	deque_free(&mps->audio_timestamps);
+	pl_audio_queue_free(&mps->audio);
+	for (size_t i = 0; i < mps->missing_paths.num; i++)
+		bfree(mps->missing_paths.array[i]);
+	da_free(mps->missing_paths);
 	pthread_mutex_destroy(&mps->mutex);
-	pthread_mutex_destroy(&mps->audio_mutex);
 	bfree(mps->current_media_filename);
 	bfree(mps);
 }
@@ -926,13 +947,18 @@ static void *mps_create(obs_data_t *settings, obs_source_t *source)
 
 	shuffler_init(&mps->shuffler);
 
-	/* before any callback that takes them is registered; both hold a valid value before either init, because the
-	 * error path destroys both */
+	/* before any callback that takes them is registered. The list lock holds a valid value before its init, because
+	 * the error path destroys it; the audio queue frees nothing it did not set up. */
 	pthread_mutex_init_value(&mps->mutex);
-	pthread_mutex_init_value(&mps->audio_mutex);
 	if (pthread_mutex_init(&mps->mutex, NULL) != 0)
 		goto error;
-	if (pthread_mutex_init(&mps->audio_mutex, NULL) != 0)
+	/* R-UP-60: the channel count is known from the start, so no chunk is queued with zero planes. OBS changes it
+	 * only on a restart, and creates sources only once its audio output exists. */
+	if (!obs_get_audio()) {
+		obs_log(LOG_ERROR, "OBS has no audio output; the source cannot be created");
+		goto error;
+	}
+	if (!pl_audio_queue_init(&mps->audio, audio_output_get_channels(obs_get_audio())))
 		goto error;
 
 	/* Internal media source */
@@ -1036,26 +1062,17 @@ static void mps_video_tick(void *data, float seconds)
 	//UNUSED_PARAMETER(data);
 	UNUSED_PARAMETER(seconds);
 
-	const audio_t *a = obs_get_audio();
-	const struct audio_output_info *aoi = audio_output_get_info(a);
-	pthread_mutex_lock(&mps->audio_mutex);
-	while (mps->audio_frames.size > 0) {
-		struct obs_source_audio audio;
+	/* R-UP-60: every field is set, the planes past the channel count are NULL, and each chunk comes out of the
+	 * queue whole even where it wraps around the end of a ring buffer */
+	const struct audio_output_info *aoi = audio_output_get_info(obs_get_audio());
+	if (aoi) {
+		struct obs_source_audio audio = {0};
 		audio.format = aoi->format;
 		audio.samples_per_sec = aoi->samples_per_sec;
 		audio.speakers = aoi->speakers;
-		deque_pop_front(&mps->audio_frames, &audio.frames, sizeof(audio.frames));
-		deque_pop_front(&mps->audio_timestamps, &audio.timestamp, sizeof(audio.timestamp));
-		for (size_t i = 0; i < mps->num_channels; i++) {
-			audio.data[i] = (uint8_t *)mps->audio_data[i].data + mps->audio_data[i].start_pos;
-		}
-		obs_source_output_audio(mps->source, &audio);
-		for (size_t i = 0; i < mps->num_channels; i++) {
-			deque_pop_front(&mps->audio_data[i], NULL, audio.frames * sizeof(float));
-		}
+		while (pl_audio_queue_pop(&mps->audio, audio.data, &audio.frames, &audio.timestamp))
+			obs_source_output_audio(mps->source, &audio);
 	}
-	mps->num_channels = audio_output_get_channels(a);
-	pthread_mutex_unlock(&mps->audio_mutex);
 
 	/* Automatic advance is decided here, from the end the child recorded, and executed by the player thread, so
 	 * nothing recurses on the media thread and the graphics thread never waits on a load (R-THR-1). Next runs
@@ -1069,10 +1086,7 @@ static void mps_video_tick(void *data, float seconds)
 		bool moved = ended && playlist_next_locked(mps);
 		pthread_mutex_unlock(&mps->mutex);
 		if (moved) {
-			calldata_t cd = {0};
-			calldata_set_ptr(&cd, "source", mps->source);
-			signal_handler_signal(obs_source_get_signal_handler(mps->source), "media_next", &cd);
-			calldata_free(&cd);
+			signal_media_next(mps);
 		} else if (ended) {
 			mps_end_reached(mps);
 		}
@@ -1162,6 +1176,8 @@ static void mps_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_VISIBILITY_BEHAVIOR, VISIBILITY_BEHAVIOR_STOP_RESTART);
 	obs_data_set_default_int(settings, S_RESTART_BEHAVIOR, RESTART_BEHAVIOR_CURRENT_FILE);
 	obs_data_set_default_string(settings, S_CURRENT_FILE_NAME, " ");
+	/* No File Selected (R-UP-65); upstream left it empty */
+	obs_data_set_default_string(settings, S_SELECT_FILE, "0");
 	obs_data_set_default_int(settings, S_SPEED, 100);
 	/* GPU decoding by default (operator decision D-11); upstream left it off */
 	obs_data_set_default_bool(settings, S_FFMPEG_HW_DECODE, true);
@@ -1174,7 +1190,8 @@ static void add_media_to_selection(obs_property_t *list, struct media_file_data 
 
 	if (data->parent) {
 		dstr_catf(&key, "%zu-%zu", data->parent->index + 1, data->index + 1);
-	} else if (data->folder_items.num) {
+	} else if (data->is_folder) {
+		/* R-UP-66: a folder lists its items, so an empty one lists nothing; upstream listed it as a file */
 		for (size_t i = 0; i < data->folder_items.num; i++) {
 			add_media_to_selection(list, &data->folder_items.array[i]);
 		}
@@ -1610,8 +1627,21 @@ static obs_missing_files_t *mps_missingfiles(void *data)
 
 		if (strcmp(path, "") != 0) {
 			if (!os_file_exists(path) && strstr(path, "://") == NULL) {
+				/* R-UP-67: the callback can run long after this, when the settings no longer hold path, so
+				 * it gets a copy that lives as long as the source; a path reported before reuses its copy */
+				char *owned_path = NULL;
+				pthread_mutex_lock(&mps->mutex);
+				for (size_t j = 0; j < mps->missing_paths.num && !owned_path; j++) {
+					if (strcmp(mps->missing_paths.array[j], path) == 0)
+						owned_path = mps->missing_paths.array[j];
+				}
+				if (!owned_path) {
+					owned_path = bstrdup(path);
+					da_push_back(mps->missing_paths, &owned_path);
+				}
+				pthread_mutex_unlock(&mps->mutex);
 				obs_missing_file_t *file = obs_missing_file_create(
-					path, missing_file_callback, OBS_MISSING_FILE_SOURCE, source, (void *)path);
+					path, missing_file_callback, OBS_MISSING_FILE_SOURCE, source, owned_path);
 
 				obs_missing_files_add_file(missing_files, file);
 			}

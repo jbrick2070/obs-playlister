@@ -374,6 +374,13 @@ void shuffler_update_files(struct shuffler *s, struct darray *array)
 		}
 		da_free(s->shuffled_files);
 		s->shuffled_files.da = shuffled_files.da;
+		/* R-UP-76: the current item, at next - 1, must be a determined one (next <= head) or one of the last
+		 * cycle's history (history < next < num). Counting only the missing items before next does not keep it
+		 * there when Previous went back into that history, so an update with no later select (an edited current
+		 * row, an empty current folder) could leave next at num, and shuffler_next read past the array. The next
+		 * item is then the next undetermined one. */
+		if (s->next > s->head && (s->next <= s->history || s->next >= s->shuffled_files.num))
+			s->next = s->head;
 	} else {
 		shuffler_clear(s);
 		da_free(shuffled_files);

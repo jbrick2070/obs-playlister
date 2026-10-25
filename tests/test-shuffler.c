@@ -29,12 +29,33 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <stdlib.h>
 #include <windows.h>
 
-/* The invariant shuffler_update_files documents (history never drops below head), plus the range of next */
+static void print_state(const struct shuffler *shuffler)
+{
+	fprintf(stderr, "shuffler state: head %zu, next %zu, history %zu, num %zu\n", shuffler->head, shuffler->next,
+		shuffler->history, shuffler->shuffled_files.num);
+}
+
+/* What every operation keeps: history never drops below head (as shuffler_update_files documents), and next points
+ * past the array only when every item is determined, where shuffler_next starts a new cycle */
 static void assert_invariant(struct shuffler *shuffler)
 {
-	assert(shuffler->head <= shuffler->history);
-	assert(shuffler->history <= shuffler->shuffled_files.num);
-	assert(shuffler->next <= shuffler->shuffled_files.num);
+	bool ok = shuffler->head <= shuffler->history && shuffler->history <= shuffler->shuffled_files.num &&
+		  (shuffler->next < shuffler->shuffled_files.num || shuffler->next == shuffler->head);
+	if (!ok)
+		print_state(shuffler);
+	assert(ok);
+}
+
+/* What a list update leaves (R-UP-76): the current item, at next - 1, is a determined one or one of the last
+ * cycle's history. Previous right after a reshuffle can leave it undetermined, as in VLC's randomizer; that is
+ * harmless, and the next update puts it back in range. */
+static void assert_next_in_cycle(struct shuffler *shuffler)
+{
+	bool ok = shuffler->next <= shuffler->head ||
+		  (shuffler->next > shuffler->history && shuffler->next < shuffler->shuffled_files.num);
+	if (!ok)
+		print_state(shuffler);
+	assert(ok);
 }
 
 static void play_next_items(struct shuffler *shuffler, int count)
@@ -188,73 +209,238 @@ static void test_update_files_with_overlapping_ranges(void)
 	ArrayDestroy(&items.da);
 }
 
-/* R-UP-73, R-UP-75: random edits of short lists (each followed by a loop setting and a selection, as in
- * mps_update), selections, next and previous keep the invariant, and next and previous return list items */
+/* R-UP-76: a finished pass, Previous twice (back into the last cycle's history), then one list update that removes
+ * the item the previous pass ended with, and no select after it, as mps_update makes none for an edited current row
+ * or an empty current folder. next used to be left at num, and the next shuffler_next read past the array. */
+static void test_update_files_without_select_keeps_next_in_range(void)
+{
+	struct shuffler shuffler;
+	DARRAY(struct media_file_data) items;
+	DARRAY(struct media_file_data) remaining;
+	da_init(items);
+	da_init(remaining);
+	setup_second_cycle(&shuffler, &items.da, 4);
+
+	struct media_file_data *pass_end = shuffler_prev(&shuffler);
+	shuffler_prev(&shuffler);
+	assert(shuffler.next == 3);
+	assert_invariant(&shuffler);
+
+	/* the copy shares the other items' strings, so it is freed with da_free */
+	for (size_t i = 0; i < items.num; i++) {
+		if (&items.array[i] != pass_end)
+			da_push_back(remaining, &items.array[i]);
+	}
+	shuffler_update_files(&shuffler, &remaining.da);
+	assert(shuffler.shuffled_files.num == 3);
+	assert_next_in_cycle(&shuffler);
+	assert_invariant(&shuffler);
+
+	for (int i = 0; i < 8; i++) {
+		assert(shuffler_has_next(&shuffler));
+		struct media_file_data *item = shuffler_next(&shuffler);
+		assert(item >= remaining.array && item < remaining.array + remaining.num);
+		assert_invariant(&shuffler);
+	}
+
+	shuffler_destroy(&shuffler);
+	da_free(remaining);
+	ArrayDestroy(&items.da);
+}
+
+/* R-UP-76: the clamp leaves a valid next alone. An update with the same items in new storage keeps head, next and
+ * history, with the current item determined (one step back) and with it in the last cycle's history (two back). */
+static void test_identity_update_keeps_valid_next(void)
+{
+	for (int back = 1; back <= 2; back++) {
+		struct shuffler shuffler;
+		DARRAY(struct media_file_data) items;
+		DARRAY(struct media_file_data) copy;
+		da_init(items);
+		da_init(copy);
+		setup_second_cycle(&shuffler, &items.da, 4);
+		for (int i = 0; i < back; i++)
+			shuffler_prev(&shuffler);
+		size_t head = shuffler.head, next = shuffler.next, history = shuffler.history;
+		if (back == 1)
+			assert(next <= head);
+		else
+			assert(next > history && next < shuffler.shuffled_files.num);
+
+		/* the copy shares the items' strings, so it is freed with da_free */
+		da_copy(copy, items);
+		shuffler_update_files(&shuffler, &copy.da);
+		assert(shuffler.head == head && shuffler.next == next && shuffler.history == history);
+
+		shuffler_destroy(&shuffler);
+		da_free(copy);
+		ArrayDestroy(&items.da);
+	}
+}
+
+/* A new row for the randomized test: a file row, or a folder row with up to three items */
+static void add_random_row(struct darray *rows, size_t *last_id)
+{
+	DARRAY(struct media_file_data) list;
+	struct media_file_data row = {0};
+	struct dstr id = {0};
+	list.da = *rows;
+	dstr_printf(&id, "%zu", ++*last_id);
+	row.id = id.array;
+	da_init(row.folder_items);
+	if (rand() % 3 == 0) {
+		row.is_folder = true;
+		for (int n = rand() % 4; n > 0; n--) {
+			struct media_file_data item = {0};
+			struct dstr filename = {0};
+			dstr_printf(&filename, "item%zu", ++*last_id);
+			item.filename = filename.array;
+			item.parent_id = row.id;
+			da_push_back(row.folder_items, &item);
+		}
+	}
+	da_push_back(list, &row);
+	*rows = list.da;
+}
+
+/* A kept row in a list edit, with new folder item storage as mps_update builds it; the folder may lose a file
+ * or gain one */
+static struct media_file_data copy_row(const struct media_file_data *row, size_t *last_id)
+{
+	struct media_file_data copy = *row;
+	da_init(copy.folder_items);
+	for (size_t j = 0; j < row->folder_items.num; j++) {
+		if (rand() % 8 == 0)
+			continue;
+		struct media_file_data item = row->folder_items.array[j];
+		item.filename = bstrdup(item.filename);
+		da_push_back(copy.folder_items, &item);
+	}
+	if (row->is_folder && rand() % 8 == 0) {
+		struct media_file_data item = {0};
+		struct dstr filename = {0};
+		dstr_printf(&filename, "item%zu", ++*last_id);
+		item.filename = filename.array;
+		item.parent_id = copy.id;
+		da_push_back(copy.folder_items, &item);
+	}
+	return copy;
+}
+
+static void free_folder_items(struct media_file_data *row)
+{
+	for (size_t j = 0; j < row->folder_items.num; j++)
+		bfree(row->folder_items.array[j].filename);
+	da_free(row->folder_items);
+}
+
+/* The playable item at flattened position index: a file row or a folder item */
+static struct media_file_data *flattened_item(struct darray *rows, size_t index)
+{
+	DARRAY(struct media_file_data) list;
+	list.da = *rows;
+	for (size_t i = 0; i < list.num; i++) {
+		struct media_file_data *row = &list.array[i];
+		size_t count = row->is_folder ? row->folder_items.num : 1;
+		if (index < count)
+			return row->is_folder ? &row->folder_items.array[index] : row;
+		index -= count;
+	}
+	return NULL;
+}
+
+static size_t flattened_count(struct darray *rows)
+{
+	DARRAY(struct media_file_data) list;
+	size_t count = 0;
+	list.da = *rows;
+	for (size_t i = 0; i < list.num; i++)
+		count += list.array[i].is_folder ? list.array[i].folder_items.num : 1;
+	return count;
+}
+
+static bool is_list_item(struct darray *rows, const struct media_file_data *item)
+{
+	for (size_t i = 0, count = flattened_count(rows); i < count; i++) {
+		if (flattened_item(rows, i) == item)
+			return true;
+	}
+	return false;
+}
+
+/* R-UP-73, R-UP-75, R-UP-76: random edits of short lists of file and folder rows (each followed by a loop setting
+ * and, usually, a selection, as in mps_update), selections, next and previous keep the invariant, and next and
+ * previous return list items */
 static void test_random_operations_keep_invariant(void)
 {
 	struct shuffler shuffler;
-	DARRAY(struct media_file_data) files;
+	DARRAY(struct media_file_data) rows;
 	size_t last_id = 0;
 	shuffler_init(&shuffler);
-	da_init(files);
+	da_init(rows);
 	srand(20261024);
 
 	for (int step = 0; step < 50000; step++) {
 		int op = rand() % 8;
-		if (op < 2 || !files.num) {
-			/* keep each item with probability 3/4, then add up to two new ones */
+		size_t playable = flattened_count(&rows.da);
+		if (op < 2 || !playable) {
+			/* keep each row with probability 3/4, then add up to two new ones */
 			DARRAY(struct media_file_data) edited;
-			DARRAY(char *) dropped_ids;
 			da_init(edited);
-			da_init(dropped_ids);
-			for (size_t i = 0; i < files.num; i++) {
-				if (rand() % 4)
-					da_push_back(edited, &files.array[i]);
-				else
-					da_push_back(dropped_ids, &files.array[i].id);
+			for (size_t i = 0; i < rows.num; i++) {
+				if (rand() % 4) {
+					struct media_file_data copy = copy_row(&rows.array[i], &last_id);
+					da_push_back(edited, &copy);
+				}
 			}
-			for (int added = rand() % 3; added > 0; added--) {
-				struct media_file_data data = {0};
-				struct dstr id = {0};
-				dstr_printf(&id, "%zu", ++last_id);
-				data.id = id.array;
-				da_init(data.folder_items);
-				da_push_back(edited, &data);
-			}
+			for (int added = rand() % 3; added > 0; added--)
+				add_random_row(&edited.da, &last_id);
 
 			if (rand() % 8 == 0)
 				shuffler_reshuffle(&shuffler); /* shuffle turned on again */
 			shuffler_set_loop(&shuffler, rand() % 4 != 0);
 			shuffler_update_files(&shuffler, &edited.da);
-			/* the shuffler now points into the edited list; the dropped items' strings are unused */
-			for (size_t i = 0; i < dropped_ids.num; i++)
-				bfree(dropped_ids.array[i]);
-			da_free(dropped_ids);
-			da_free(files);
-			files.da = edited.da;
-			if (files.num)
-				shuffler_select(&shuffler, &files.array[rand() % files.num]);
+			assert_next_in_cycle(&shuffler);
+			/* the shuffler now points into the edited list; the old rows' folder items and the dropped rows'
+			 * ids are unused */
+			for (size_t i = 0; i < rows.num; i++) {
+				bool kept = false;
+				for (size_t j = 0; j < edited.num && !kept; j++)
+					kept = edited.array[j].id == rows.array[i].id;
+				if (!kept)
+					bfree(rows.array[i].id);
+				free_folder_items(&rows.array[i]);
+			}
+			da_free(rows);
+			rows.da = edited.da;
+			/* mps_update selects the current item, except for an edited current row or an empty current
+			 * folder */
+			playable = flattened_count(&rows.da);
+			if (playable && rand() % 4)
+				shuffler_select(&shuffler, flattened_item(&rows.da, rand() % playable));
 		} else if (op < 5) {
 			if (shuffler_has_next(&shuffler)) {
 				struct media_file_data *item = shuffler_next(&shuffler);
-				assert(item >= files.array && item < files.array + files.num);
+				assert(is_list_item(&rows.da, item));
 			}
 		} else if (op < 7) {
 			if (shuffler_has_prev(&shuffler)) {
 				struct media_file_data *item = shuffler_prev(&shuffler);
-				assert(item >= files.array && item < files.array + files.num);
+				assert(is_list_item(&rows.da, item));
 			}
 		} else {
 			/* Play Selected File */
-			shuffler_select(&shuffler, &files.array[rand() % files.num]);
+			shuffler_select(&shuffler, flattened_item(&rows.da, rand() % playable));
 		}
 		assert_invariant(&shuffler);
 	}
 
 	shuffler_destroy(&shuffler);
-	for (size_t i = 0; i < files.num; i++)
-		bfree(files.array[i].id);
-	da_free(files);
+	for (size_t i = 0; i < rows.num; i++) {
+		bfree(rows.array[i].id);
+		free_folder_items(&rows.array[i]);
+	}
+	da_free(rows);
 }
 
 int main(void)
@@ -267,10 +453,19 @@ int main(void)
 	test_shuffler();
 	printf("upstream shuffler self-tests: passed\n");
 
+	printf("test_select_last_history_item\n");
 	test_select_last_history_item();
+	printf("test_select_with_history_zero\n");
 	test_select_with_history_zero();
+	printf("test_update_files_with_history_zero\n");
 	test_update_files_with_history_zero();
+	printf("test_update_files_with_overlapping_ranges\n");
 	test_update_files_with_overlapping_ranges();
+	printf("test_update_files_without_select_keeps_next_in_range\n");
+	test_update_files_without_select_keeps_next_in_range();
+	printf("test_identity_update_keeps_valid_next\n");
+	test_identity_update_keeps_valid_next();
+	printf("test_random_operations_keep_invariant\n");
 	test_random_operations_keep_invariant();
 	printf("obs-playlister shuffler regression tests: passed\n");
 	return 0;

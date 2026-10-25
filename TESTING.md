@@ -12,12 +12,14 @@ ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure --no-tests=erro
 OBS Playlister source through: play, auto-advance at the end of a file, next and previous, stop (no advance),
 play after stop, pause, seek, restart, a speed change, hide and show (stop/restart and stop/play-next), end of
 the list with loop off, wrap-around with loop on, next then pause in a row, Properties (the Select File list,
-Refresh Filename, Play Selected File) and save, and removal; then a second source whose saved current row is an
-empty folder: it must move on to the next row, next and wrap must pass over the empty row, next with shuffle on
-and loop off must leave the last row, removing the playing row while turning shuffle off must fall back past the
-empty row, a row with an empty path added above the playing row must neither move nor restart it, and editing the
-playing row's path must play the new file. The runner fails the run if the empty folder is ever loaded as a file.
-It needs a portable
+Refresh Filename, Play Selected File with nothing chosen and with item 1 chosen, counting `media_next` signals)
+and save, and removal; then a second source whose saved current row is an empty folder: it must move on to the
+next row, the Select File list must leave the empty folder out, next and wrap must pass over the empty row, next
+with shuffle on and loop off must leave the last row, removing the playing row while turning shuffle off must fall
+back past the empty row, a row with an empty path added above the playing row must neither move nor restart it,
+editing the playing row's path must play the new file, and when the playing row becomes an empty folder the
+source must report stopped and next must still play the file after it. The runner fails the run if the empty
+folder is ever loaded as a file. It needs a portable
 OBS 33 (with `portable_mode.txt`) and three local media files of different durations, and exits with 0 only
 when every check passed.
 
@@ -29,6 +31,7 @@ when every check passed.
 |------|-----|-------|--------|
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 1.2 | 23 passed, 0 failed, no memory leaks |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 1.3 | 37 passed, 0 failed, no memory leaks. Mutation checks: with upstream's `actual_media` test put back into `play_media_at_index`, 5 checks fail; with upstream's settings-array index in `update` (R-UP-77), 3 fail |
+| 2026-10-24 | 33.0.0 portable | Phase 2 step 1.4 | 44 passed, 0 failed, no memory leaks. Mutation checks: with Play Selected raising `media_next` every time (R-UP-71), 1 check fails; with upstream's folder test in the Select File list (R-UP-66) and upstream's `get_state` (R-UP-78), 2 fail. Upstream's Play Selected with nothing chosen (R-UP-65) crashes, so it was not run |
 
 ## Manual checks
 
@@ -47,7 +50,7 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
-| 1.1 | Start OBS 33 and open the log | `[obs-playlister] plugin loaded successfully (version 0.2.0)`; module list shows `obs-playlister.dll`; source list shows `'OBS Playlister' (obs_playlister_source)` | 2026-10-24, OBS 33.0.0 portable (plugin in `plugins\obs-playlister\`): pass. Load line logged; the Plugin Manager's modules.json lists OBS Playlister 0.2.0 with source `obs_playlister_source`; clean exit, 0 leaks. Not yet run on a system install. |
+| 1.1 | Start OBS 33 and open the log | `[obs-playlister] plugin loaded successfully (version 0.2.0)`; module list shows `obs-playlister.dll`; source list shows `'OBS Playlister' (obs_playlister_source)` | 2026-10-24, OBS 33.0.0 portable (plugin in `plugins\obs-playlister\`): pass. Load line logged; the Plugin Manager's modules.json lists OBS Playlister 0.2.0 with source `obs_playlister_source`; clean exit, 0 leaks. 2026-10-24, OBS 33.0.0 system install (plugin in `C:\ProgramData\obs-studio\plugins\obs-playlister\`, Phase 1 build): pass. Load line logged next to `[media-playlist-source] plugin loaded successfully (version 0.1.3)`. |
 | 1.2 | Tools > Plugin Manager | "OBS Playlister", version 0.2.0, no Legacy chip; Media Playlist Source still shows its Legacy chip. Note which manifest fields are displayed (PLAN V7) and whether the Discover tab is still "Coming soon" (D-10) | |
 | 1.3 | Windows security (R-PLAT-10) | `Get-AuthenticodeSignature` on the DLL reports NotSigned; Windows Security protection history and the Code Integrity log show nothing for `obs64.exe` or `obs-playlister.dll` | |
 | 1.4 | Add an "OBS Playlister" source; open Properties | Labels read "Loop Playlist", "Shuffle", "Use hardware decoding when available" (checked by default, D-11), never raw keys | |
@@ -64,6 +67,7 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 | 1.15 | Add a folder row; play | its files play in order; Select File lists them as `N-M: <path>` | |
 | 1.16 | Play Selected File with a chosen item | jumps to that item | |
 | 1.17 | Move a listed file away, restart OBS | the missing-files dialog offers to find or remove it | |
+| 1.17a | As 1.17, but before acting in the dialog add a row to the playlist and apply, then point the dialog at the moved file (R-UP-67, Phase 2 step 1.4 build) | the row is relocated; no crash | |
 | 1.18 | Close OBS while item 2 plays, start OBS again | item 2 resumes | |
 | 1.19 | Script `select_index` with `media_index` past the end | nothing happens (R-UP-5) | |
 | 1.20 | Both plugins at once | a Media Playlist Source and an OBS Playlister source work side by side | |

@@ -22,8 +22,13 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($Files.Count -ne 3) { throw 'pass exactly three media files, each of a different duration' }
-if (Get-Process obs64 -ErrorAction SilentlyContinue) { throw 'an OBS instance is already running' }
 if (-not (Test-Path (Join-Path $ObsRoot 'portable_mode.txt'))) { throw "$ObsRoot is not a portable OBS (no portable_mode.txt)" }
+# another OBS (an installed one) may stay open: the portable copy keeps its own config, logs and plugins, and starts
+# with --multi
+$portableExe = (Resolve-Path (Join-Path $ObsRoot 'bin\64bit\obs64.exe')).Path
+if (Get-Process obs64 -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $portableExe }) {
+	throw 'the portable OBS is already running'
+}
 
 $collection = Join-Path $ObsRoot "config\obs-studio\basic\scenes\$SceneCollection.json"
 $backup = "$collection.harness-backup"

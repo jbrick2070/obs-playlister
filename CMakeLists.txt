@@ -46,6 +46,8 @@ target_sources(
     src/player.c
     src/shuffler.h
     src/shuffler.c
+    src/core/audio-queue.h
+    src/core/audio-queue.c
     src/core/command-queue.h
     src/core/command-queue.c
     src/core/load-tracker.h
