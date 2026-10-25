@@ -44,6 +44,7 @@ struct pl_snapshot {
 	char *status_message;    /* NULL when there is nothing to say */
 	int64_t last_ok_unix_ms; /* the last successful listing, 0 = never (R-BEH-3) */
 	bool stale;              /* the last good list kept after a failure (R-BEH-3) */
+	size_t held_changes; /* what the kept snapshot adds, removes or rewrites (R-DIR-11); 0 when nothing is kept */
 };
 
 /* Frees the snapshot (bmem) and everything it holds; NULL is nothing to free */

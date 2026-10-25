@@ -22,6 +22,18 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "core/entry.h"
 
+/* What a folder row's last snapshot said, for the status block and its log (R-LIST-5, R-BEH-2); owned by the row */
+struct row_report {
+	bool listed; /* listed at least once */
+	enum pl_status_level level;
+	char *message;       /* the provider's words, NULL when there is nothing to say */
+	size_t member_count; /* files after the filter, before the mode (R-DIR-7) */
+	size_t held_changes; /* R-DIR-11 */
+	bool stale;          /* the last good list kept after a failure (R-BEH-3) */
+	int64_t last_ok_unix_ms;
+	char *logged; /* the status last written to the log */
+};
+
 struct media_file_data {
 	char *path;
 	char *filename; // filename with ext, ONLY for folder item checking
@@ -40,4 +52,5 @@ struct media_file_data {
 	bool awaiting;
 	char **pending_keys;
 	size_t pending_count;
+	struct row_report report;
 };

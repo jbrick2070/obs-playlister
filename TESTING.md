@@ -40,8 +40,11 @@ ignored, a pause that freezes the hold, a stop after which nothing moves on, Pla
 and then the next row. After the newest-only source, a source with Lock list at start on the harness folder
 shows the folder options as one labeled group in Properties (ranges, tooltips and the Browse dialog's still images
 checked; N, the interval and the Apply button follow their options), keeps a new file waiting for 5 s while it
-plays, and adds it, without a reload, once Apply waiting changes now is pressed (R-LIST-3, R-DIR-11, R-UP-10). It
-needs a portable
+plays, and adds it, without a reload, once Apply waiting changes now is pressed (R-LIST-3, R-DIR-11, R-UP-10).
+Along the way the status block (R-LIST-5) is read as Properties shows it: file rows with nothing to report, a stale
+choice as a warning right after Play Selected, an empty folder row, a folder's file still being written, "1 of 5
+files" in the newest mode, the locked list's waiting change and its absence once applied, the missing folder as an
+error, failed rows as errors, the line saying why playback stopped, and no setting holding it. It needs a portable
 OBS 33 (with `portable_mode.txt`) and three local media files of different durations, and exits with 0 only
 when every check passed.
 
@@ -63,6 +66,7 @@ when every check passed.
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 2) | 95 passed, 0 failed, no memory leaks, three runs in a row; the still held 4 s, paused and resumed, stayed stopped after a stop, and was held again after Play |
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 6 (part 3) | 101 passed, 0 failed, no memory leaks, three runs in a row; the evicted item played on, restarted from its copy with Current File naming its row alone, and the newer file followed its end. Mutation check: with the eviction treated as a deletion, playback stops when the newer file arrives and 3 checks fail |
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 7 (part 1) | 105 passed, 0 failed, no memory leaks, three runs in a row; the new file waited 5 s with the list locked and joined within one poll of the button. Mutation checks: with the button's request removed, the file is still waiting 15 s later (1 check fails); with the lock option ignored, the file joins at once (1 check fails) |
+| 2026-10-25 | 33.0.0 portable | Phase 2 step 7 (part 2) | 116 passed, 0 failed, no memory leaks, three runs in a row, and once more after the stale-choice check also read the info type. Mutation checks: with the snapshot's change count left at 0, the waiting-change check fails; without the status update in Play Selected, the stale notice is missing from the open Properties and 2 checks fail. How the dialog draws the block is item 2.1 |
 
 ## OBS 33 child behavior (Phase 2 step 6 spike)
 
@@ -129,6 +133,14 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 | 1.19 | Script `select_index` with `media_index` past the end | nothing happens (R-UP-5) | |
 | 1.20 | Both plugins at once | a Media Playlist Source and an OBS Playlister source work side by side | |
 | 1.21 | Packaging (D-2, PLAN V9) | each zip extracts to the layout above; the Inno installer (unsigned, SmartScreen prompt expected) installs the same tree; the portable zip loads in a portable OBS 33 | |
+
+## Phase 2 (version 0.3.0)
+
+Setup as Phase 1, with the Phase 2 build. Items the runtime harness covers are not repeated here.
+
+| # | Check | Expected | Result |
+|---|-------|----------|--------|
+| 2.1 | Open Properties of a source whose list has a file, a folder and a missing file; press Esc without changing anything; then choose an item, remove it from the folder, press Play Selected File | the Status block under the playlist shows one row per line (`1: file`, `2: folder - N files`, `3: file - could not be played` once it failed), in the error color when a row failed; Esc closes Properties without asking to save; after Play Selected File the block shows the "list changed" notice in the warning color, and Refresh Filename clears it | |
 
 ## Known residual risks
 

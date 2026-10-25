@@ -19,6 +19,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "playlister-source.h"
 
+#include <time.h>
+
 #include "core/filter.h"
 #include "core/keys.h"
 #include "core/merge.h"
@@ -69,6 +71,7 @@ static void mps_end_reached(void *data);
 static void media_source_ended(void *data, calldata_t *cd);
 void mps_audio_callback(void *data, obs_source_t *source, const struct audio_data *audio_data, bool muted);
 static bool play_selected_clicked(obs_properties_t *props, obs_property_t *property, void *data);
+static void show_status_block(struct media_playlist_source *mps, obs_property_t *p);
 
 static void play_pause_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 static void restart_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
@@ -169,6 +172,7 @@ struct obs_source_info media_playlist_source_info = {
 #define S_ROW_KINDS "row_kinds"                 /* row uuid -> {"kind": "folder", "path": ...} (R-LIST-1) */
 #define S_FOLDER_OPTIONS "folder_options"       /* the Properties group (R-LIST-3), no setting */
 #define S_APPLY_WAITING "apply_waiting_changes" /* the Properties button (R-DIR-11), no setting */
+#define S_ROW_STATUS "row_status"               /* the status block (R-LIST-5), an info text; no setting */
 #define ROW_KIND_FOLDER "folder"
 #define SCHEMA_VERSION 1
 #define S_ID "uuid"
@@ -224,6 +228,25 @@ struct obs_source_info media_playlist_source_info = {
 #define T_LOCK_LIST_AT_START_TOOLTIP T_("LockListAtStart.Tooltip")
 #define T_APPLY_WAITING T_("ApplyWaitingChanges")
 #define T_APPLY_WAITING_TOOLTIP T_("ApplyWaitingChanges.Tooltip")
+#define T_ROW_STATUS T_("RowStatus")
+#define T_ROW_KIND_FILE T_("RowKind.File")
+#define T_ROW_KIND_URL T_("RowKind.Url")
+#define T_ROW_KIND_FOLDER T_("RowKind.Folder")
+#define T_ROW_STATUS_SCANNING T_("RowStatus.Scanning")
+#define T_ROW_STATUS_EMPTY T_("RowStatus.Empty")
+#define T_ROW_STATUS_ONE_FILE T_("RowStatus.OneFile")
+#define T_ROW_STATUS_FILES T_("RowStatus.Files")
+#define T_ROW_STATUS_FILES_OF_MEMBERS T_("RowStatus.FilesOfMembers")
+#define T_ROW_STATUS_WAITING_ONE T_("RowStatus.WaitingForOneFile")
+#define T_ROW_STATUS_WAITING T_("RowStatus.WaitingForFiles")
+#define T_ROW_STATUS_ONE_CHANGE T_("RowStatus.OneChangeWaiting")
+#define T_ROW_STATUS_CHANGES T_("RowStatus.ChangesWaiting")
+#define T_ROW_STATUS_FAILED T_("RowStatus.Failed")
+#define T_ROW_STATUS_ONE_FAILED T_("RowStatus.OneFileFailed")
+#define T_ROW_STATUS_FILES_FAILED T_("RowStatus.FilesFailed")
+#define T_ROW_STATUS_LAST_LIST T_("RowStatus.LastList")
+#define T_ROW_STATUS_NOT_WATCHED T_("RowStatus.NotWatched")
+#define T_ROW_STATUS_ALL_FAILED T_("RowStatus.AllFailed")
 
 #define T_PLAY_PAUSE T_("PlayPause")
 #define T_RESTART T_("Restart")
@@ -716,7 +739,6 @@ void mps_audio_callback(void *data, obs_source_t *source, const struct audio_dat
 
 static bool play_selected_clicked(obs_properties_t *props, obs_property_t *property, void *data)
 {
-	UNUSED_PARAMETER(props);
 	UNUSED_PARAMETER(property);
 	struct media_playlist_source *mps = data;
 	obs_data_t *settings = obs_source_get_settings(mps->source);
@@ -731,17 +753,20 @@ static bool play_selected_clicked(obs_properties_t *props, obs_property_t *prope
 	bool stale = chosen && !find_selection(mps, choice, &media_index, &folder_item_index);
 	if (chosen && !stale)
 		played = select_index_locked(mps, media_index, folder_item_index);
+	/* the item is gone or moved since Properties listed it (or the value predates identities): no guess. The
+	 * status block says so (R-LIST-5) until a choice is played or Refresh is pressed. */
+	if (chosen)
+		mps->stale_choice = stale;
 	if (stale) {
-		/* the item is gone or moved since Properties listed it (or the value predates identities): no guess. Shown
-		 * in the Current File text until the row status block (R-LIST-5) takes it. */
 		obs_log(LOG_INFO, "play selected: the chosen item is no longer in the list; refresh and choose again");
-		obs_data_set_string(settings, S_CURRENT_FILE_NAME, T_SELECT_FILE_STALE);
 		/* the dropdown has no entry for that value; it shows No File Selected until another item is chosen */
 		obs_data_set_string(settings, S_SELECT_FILE, "0");
-	} else {
-		update_current_filename_setting(mps, settings);
 	}
+	update_current_filename_setting(mps, settings);
 	pthread_mutex_unlock(&mps->mutex);
+	/* the click redraws the open Properties without building it again: its status block is updated here, so a
+	 * stale choice shows (R-UP-20) */
+	show_status_block(mps, obs_properties_get(props, S_ROW_STATUS));
 	/* released after its last use (R-UP-71) */
 	obs_data_release(settings);
 	//obs_source_update_properties(mps->source);
@@ -760,7 +785,9 @@ static bool refresh_filename_clicked(obs_properties_t *props, obs_property_t *pr
 	obs_data_t *settings = obs_source_get_settings(mps->source);
 	pthread_mutex_lock(&mps->mutex);
 	update_current_filename_setting(mps, settings);
+	mps->stale_choice = false;
 	pthread_mutex_unlock(&mps->mutex);
+	/* Properties is built again, and with it the status block (R-LIST-5) */
 	obs_source_update_properties(mps->source);
 	obs_data_release(settings);
 	return true;
@@ -782,6 +809,198 @@ static void free_entry(struct pl_entry *entry)
 	}
 }
 
+/* ---- the status block (R-LIST-5) ---- */
+
+static void free_report(struct row_report *report)
+{
+	bfree(report->message);
+	bfree(report->logged);
+	memset(report, 0, sizeof(*report));
+}
+
+/* R-LIST-5: what the row's line in the status block is made of */
+static void store_report(struct media_file_data *row, const struct pl_snapshot *snapshot)
+{
+	struct row_report *report = &row->report;
+	report->listed = snapshot->initial_scan_complete;
+	report->level = snapshot->level;
+	bfree(report->message);
+	report->message = snapshot->status_message ? bstrdup(snapshot->status_message) : NULL;
+	report->member_count = snapshot->count;
+	report->held_changes = snapshot->held_changes;
+	report->stale = snapshot->stale;
+	report->last_ok_unix_ms = snapshot->last_ok_unix_ms;
+}
+
+/* Appends a locale text with %1 and %2 replaced by numbers; one is the text for a count of 1 */
+static void cat_count(struct dstr *out, const char *one, const char *many, size_t count, size_t second)
+{
+	struct dstr text = {0};
+	char number[32];
+	dstr_copy(&text, count == 1 && one ? one : many);
+	snprintf(number, sizeof(number), "%zu", count);
+	dstr_replace(&text, "%1", number);
+	snprintf(number, sizeof(number), "%zu", second);
+	dstr_replace(&text, "%2", number);
+	dstr_cat_dstr(out, &text);
+	dstr_free(&text);
+}
+
+/* Starts the next part of a status: parts are joined by "; " */
+static struct dstr *next_part(struct dstr *status)
+{
+	if (status->len)
+		dstr_cat(status, "; ");
+	return status;
+}
+
+/* R-BEH-3: the time of the last good list, in local time */
+static void cat_last_list(struct dstr *out, int64_t unix_ms)
+{
+	time_t seconds = (time_t)(unix_ms / 1000);
+	struct tm local;
+	char when[32] = "";
+	if (localtime_s(&local, &seconds) == 0)
+		strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &local);
+	struct dstr text = {0};
+	dstr_copy(&text, T_ROW_STATUS_LAST_LIST);
+	dstr_replace(&text, "%1", when);
+	dstr_cat_dstr(out, &text);
+	dstr_free(&text);
+}
+
+/* Items of a folder row marked failed (R-BEH-5) */
+static size_t failed_items(const struct media_playlist_source *mps, const struct media_file_data *row)
+{
+	size_t count = 0;
+	for (size_t i = 0; mps->failed.num && i < row->folder_items.num; i++)
+		count += item_failed(mps, &row->folder_items.array[i]);
+	return count;
+}
+
+/* One row's status, "kind" or "kind - status" (R-LIST-5), and its level. A folder row says whether it is listed yet
+ * ("scanning", R-BEH-2), how many files it plays (of how many, in a newest mode), the files still being written
+ * (R-DIR-4), the changes the locked list keeps (R-DIR-11), its failed files, the provider's own message (missing
+ * folder, access denied, cloud-only files) and the time of the last list it keeps after a failure (R-BEH-3). The
+ * caller holds the list lock. */
+static enum pl_status_level row_status(const struct media_playlist_source *mps, const struct media_file_data *row,
+				       struct dstr *line)
+{
+	enum pl_status_level level = PL_STATUS_OK;
+	struct dstr status = {0};
+	if (!row->is_folder) {
+		dstr_copy(line, row->is_url ? T_ROW_KIND_URL : T_ROW_KIND_FILE);
+		if (item_failed(mps, row)) {
+			dstr_copy(&status, T_ROW_STATUS_FAILED);
+			level = PL_STATUS_ERROR;
+		}
+	} else {
+		const struct row_report *report = &row->report;
+		dstr_copy(line, T_ROW_KIND_FOLDER);
+		level = report->level;
+		size_t visible = row->folder_items.num;
+		if (row->awaiting) {
+			dstr_copy(&status, T_ROW_STATUS_SCANNING);
+		} else if (report->listed) {
+			if (!visible)
+				dstr_copy(&status, T_ROW_STATUS_EMPTY);
+			else if (visible == report->member_count)
+				cat_count(&status, T_ROW_STATUS_ONE_FILE, T_ROW_STATUS_FILES, visible, 0);
+			else
+				cat_count(&status, NULL, T_ROW_STATUS_FILES_OF_MEMBERS, visible, report->member_count);
+		}
+		if (row->pending_count)
+			cat_count(next_part(&status), T_ROW_STATUS_WAITING_ONE, T_ROW_STATUS_WAITING,
+				  row->pending_count, 0);
+		if (report->held_changes)
+			cat_count(next_part(&status), T_ROW_STATUS_ONE_CHANGE, T_ROW_STATUS_CHANGES,
+				  report->held_changes, 0);
+		size_t failed = failed_items(mps, row);
+		if (failed) {
+			cat_count(next_part(&status), T_ROW_STATUS_ONE_FAILED, T_ROW_STATUS_FILES_FAILED, failed, 0);
+			if (level < PL_STATUS_WARNING)
+				level = PL_STATUS_WARNING;
+		}
+		if (report->message)
+			dstr_cat(next_part(&status), report->message);
+		if (report->stale && report->last_ok_unix_ms)
+			cat_last_list(next_part(&status), report->last_ok_unix_ms);
+	}
+	if (status.len) {
+		dstr_cat(line, " - ");
+		dstr_cat_dstr(line, &status);
+	}
+	dstr_free(&status);
+	return level;
+}
+
+/* The status block: one line per row, "N: kind - status", then a line when auto-advance stopped because nothing may
+ * play (R-BEH-5) and one when the last Play Selected choice was stale (R-UP-20); returns the worst level. The caller
+ * holds the list lock. */
+static enum pl_status_level build_status_block(const struct media_playlist_source *mps, struct dstr *block)
+{
+	enum pl_status_level worst = PL_STATUS_OK;
+	struct dstr line = {0};
+	for (size_t i = 0; i < mps->files.num; i++) {
+		enum pl_status_level level = row_status(mps, &mps->files.array[i], &line);
+		if (level > worst)
+			worst = level;
+		if (block->len)
+			dstr_cat(block, "\n");
+		dstr_catf(block, "%zu: %s", i + 1, line.array);
+	}
+	if (mps->all_failed) {
+		if (block->len)
+			dstr_cat(block, "\n");
+		dstr_cat(block, T_ROW_STATUS_ALL_FAILED);
+		worst = PL_STATUS_ERROR;
+	}
+	if (mps->stale_choice) {
+		if (block->len)
+			dstr_cat(block, "\n");
+		dstr_cat(block, T_SELECT_FILE_STALE);
+		if (worst < PL_STATUS_WARNING)
+			worst = PL_STATUS_WARNING;
+	}
+	if (!block->len)
+		dstr_copy(block, " ");
+	dstr_free(&line);
+	return worst;
+}
+
+/* Puts the status block into its Properties info text: as its long description, which Properties shows as plain lines
+ * when the text has no value (with a value, the long description becomes a tooltip and the lines are folded), colored
+ * by the worst level. Never written to the settings: Properties copies them before it builds itself, and a value
+ * written while it builds makes it ask to save changes nobody made. */
+static void show_status_block(struct media_playlist_source *mps, obs_property_t *p)
+{
+	if (!p)
+		return;
+	struct dstr block = {0};
+	pthread_mutex_lock(&mps->mutex);
+	enum pl_status_level worst = build_status_block(mps, &block);
+	pthread_mutex_unlock(&mps->mutex);
+	obs_property_set_long_description(p, block.array);
+	obs_property_text_set_info_type(p, worst == PL_STATUS_ERROR     ? OBS_TEXT_INFO_ERROR
+					   : worst == PL_STATUS_WARNING ? OBS_TEXT_INFO_WARNING
+									: OBS_TEXT_INFO_NORMAL);
+	dstr_free(&block);
+}
+
+/* R-BEH-2: a folder row's status goes to the log whenever it changes; Properties shows it only when opened or
+ * refreshed. The caller holds the list lock. */
+static void log_row_status(const struct media_playlist_source *mps, struct media_file_data *row, size_t row_index)
+{
+	struct dstr line = {0};
+	enum pl_status_level level = row_status(mps, row, &line);
+	if (!row->report.logged || strcmp(row->report.logged, line.array) != 0) {
+		obs_log(level == PL_STATUS_OK ? LOG_INFO : LOG_WARNING, "row %zu: %s", row_index + 1, line.array);
+		bfree(row->report.logged);
+		row->report.logged = bstrdup(line.array);
+	}
+	dstr_free(&line);
+}
+
 static void free_files(struct darray *array)
 {
 	DARRAY(struct media_file_data) files;
@@ -796,6 +1015,7 @@ static void free_files(struct darray *array)
 		for (size_t k = 0; k < file->pending_count; k++)
 			bfree(file->pending_keys[k]);
 		bfree(file->pending_keys);
+		free_report(&file->report);
 		if (file->is_folder) {
 			for (size_t j = 0; j < file->folder_items.num; j++) {
 				struct media_file_data *folder_item = &file->folder_items.array[j];
@@ -1587,6 +1807,7 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 	 * until the folder comes back, rather than being waited for */
 	if (snapshot->initial_scan_complete || snapshot->level == PL_STATUS_ERROR)
 		row->awaiting = false;
+	store_report(row, snapshot);
 	set_parents(&mps->files.da);
 	shuffler_update_files(&mps->shuffler, &mps->files.da);
 
@@ -1664,6 +1885,7 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 		set_current_media_index(mps, first < mps->files.num ? first : 0);
 		reset_folder_item_index(mps);
 	}
+	log_row_status(mps, row, row_index);
 	pthread_mutex_unlock(&mps->mutex);
 	pl_snapshot_free(snapshot);
 }
@@ -1710,6 +1932,8 @@ static void reconcile_providers(struct media_playlist_source *mps, struct darray
 				row->pending_count = old_row->pending_count;
 				old_row->pending_keys = NULL;
 				old_row->pending_count = 0;
+				row->report = old_row->report;
+				memset(&old_row->report, 0, sizeof(old_row->report));
 			}
 			if (entry.include_subfolders != include_subfolders) {
 				if (entry.provider)
@@ -1771,6 +1995,10 @@ static void start_and_stop_providers(struct media_playlist_source *mps, struct d
 		if (row) {
 			/* never listed: not waited for, but passed over like a missing folder */
 			row->awaiting = false;
+			row->report.level = PL_STATUS_ERROR;
+			bfree(row->report.message);
+			row->report.message = bstrdup(T_ROW_STATUS_NOT_WATCHED);
+			log_row_status(mps, row, row_index);
 			if (mps->resume.pending && strcmp(mps->resume.row_uuid, row->id) == 0)
 				resume_row_has_nothing(mps, row_index);
 		}
@@ -2537,6 +2765,12 @@ static obs_properties_t *mps_properties(void *data)
 	dstr_free(&path);
 	dstr_free(&filter);
 	dstr_free(&exts);
+
+	/* R-LIST-5: built here, so when Properties opens and when Refresh builds it again; never pushed from a worker
+	 * (R-BEH-2) */
+	p = obs_properties_add_text(props, S_ROW_STATUS, T_ROW_STATUS, OBS_TEXT_INFO);
+	if (mps)
+		show_status_block(mps, p);
 
 	add_folder_options(props, mps);
 

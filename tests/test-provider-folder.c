@@ -162,6 +162,12 @@ static bool lacks(const struct pl_snapshot *snapshot, const void *context)
 	return snapshot->initial_scan_complete && entry(snapshot, context) == NULL;
 }
 
+/* the row status "N changes waiting" (R-DIR-11): the snapshot counts what the locked list keeps */
+static bool counts_waiting(const struct pl_snapshot *snapshot, const void *context)
+{
+	return snapshot->held_changes == *(const size_t *)context;
+}
+
 static bool waits_for(const struct pl_snapshot *snapshot, const void *context)
 {
 	return pending(snapshot, context);
@@ -451,12 +457,15 @@ static void test_listing_and_changes(void)
 	while (pl_provider_held_changes(provider) != 1 && os_gettime_ns() < limit)
 		Sleep(50);
 	assert(pl_provider_held_changes(provider) == 1);
+	size_t one_change = 1;
+	assert(wait_for(&inbox, mark, counts_waiting, &one_change, "the kept change counted in a snapshot"));
 	pthread_mutex_lock(&inbox.mutex);
 	for (size_t i = mark; i < inbox.snapshots.num; i++)
 		assert(!entry(inbox.snapshots.array[i], "F.MP4"));
 	pthread_mutex_unlock(&inbox.mutex);
 	pl_provider_release_held(provider);
-	assert(wait_for(&inbox, mark, lists, "F.MP4", "the released change"));
+	const struct pl_snapshot *released = wait_for(&inbox, mark, lists, "F.MP4", "the released change");
+	assert(released && released->held_changes == 0);
 	assert(pl_provider_held_changes(provider) == 0);
 
 	/* every file deleted while locked: an empty membership is kept and counted like any other */

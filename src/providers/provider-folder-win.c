@@ -1004,6 +1004,7 @@ static struct pl_snapshot *build_snapshot(struct pl_provider *p, const struct pl
 		snapshot->pending_keys[i] = bstrdup(pending[i]);
 	snapshot->pending_count = pending_count;
 	fill_status(p, snapshot);
+	snapshot->held_changes = (size_t)os_atomic_load_long(&p->held_changes);
 	return snapshot;
 }
 
@@ -1021,8 +1022,9 @@ static char *snapshot_signature(const struct pl_snapshot *snapshot)
 	dstr_cat(&signature, "visible");
 	for (size_t i = 0; i < snapshot->visible_count; i++)
 		dstr_catf(&signature, " %zu", snapshot->visible[i]);
-	dstr_catf(&signature, "\npending %zu\nlevel %d %s\nstale %d initial %d\n", snapshot->pending_count,
-		  (int)snapshot->level, snapshot->status_message ? snapshot->status_message : "", snapshot->stale,
+	dstr_catf(&signature, "\npending %zu\nheld %zu\nlevel %d %s\nstale %d initial %d\n", snapshot->pending_count,
+		  snapshot->held_changes, (int)snapshot->level,
+		  snapshot->status_message ? snapshot->status_message : "", snapshot->stale,
 		  snapshot->initial_scan_complete);
 	return signature.array;
 }

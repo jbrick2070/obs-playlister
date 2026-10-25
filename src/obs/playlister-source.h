@@ -136,4 +136,8 @@ struct media_playlist_source {
 	 * the row's uuid); under the list lock */
 	struct media_file_data playing_copy;
 	bool playing_copy_active;
+
+	/* R-UP-20: the last Play Selected choice was no longer in the list; the status block says so until the next
+	 * choice is played or Refresh is pressed (R-LIST-5); under the list lock */
+	bool stale_choice;
 };

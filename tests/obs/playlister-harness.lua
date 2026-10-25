@@ -146,6 +146,10 @@ local function play_selected(value)
 	obs.obs_data_release(settings)
 	local props = obs.obs_source_properties(src)
 	obs.obs_property_button_clicked(obs.obs_properties_get(props, "play_selected"), src)
+	-- the status block as the open Properties shows it after the click, which redraws it without building it again
+	local block = obs.obs_properties_get(props, "row_status")
+	mark.status_after_click = obs.obs_property_long_description(block) or ""
+	mark.status_type_after_click = obs.obs_property_text_info_type(block)
 	obs.obs_properties_destroy(props)
 end
 
@@ -177,9 +181,36 @@ local function refreshed_file_name()
 	return current_file_name()
 end
 
--- a stale choice is reported in the Current File text instead of played (R-UP-20)
+-- the status block (R-LIST-5) as Properties shows it when built (opened, or refreshed): its text, the info text's long
+-- description (no setting), and its info type (0 normal, 1 warning, 2 error)
+local function status_block()
+	local props = obs.obs_source_properties(src)
+	local block = obs.obs_properties_get(props, "row_status")
+	local text = block and obs.obs_property_long_description(block) or ""
+	local info_type = block and obs.obs_property_text_info_type(block) or -1
+	obs.obs_properties_destroy(props)
+	return text, info_type
+end
+
+-- checks the status block's text and info type
+local function check_status(name, expected_text, expected_type)
+	local text, info_type = status_block()
+	check(name, text == expected_text and info_type == expected_type, text:gsub("\n", " | ") .. " (type " ..
+		info_type .. ")")
+end
+
+-- a stale choice is reported in the status block instead of played (R-UP-20), as the open Properties shows it right
+-- after Play Selected
 local function reports_stale_choice()
-	return current_file_name():find("list changed", 1, true) ~= nil
+	return mark.status_after_click:find("list changed", 1, true) ~= nil and mark.status_type_after_click == 1
+end
+
+-- no setting holds the status block (a setting written while Properties builds itself makes it ask to save changes)
+local function status_in_settings()
+	local settings = obs.obs_source_get_settings(src)
+	local in_settings = obs.obs_data_has_user_value(settings, "row_status")
+	obs.obs_data_release(settings)
+	return in_settings
 end
 
 -- presses a Properties button of the source, as Properties does
@@ -521,7 +552,9 @@ step("nothing chosen", 1000, 1000, nil, function()
 	before = media_next_count
 	play_selected("1")
 	check("play selected with a position from before Phase 2 is reported, not played", media_next_count == before and
-		reports_stale_choice() and dur() == D[3], current_file_name() .. ", " .. status())
+		reports_stale_choice() and dur() == D[3], mark.status_after_click .. ", " .. status())
+	check_status("a stale choice is a warning in the status block", "1: file\n2: file\n3: file\nThe list changed " ..
+		"since this item was listed. Press Refresh Filename and choose it again.", 1)
 	before = media_next_count
 	play_selected("row-1:0:")
 	check("play selected with item 1 chosen raises media_next once", media_next_count == before + 1,
@@ -531,6 +564,9 @@ end)
 step("play selected", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
 	check("play selected file plays item 1", dur() == D[1] and st() == PLAYING, status())
 	check("current file names item 1", current_file_name() == "1: " .. FILES[1], current_file_name())
+	check_status("the status block lists each file row, the stale notice gone once a choice played",
+		"1: file\n2: file\n3: file", 0)
+	check("no setting holds the status block", not status_in_settings())
 	remove_source()
 end)
 
@@ -554,6 +590,7 @@ step("empty current folder", 1000, 15000, function() return st() == PLAYING and 
 	local entries = select_file_entries()
 	check("select file lists the two files after No File Selected, not the empty folder", entries == 3,
 		"entries=" .. entries)
+	check_status("the status block shows the empty folder row", "1: folder - empty\n2: file\n3: file", 0)
 	obs.obs_source_media_next(src)
 end)
 
@@ -772,11 +809,11 @@ step("resume by uuid and key", 1000, 15000, function() return st() == PLAYING an
 	local before = media_next_count
 	play_selected("media:2:2.MP4")
 	check("play selected with an item that is not there is reported, not played", reports_stale_choice() and
-		dur() == D[3] and media_next_count == before, current_file_name() .. ", " .. status() .. ", media_next " ..
+		dur() == D[3] and media_next_count == before, mark.status_after_click .. ", " .. status() .. ", media_next " ..
 		(media_next_count - before))
 	play_selected("media:0:")
 	check("play selected with a folder row's own identity is reported, not played", reports_stale_choice() and
-		dur() == D[3] and media_next_count == before, current_file_name() .. ", " .. status() .. ", media_next " ..
+		dur() == D[3] and media_next_count == before, mark.status_after_click .. ", " .. status() .. ", media_next " ..
 		(media_next_count - before))
 	check("a stale choice resets Select File to No File Selected", setting_string("select_file") == "0",
 		setting_string("select_file"))
@@ -839,6 +876,8 @@ step("third folder item", 500, 15000, function() return dur() == D[3] and st() =
 end)
 
 step("rewrite pending", 1200, 1200, nil, function()
+	check_status("the status block counts the file still being written",
+		"1: file\n2: folder - 4 files; waiting for 1 file to finish writing", 0)
 	obs.obs_source_media_next(src)
 end)
 
@@ -873,10 +912,6 @@ end, function()
 	remove_source()
 end)
 
--- A fourth source whose first row was saved as a folder that is gone now (R-LIST-1, rule 1). It stays a folder with
--- nothing to play, so playback moves on to the next row and its path is never handed to the child as a file
--- (run-harness.ps1 fails the run if it is); without the saved kind it would be a file row. The second row was saved
--- without a uuid and is given one, so Select File can name it.
 -- R-DIR-8: a newest-only row whose playing file is no longer the newest; the newest now is 9.mp4, the copy the
 -- harness rewrote above (a copy of the first file). A newer copy arrives while 9.mp4 plays: 9.mp4 plays to its end
 -- from the source's own copy of its entry, and then the newer file plays.
@@ -902,6 +937,7 @@ end)
 step("a newer file arrives", 500, 15000, function()
 	return select_file_values() == "0 media:1:7.MP4"
 end, function()
+	check_status("the status block shows the newest file of the folder's five", "1: folder - 1 of 5 files", 0)
 	check("the newer file replaces it in the list while it keeps playing", select_file_values() == "0 media:1:7.MP4" and
 		dur() == D[1] and st() == PLAYING and tm() > mark.before_newer,
 		select_file_values() .. ", " .. status() .. " before=" .. mark.before_newer)
@@ -950,6 +986,7 @@ end)
 step("a new file waits", 5000, 5000, nil, function()
 	check("with the list locked, the new file waits", select_file_values() == mark.locked_values and st() == PLAYING,
 		select_file_values() .. ", " .. status())
+	check_status("the status block counts the waiting change", "1: folder - 5 files; 1 change waiting", 0)
 	mark.before_apply = tm()
 	mark.duration_before_apply = dur()
 	press("apply_waiting_changes")
@@ -962,6 +999,7 @@ step("waiting changes applied", 500, 10000, lists_new_file, function()
 	check("apply waiting changes now adds the new file while the item plays on", lists_new_file() and
 		st() == PLAYING and dur() == mark.duration_before_apply and tm() > mark.before_apply,
 		select_file_values() .. ", " .. status() .. " before=" .. mark.before_apply)
+	check_status("once applied, the status block has no change waiting", "1: folder - 6 files", 0)
 	remove_source()
 end)
 
@@ -984,6 +1022,10 @@ end, function()
 	check("the harness copies in the watched folder are removed", not copies_left())
 end)
 
+-- A fourth source whose first row was saved as a folder that is gone now (R-LIST-1, rule 1). It stays a folder with
+-- nothing to play, so playback moves on to the next row and its path is never handed to the child as a file
+-- (run-harness.ps1 fails the run if it is); without the saved kind it would be a file row. The second row was saved
+-- without a uuid and is given one, so Select File can name it.
 step("source with an absent folder row", 1500, 1500, nil, function()
 	create_source("playlister-harness-absent", function(settings)
 		set_playlist(settings, { { MISSING_FOLDER, "gone" }, { FILES[2] } })
@@ -1006,6 +1048,8 @@ step("absent folder passed over", 1000, 15000, function() return st() == PLAYING
 	check("a row saved as a folder that is gone moves on to the next row", dur() == D[2] and st() == PLAYING,
 		status())
 	check("the absent folder keeps its saved kind", row_kind("gone") == "folder " .. MISSING_FOLDER, row_kind("gone"))
+	check_status("the status block shows the missing folder as an error",
+		"1: folder - folder not found, or not a folder\n2: file", 2)
 	local uuid = row_uuid(1)
 	check("a row saved without a uuid is given one", uuid ~= "" and uuid ~= "gone", uuid)
 	check("select file lists the file row only, by its new uuid", select_file_values() == "0 " .. uuid .. ":0:",
@@ -1028,6 +1072,8 @@ end)
 step("failing rows skipped", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
 	check("a missing file and a corrupt one are skipped for the file after them", dur() == D[1] and st() == PLAYING,
 		status())
+	check_status("the status block shows the failed rows as errors",
+		"1: file - could not be played\n2: file - could not be played\n3: file", 2)
 	remove_source()
 end)
 
@@ -1042,6 +1088,9 @@ end)
 
 step("everything failed", 3000, 3000, nil, function()
 	check("a list where nothing plays stops instead of cycling", st() == STOPPED, status())
+	check_status("the status block says why playback stopped", "1: file - could not be played\n" ..
+		"2: file - could not be played\nPlayback stopped: nothing in the list can be played. Fix or remove the " ..
+		"failing entries, or press Play to try them again.", 2)
 	obs.obs_source_media_play_pause(src, false)
 end)
 
