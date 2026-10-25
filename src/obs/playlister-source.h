@@ -131,4 +131,9 @@ struct media_playlist_source {
 	volatile long hold_epoch; /* the held load */
 	int64_t hold_last_ms;     /* video_tick only */
 	long still_duration_ms;   /* the still duration option */
+
+	/* R-DIR-8: a playing item that a newest mode left out of its row plays to its end from this copy (its id holds
+	 * the row's uuid); under the list lock */
+	struct media_file_data playing_copy;
+	bool playing_copy_active;
 };

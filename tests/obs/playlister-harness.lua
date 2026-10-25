@@ -772,13 +772,63 @@ end)
 -- nothing to play, so playback moves on to the next row and its path is never handed to the child as a file
 -- (run-harness.ps1 fails the run if it is); without the saved kind it would be a file row. The second row was saved
 -- without a uuid and is given one, so Select File can name it.
+-- R-DIR-8: a newest-only row whose playing file is no longer the newest; the newest now is 9.mp4, the copy the
+-- harness rewrote above (a copy of the first file). A newer copy arrives while 9.mp4 plays: 9.mp4 plays to its end
+-- from the source's own copy of its entry, and then the newer file plays.
+step("source with a newest-only folder", 1500, 1500, nil, function()
+	-- 8.mp4, copied in after the rewrite, would be newer still; no source plays it
+	os.remove(MEDIA_FOLDER .. "/8.mp4")
+	create_source("playlister-harness-newest", function(settings)
+		set_playlist(settings, { { MEDIA_FOLDER, "media" } })
+		obs.obs_data_set_int(settings, "container_mode", 1)
+		obs.obs_data_set_bool(settings, "loop", false)
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	check("source with a newest-only folder created and shown", src ~= nil and item ~= nil)
+end)
+
+step("newest plays", 500, 15000, function() return st() == PLAYING and dur() > 0 end, function()
+	check("newest only plays the newest file alone", dur() == D[1] and select_file_values() == "0 media:1:9.MP4",
+		select_file_values() .. ", " .. status())
+	copy_file(FILES[2], MEDIA_FOLDER .. "/7.mp4")
+	mark.before_newer = tm()
+end)
+
+step("a newer file arrives", 500, 15000, function()
+	return select_file_values() == "0 media:1:7.MP4"
+end, function()
+	check("the newer file replaces it in the list while it keeps playing", dur() == D[1] and st() == PLAYING and
+		tm() > mark.before_newer, status() .. " before=" .. mark.before_newer)
+	mark.before_restart = tm()
+	obs.obs_source_media_restart(src)
+end)
+
+-- Restart (current file, the default) starts the evicted item again, not the newer one
+step("evicted item restarted", 500, 15000, function()
+	return st() == PLAYING and dur() == D[1] and tm() < mark.before_restart
+end, function()
+	check("restart starts the evicted item again", st() == PLAYING and dur() == D[1] and tm() < mark.before_restart,
+		status() .. " before=" .. mark.before_restart)
+	check("current file names the evicted item by its row alone", refreshed_file_name() == "1: " .. MEDIA_FOLDER ..
+		"/9.mp4", refreshed_file_name())
+	seek_near_end()
+end)
+
+step("evicted item ended", 500, 15000, function() return dur() == D[2] and st() == PLAYING end, function()
+	check("after the evicted item's end, the newest file plays", refreshed_file_name() == "1-1: " .. MEDIA_FOLDER ..
+		"/7.mp4", refreshed_file_name())
+	remove_source()
+end)
+
 -- the copies go once the child that may hold the last one open is released; tried until they are gone
 step("copies removed", 0, 10000, function()
-	os.remove(MEDIA_FOLDER .. "/8.mp4")
-	os.remove(MEDIA_FOLDER .. "/9.mp4")
-	return not exists(MEDIA_FOLDER .. "/8.mp4") and not exists(MEDIA_FOLDER .. "/9.mp4")
+	for _, name in ipairs({ "7.mp4", "8.mp4", "9.mp4" }) do
+		os.remove(MEDIA_FOLDER .. "/" .. name)
+	end
+	return not exists(MEDIA_FOLDER .. "/7.mp4") and not exists(MEDIA_FOLDER .. "/8.mp4") and
+		not exists(MEDIA_FOLDER .. "/9.mp4")
 end, function()
-	check("the harness copies in the watched folder are removed",
+	check("the harness copies in the watched folder are removed", not exists(MEDIA_FOLDER .. "/7.mp4") and
 		not exists(MEDIA_FOLDER .. "/8.mp4") and not exists(MEDIA_FOLDER .. "/9.mp4"))
 end)
 

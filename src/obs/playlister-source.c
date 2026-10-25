@@ -48,6 +48,7 @@ static void retry_failed_on_request(struct media_playlist_source *mps);
 static bool nothing_playable(struct media_playlist_source *mps);
 static bool item_is_still(const struct media_file_data *item);
 static bool hold_shown(struct media_playlist_source *mps);
+static void drop_playing_copy(struct media_playlist_source *mps);
 
 static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index);
 
@@ -374,6 +375,9 @@ static void update_current_filename_setting(struct media_playlist_source *mps, o
 	if (!mps->actual_media) {
 		obs_data_set_string(data, S_CURRENT_FILE_NAME, " ");
 		return;
+	} else if (mps->actual_media == &mps->playing_copy) {
+		/* an evicted item has no place in its row's list now: the row only (R-DIR-8) */
+		dstr_catf(&long_desc, "%zu", mps->actual_media->parent->index + 1);
 	} else if (mps->actual_media->parent) {
 		dstr_catf(&long_desc, "%zu-%zu", mps->actual_media->parent->index + 1, mps->actual_media->index + 1);
 	} else {
@@ -428,6 +432,8 @@ static void update_media_source(void *data, bool forced)
 		cancel_resume(mps);
 		mps->all_failed = false;
 	}
+	/* what plays now is an item of the list; an evicted item's copy is done with (R-DIR-8) */
+	drop_playing_copy(mps);
 }
 
 /* Returns whether a selection was played. The caller holds the list lock. */
@@ -833,6 +839,19 @@ static bool hold_shown(struct media_playlist_source *mps)
 	       !state_stopped(mps->state);
 }
 
+/* R-DIR-8: with an evicted item's copy current, Restart and Play from stopped start that item again rather than
+ * the row's first item; true when it did */
+static bool restart_playing_copy(struct media_playlist_source *mps)
+{
+	if (!mps->playing_copy_active || mps->actual_media != &mps->playing_copy)
+		return false;
+	pl_player_load(&mps->player, mps->playing_copy.path, false, item_is_still(&mps->playing_copy));
+	mps->state = OBS_MEDIA_STATE_PLAYING;
+	cancel_resume(mps);
+	mps->all_failed = false;
+	return true;
+}
+
 /* Whether the current item can be loaded. In a folder row an item being rewritten is passed for the next one that
  * may be loaded, from the row's start if none follows (R-DIR-4); the index moves to it. */
 static bool point_at_playable_item(struct media_playlist_source *mps)
@@ -922,6 +941,8 @@ static void mps_play_pause(void *data, bool pause)
 			if (!held)
 				pl_player_play_pause(&mps->player, false);
 			set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
+		} else if (restart_playing_copy(mps)) {
+			os_atomic_set_bool(&mps->release_held, true);
 		} else {
 			retry_failed_on_request(mps);
 			if (point_at_playable_item(mps)) {
@@ -951,7 +972,7 @@ static void mps_restart(void *data)
 	if (mps->restart_behavior == RESTART_BEHAVIOR_FIRST_FILE) {
 		play_media_at_index(mps, 0, false, false);
 	} else if (mps->restart_behavior == RESTART_BEHAVIOR_CURRENT_FILE) {
-		if (point_at_playable_item(mps))
+		if (!restart_playing_copy(mps) && point_at_playable_item(mps))
 			update_media_source(mps, true);
 	}
 	pthread_mutex_unlock(&mps->mutex);
@@ -1014,6 +1035,15 @@ static bool playlist_next_locked(struct media_playlist_source *mps)
 		return true;
 	}
 
+	/* R-DIR-8: after an evicted item, its row goes on with the first item of its new visible list */
+	if (mps->playing_copy_active && mps->actual_media == &mps->playing_copy && mps->current_media->is_folder) {
+		size_t first = loadable_item(mps, mps->current_media, 0, false);
+		if (first != DARRAY_INVALID) {
+			mps->current_folder_item_index = first;
+			play_folder_item_at_index(mps, first);
+			return true;
+		}
+	}
 	if (mps->current_media->is_folder && mps->current_media->folder_items.num > 0 &&
 	    mps->current_folder_item_index < mps->current_media->folder_items.num - 1) {
 		size_t next_item = loadable_item(mps, mps->current_media, mps->current_folder_item_index + 1, false);
@@ -1234,6 +1264,43 @@ static size_t exact_item_index(const struct media_file_data *row, const char *ke
 	return DARRAY_INVALID;
 }
 
+/* Frees the evicted item's copy (R-DIR-8); a pointer to it is cleared */
+static void drop_playing_copy(struct media_playlist_source *mps)
+{
+	if (!mps->playing_copy_active)
+		return;
+	if (mps->actual_media == &mps->playing_copy)
+		mps->actual_media = NULL;
+	bfree(mps->playing_copy.filename);
+	bfree(mps->playing_copy.path);
+	bfree(mps->playing_copy.id);
+	free_entry(mps->playing_copy.entry);
+	memset(&mps->playing_copy, 0, sizeof(mps->playing_copy));
+	mps->playing_copy_active = false;
+}
+
+/* R-DIR-8: the playing item left the visible list but is still a member; it plays on from the source's own copy,
+ * which actual_media points at (no shuffler selection is made for it) */
+static void keep_playing_copy(struct media_playlist_source *mps, const struct media_file_data *item,
+			      struct media_file_data *row)
+{
+	struct media_file_data copy = {0};
+	copy.path = bstrdup(item->path);
+	copy.filename = bstrdup(item->filename);
+	copy.id = bstrdup(row->id);
+	copy.parent = row;
+	copy.parent_id = row->id;
+	copy.index = item->index;
+	if (item->entry) {
+		copy.entry = bzalloc(sizeof(*copy.entry));
+		pl_entry_copy(copy.entry, item->entry);
+	}
+	drop_playing_copy(mps);
+	mps->playing_copy = copy;
+	mps->playing_copy_active = true;
+	mps->actual_media = &mps->playing_copy;
+}
+
 static void free_items(struct darray *array)
 {
 	DARRAY(struct media_file_data) items;
@@ -1312,6 +1379,21 @@ static void follow_renames(struct media_playlist_source *mps, struct media_file_
 			mps->current_item_occurrence = id.occurrence;
 		}
 	}
+	/* the evicted item playing from its copy follows its rename: same file, new key and path (R-DIR-8) */
+	if (mps->playing_copy_active && mps->playing_copy.parent == row && mps->playing_copy.entry) {
+		struct pl_entry *copy = mps->playing_copy.entry;
+		for (size_t i = 0; i < snapshot->count; i++) {
+			const struct pl_entry *renamed = &snapshot->entries[i];
+			if (!renamed->previous_key || strcmp(renamed->previous_key, copy->key) != 0)
+				continue;
+			bfree(copy->key);
+			copy->key = bstrdup(renamed->key);
+			copy->occurrence = renamed->occurrence;
+			bfree(mps->playing_copy.path);
+			mps->playing_copy.path = bstrdup(renamed->location);
+			break;
+		}
+	}
 	if (mps->resume.pending && mps->resume.item_key && strcmp(mps->resume.row_uuid, row->id) == 0) {
 		struct pl_item_id id = {mps->resume.item_key, mps->resume.item_occurrence};
 		if (pl_merge_follow_rename(&id, snapshot->entries, snapshot->count)) {
@@ -1327,12 +1409,12 @@ static void follow_renames(struct media_playlist_source *mps, struct media_file_
  * that followed it in the previous order and is still listed (with shuffle on, the shuffler's next), else on past
  * the row as at its end; with nothing to go on to, the child is cleared. */
 static void move_past_removed(struct media_playlist_source *mps, struct media_file_data *row, size_t row_index,
-			      const struct darray *old_array, size_t position)
+			      const struct darray *old_array, size_t first_candidate)
 {
 	DARRAY(struct media_file_data) old_items;
 	old_items.da = *old_array;
 	if (!mps->shuffle) {
-		for (size_t j = position + 1; j < old_items.num; j++) {
+		for (size_t j = first_candidate; j < old_items.num; j++) {
 			const struct pl_entry *entry = old_items.array[j].entry;
 			size_t successor = exact_item_index(row, entry->key, entry->occurrence);
 			if (successor != DARRAY_INVALID && item_loadable(mps, &row->folder_items.array[successor])) {
@@ -1466,7 +1548,9 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 	 * its own identity, which the renames below update */
 	struct media_file_data *loaded = mps->actual_media && mps->actual_media->parent == row ? mps->actual_media
 											       : NULL;
-	size_t loaded_position = loaded ? loaded->index : 0;
+	/* where its successors start in the previous visible list: after it, or for an evicted item's copy, which is
+	 * no longer in that list, at its start (R-DIR-8) */
+	size_t first_successor = !loaded || loaded == &mps->playing_copy ? 0 : loaded->index + 1;
 
 	DARRAY(struct media_file_data) old_items;
 	old_items.da = row->folder_items.da;
@@ -1482,19 +1566,38 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 	if (loaded) {
 		size_t found = loaded->entry ? exact_item_index(row, loaded->entry->key, loaded->entry->occurrence)
 					     : DARRAY_INVALID;
+		bool evicted = false;
+		if (found == DARRAY_INVALID && loaded->entry) {
+			struct pl_item_id id = {loaded->entry->key, loaded->entry->occurrence};
+			evicted = pl_merge_current_fate(snapshot->entries, snapshot->count, snapshot->visible,
+							snapshot->visible_count, id, NULL) == PL_CURRENT_EVICTED;
+		}
+		bool playing_or_paused = mps->state == OBS_MEDIA_STATE_PLAYING || mps->state == OBS_MEDIA_STATE_PAUSED;
 		if (found != DARRAY_INVALID) {
 			mps->actual_media = &row->folder_items.array[found];
 			if (current_row)
 				mps->current_folder_item_index = found;
+			/* back in the visible list: the copy is done with */
+			drop_playing_copy(mps);
+		} else if (evicted && current_row && playing_or_paused) {
+			/* R-DIR-8: still a member, only left out by the mode (newest only or N): it plays to its end, then
+			 * the row goes on with its first visible item */
+			if (loaded != &mps->playing_copy) {
+				obs_log(LOG_INFO,
+					"row %zu: the playing item is no longer among the newest; it plays to its end",
+					row_index + 1);
+				keep_playing_copy(mps, loaded, row);
+			}
+			mps->current_folder_item_index = 0;
 		} else {
 			mps->actual_media = NULL;
 			if (current_row && mps->state == OBS_MEDIA_STATE_PLAYING) {
-				move_past_removed(mps, row, row_index, &old_items.da, loaded_position);
+				move_past_removed(mps, row, row_index, &old_items.da, first_successor);
 			} else if (current_row) {
 				/* stopped, paused or ended: nothing starts by itself; Play goes on from the item that
 				 * followed it, if that is still listed */
 				mps->current_folder_item_index = 0;
-				for (size_t j = loaded_position + 1; j < old_items.num; j++) {
+				for (size_t j = first_successor; j < old_items.num; j++) {
 					const struct pl_entry *entry = old_items.array[j].entry;
 					size_t successor = exact_item_index(row, entry->key, entry->occurrence);
 					if (successor != DARRAY_INVALID &&
@@ -1508,6 +1611,8 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 							   : NULL);
 			}
 			mark_save_dirty(mps);
+			if (!mps->actual_media || mps->actual_media != &mps->playing_copy)
+				drop_playing_copy(mps);
 		}
 	} else if (current_row && mps->current_item_key) {
 		/* nothing of this row loaded: its position follows the remembered item */
@@ -1717,6 +1822,7 @@ static void mps_destroy(void *data)
 	cancel_resume(mps);
 	bfree(mps->container_filter);
 	clear_failures(mps);
+	drop_playing_copy(mps);
 
 	/* R-UP-70: stop the player thread, disconnect the child's handler and audio callback (both wait for a
 	 * callback in flight), and only then release the child */
@@ -2695,7 +2801,21 @@ static void mps_update(void *data, obs_data_t *settings)
 	}
 
 	bool handled = false;
-	if (defer) {
+	/* R-DIR-8: an evicted item playing from its copy keeps playing through an update that keeps its row; the copy
+	 * is pointed at the row that replaced the old one (which is freed after the lock) */
+	bool keep_copy = mps->playing_copy_active && found && !item_edited && mps->current_media &&
+			 mps->current_media->is_folder && strcmp(mps->current_media->id, mps->playing_copy.id) == 0;
+	if (keep_copy) {
+		mps->playing_copy.parent = mps->current_media;
+		mps->playing_copy.parent_id = mps->current_media->id;
+		mps->actual_media = &mps->playing_copy;
+		mps->current_folder_item_index = 0;
+	} else {
+		drop_playing_copy(mps);
+	}
+	if (keep_copy) {
+		/* nothing to load or re-point: the copy plays on */
+	} else if (defer) {
 		/* nothing loads here; the snapshot that settles the row does. After an edit the playing row is gone or
 		 * moved, so the child is cleared now rather than left playing an item the list no longer has. A target
 		 * with nothing to play from the start lets any row with something to play start now. */

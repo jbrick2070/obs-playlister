@@ -26,7 +26,9 @@ new resume keys, and a restarted source must resume by row uuid and key, save th
 folder items by identity, report a choice whose occurrence is gone (or a folder row's own identity) and play a
 folder item it names, then keep playing it while a file in its folder is renamed (the list follows in name
 order) and while a new file is copied in (it joins once admitted), pass over a harness copy rewritten in place while it is
-still being written and play it once admitted, and with loop off keep the ended last item through a folder change; its migrated predecessor uses a junction named like a media file, which only the kind the
+still being written and play it once admitted, and with loop off keep the ended last item through a folder change; a
+newest-only source on the same folder then plays that copy, keeps playing it when a newer copy arrives and takes its
+place in the list, and plays the newer one after its end (R-DIR-8); its migrated predecessor uses a junction named like a media file, which only the kind the
 migration saves keeps a folder. A fourth source has a row saved as a folder that does not exist: it must stay a
 folder and be passed over (the runner fails the run if a folder path is ever loaded as a file), and a row saved
 without a uuid must be given one and play when chosen by it. Two more sources check R-BEH-5: a missing file and a
@@ -55,6 +57,7 @@ when every check passed.
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 1) | 84 passed, 0 failed, no memory leaks, three runs in a row (before the QA fixes; see the next row); the corrupt file loaded 3 times. Mutation check: with the failure marks ignored, the list of failing entries cycles (31 loads of the corrupt file) and 2 checks plus the runner's load guard fail |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 1), after QA | 86 passed, 0 failed, no memory leaks, three runs in a row; the corrupt file loaded exactly 3 times and the corrupt still once. Mutation check: without a still's end waiting for its startup, the corrupt still loads 50 times and the run fails |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 2) | 95 passed, 0 failed, no memory leaks, three runs in a row; the still held 4 s, paused and resumed, stayed stopped after a stop, and was held again after Play |
+| 2026-10-25 | 33.0.0 portable | Phase 2 step 6 (part 3) | 101 passed, 0 failed, no memory leaks, three runs in a row; the evicted item played on, restarted from its copy with Current File naming its row alone, and the newer file followed its end. Mutation check: with the eviction treated as a deletion, playback stops when the newer file arrives and 3 checks fail |
 
 ## OBS 33 child behavior (Phase 2 step 6 spike)
 
