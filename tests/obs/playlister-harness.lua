@@ -182,6 +182,111 @@ local function reports_stale_choice()
 	return current_file_name():find("list changed", 1, true) ~= nil
 end
 
+-- presses a Properties button of the source, as Properties does
+local function press(name)
+	local props = obs.obs_source_properties(src)
+	obs.obs_property_button_clicked(obs.obs_properties_get(props, name), src)
+	obs.obs_properties_destroy(props)
+end
+
+-- R-LIST-3: the shared folder options as Properties shows them: one group holding every option and the Apply button,
+-- each labeled from the locale file, the numbers with the ranges of PLAN section 3.4, the tooltips set; N shown only
+-- in the newest N mode, the interval enabled only while the folder check is on, the Apply button only while the list
+-- is locked, both as opened (the source's settings: full list, check on, list locked) and as the options change; and
+-- the Browse dialog's still images (R-UP-10). Returns the first thing that does not hold, or nil.
+local function folder_options_problem()
+	local props = obs.obs_source_properties(src)
+	local function visible(name)
+		return obs.obs_property_visible(obs.obs_properties_get(props, name))
+	end
+	local function enabled(name)
+		return obs.obs_property_enabled(obs.obs_properties_get(props, name))
+	end
+	-- as opened, before any change: obs_source_properties applied the source's settings
+	local opened_problem = nil
+	if visible("newest_count") or not enabled("folder_check_interval_s") or not enabled("apply_waiting_changes") then
+		opened_problem = "as opened, N, the interval or the Apply button does not follow the source's settings"
+	end
+	local group = obs.obs_properties_get(props, "folder_options")
+	local content = group and obs.obs_property_group_content(group)
+	local problem = nil
+	if not content then
+		problem = "no folder_options group"
+	elseif obs.obs_property_description(group) ~= "Folder and feed options" then
+		problem = "group label " .. obs.obs_property_description(group)
+	end
+	local labels = {
+		include_subfolders = "Include subfolders",
+		extension_filter = "File types to play",
+		sort_key = "Sort by",
+		sort_descending = "Descending",
+		container_mode = "Files to play",
+		newest_count = "N (files)",
+		still_duration_s = "Still image duration",
+		folder_check_enabled = "Check folder every N seconds",
+		folder_check_interval_s = "N (between checks)",
+		lock_list_at_start = "Lock list at start",
+		apply_waiting_changes = "Apply waiting changes now",
+	}
+	for name, label in pairs(labels) do
+		local property = content and obs.obs_properties_get(content, name)
+		if not problem and not property then
+			problem = name .. " is not in the group"
+		elseif not problem and obs.obs_property_description(property) ~= label then
+			problem = name .. " is labeled " .. obs.obs_property_description(property)
+		end
+	end
+	local ranges = {
+		newest_count = { 1, 1000, "" },
+		still_duration_s = { 1, 3600, " s" },
+		folder_check_interval_s = { 2, 3600, " s" },
+	}
+	for name, range in pairs(ranges) do
+		local property = obs.obs_properties_get(props, name)
+		if not problem and property and (obs.obs_property_int_min(property) ~= range[1] or
+			obs.obs_property_int_max(property) ~= range[2] or
+			(obs.obs_property_int_suffix(property) or "") ~= range[3]) then
+			problem = name .. " has the range " .. obs.obs_property_int_min(property) .. " to " ..
+				obs.obs_property_int_max(property)
+		end
+	end
+	for _, name in ipairs({ "extension_filter", "folder_check_enabled", "lock_list_at_start", "apply_waiting_changes" }) do
+		local property = obs.obs_properties_get(props, name)
+		if not problem and property and (obs.obs_property_long_description(property) or "") == "" then
+			problem = name .. " has no tooltip"
+		end
+	end
+	local filter = obs.obs_property_editable_list_filter(obs.obs_properties_get(props, "playlist")) or ""
+	if not problem and (not filter:find("Still Images (*.jpg *.jpeg *.png *.webp *.bmp);;", 1, true) or
+		not filter:find("*.flac *.jpg *.jpeg *.png *.webp *.bmp);;Video Files", 1, true)) then
+		problem = "the Browse filter has no still images: " .. filter
+	end
+	problem = problem or opened_problem
+	-- each option alone, so neither control can follow the other's option
+	local function shown(mode, check_on, lock_on)
+		local data = obs.obs_data_create()
+		obs.obs_data_set_int(data, "container_mode", mode)
+		obs.obs_data_set_bool(data, "folder_check_enabled", check_on)
+		obs.obs_data_set_bool(data, "lock_list_at_start", lock_on)
+		obs.obs_properties_apply_settings(props, data)
+		obs.obs_data_release(data)
+		return visible("newest_count"), enabled("folder_check_interval_s"), enabled("apply_waiting_changes")
+	end
+	if not problem then
+		local newest_n_visible, interval_when_check_on, apply_when_lock_off = shown(2, true, false)
+		local full_visible, interval_when_check_off, apply_when_lock_on = shown(0, false, true)
+		if not newest_n_visible or full_visible then
+			problem = "N is not shown in the newest N mode alone"
+		elseif interval_when_check_off or not interval_when_check_on then
+			problem = "the interval does not follow the folder check"
+		elseif apply_when_lock_off or not apply_when_lock_on then
+			problem = "the Apply button does not follow the list lock"
+		end
+	end
+	obs.obs_properties_destroy(props)
+	return problem
+end
+
 local function seek_near_end()
 	obs.obs_source_media_set_time(src, dur() - 1500)
 end
@@ -797,8 +902,9 @@ end)
 step("a newer file arrives", 500, 15000, function()
 	return select_file_values() == "0 media:1:7.MP4"
 end, function()
-	check("the newer file replaces it in the list while it keeps playing", dur() == D[1] and st() == PLAYING and
-		tm() > mark.before_newer, status() .. " before=" .. mark.before_newer)
+	check("the newer file replaces it in the list while it keeps playing", select_file_values() == "0 media:1:7.MP4" and
+		dur() == D[1] and st() == PLAYING and tm() > mark.before_newer,
+		select_file_values() .. ", " .. status() .. " before=" .. mark.before_newer)
 	mark.before_restart = tm()
 	obs.obs_source_media_restart(src)
 end)
@@ -820,16 +926,62 @@ step("evicted item ended", 500, 15000, function() return dur() == D[2] and st() 
 	remove_source()
 end)
 
+-- R-DIR-11: with "Lock list at start" on, a new file in the folder waits until "Apply waiting changes now" is pressed,
+-- and the playing item plays on through it
+step("source with a locked list", 1500, 1500, function() return true end, function()
+	create_source("playlister-harness-locked", function(settings)
+		set_playlist(settings, { { MEDIA_FOLDER, "media" } })
+		-- name order, so 1.mp4, the first file (longer than this flow), plays throughout
+		obs.obs_data_set_int(settings, "sort_key", 1)
+		obs.obs_data_set_bool(settings, "lock_list_at_start", true)
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	check("source with a locked list created and shown", src ~= nil and item ~= nil)
+end)
+
+step("locked list plays", 500, 15000, function() return st() == PLAYING and dur() > 0 end, function()
+	local problem = folder_options_problem()
+	check("properties show the folder options as one labeled group", problem == nil, problem)
+	mark.locked_values = select_file_values()
+	copy_file(FILES[3], MEDIA_FOLDER .. "/6.mp4")
+end)
+
+-- longer than the 500 ms debounce and the 2 s write-complete wait together
+step("a new file waits", 5000, 5000, nil, function()
+	check("with the list locked, the new file waits", select_file_values() == mark.locked_values and st() == PLAYING,
+		select_file_values() .. ", " .. status())
+	mark.before_apply = tm()
+	mark.duration_before_apply = dur()
+	press("apply_waiting_changes")
+end)
+
+local function lists_new_file()
+	return select_file_values():find(" media:1:6.MP4", 1, true) ~= nil
+end
+step("waiting changes applied", 500, 10000, lists_new_file, function()
+	check("apply waiting changes now adds the new file while the item plays on", lists_new_file() and
+		st() == PLAYING and dur() == mark.duration_before_apply and tm() > mark.before_apply,
+		select_file_values() .. ", " .. status() .. " before=" .. mark.before_apply)
+	remove_source()
+end)
+
 -- the copies go once the child that may hold the last one open is released; tried until they are gone
+local COPIES = { "6.mp4", "7.mp4", "8.mp4", "9.mp4" }
+local function copies_left()
+	for _, name in ipairs(COPIES) do
+		if exists(MEDIA_FOLDER .. "/" .. name) then
+			return true
+		end
+	end
+	return false
+end
 step("copies removed", 0, 10000, function()
-	for _, name in ipairs({ "7.mp4", "8.mp4", "9.mp4" }) do
+	for _, name in ipairs(COPIES) do
 		os.remove(MEDIA_FOLDER .. "/" .. name)
 	end
-	return not exists(MEDIA_FOLDER .. "/7.mp4") and not exists(MEDIA_FOLDER .. "/8.mp4") and
-		not exists(MEDIA_FOLDER .. "/9.mp4")
+	return not copies_left()
 end, function()
-	check("the harness copies in the watched folder are removed", not exists(MEDIA_FOLDER .. "/7.mp4") and
-		not exists(MEDIA_FOLDER .. "/8.mp4") and not exists(MEDIA_FOLDER .. "/9.mp4"))
+	check("the harness copies in the watched folder are removed", not copies_left())
 end)
 
 step("source with an absent folder row", 1500, 1500, nil, function()

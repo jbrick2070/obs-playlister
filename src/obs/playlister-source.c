@@ -31,9 +31,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 _Static_assert(PL_AUDIO_MAX_PLANES == MAX_AV_PLANES, "the audio queue must have as many planes as libobs");
 
 static const char *media_filter =
-	" (*.mp4 *.mpg *.m4v *.ts *.mov *.mxf *.flv *.mkv *.avi *.gif *.webm *.mp3 *.m4a *.ogg *.aac *.wav *.opus *.flac);;";
+	" (*.mp4 *.mpg *.m4v *.ts *.mov *.mxf *.flv *.mkv *.avi *.gif *.webm *.mp3 *.m4a *.ogg"
+	" *.aac *.wav *.opus *.flac *.jpg *.jpeg *.png *.webp *.bmp);;";
 static const char *video_filter = " (*.mp4 *.mpg *.m4v *.ts *.mov *.mxf *.flv *.mkv *.avi *.gif *.webm);;";
 static const char *audio_filter = " (*.mp3 *.m4a *.mka *.aac *.ogg *.wav *.opus *.flac);;";
+/* R-UP-10: the stills the extension filter knows (core/filter.c), held for the still duration (R-DIR-9) */
+static const char *still_filter = " (*.jpg *.jpeg *.png *.webp *.bmp);;";
 
 static void set_current_media_index(struct media_playlist_source *mps, size_t index);
 static size_t get_total_file_count(struct media_playlist_source *mps);
@@ -163,7 +166,9 @@ struct obs_source_info media_playlist_source_info = {
 #define S_FOLDER_CHECK_ENABLED "folder_check_enabled"
 #define S_FOLDER_CHECK_INTERVAL "folder_check_interval_s"
 #define S_LOCK_LIST_AT_START "lock_list_at_start"
-#define S_ROW_KINDS "row_kinds" /* row uuid -> {"kind": "folder", "path": ...} (R-LIST-1) */
+#define S_ROW_KINDS "row_kinds"                 /* row uuid -> {"kind": "folder", "path": ...} (R-LIST-1) */
+#define S_FOLDER_OPTIONS "folder_options"       /* the Properties group (R-LIST-3), no setting */
+#define S_APPLY_WAITING "apply_waiting_changes" /* the Properties button (R-DIR-11), no setting */
 #define ROW_KIND_FOLDER "folder"
 #define SCHEMA_VERSION 1
 #define S_ID "uuid"
@@ -197,6 +202,28 @@ struct obs_source_info media_playlist_source_info = {
 #define T_SPEED T_("Speed")
 #define T_SPEED_WARNING T_("SpeedWarning")
 #define T_REFRESH_FILENAME T_("RefreshFilename")
+#define T_FOLDER_OPTIONS T_("FolderOptions")
+#define T_INCLUDE_SUBFOLDERS T_("IncludeSubfolders")
+#define T_EXTENSION_FILTER T_("ExtensionFilter")
+#define T_EXTENSION_FILTER_TOOLTIP T_("ExtensionFilter.Tooltip")
+#define T_SORT_KEY T_("SortKey")
+#define T_SORT_KEY_LIST T_("SortKey.List")
+#define T_SORT_KEY_NAME T_("SortKey.Name")
+#define T_SORT_KEY_DATE T_("SortKey.Date")
+#define T_SORT_DESCENDING T_("SortDescending")
+#define T_CONTAINER_MODE T_("ContainerMode")
+#define T_CONTAINER_MODE_FULL T_("ContainerMode.Full")
+#define T_CONTAINER_MODE_NEWEST_ONLY T_("ContainerMode.NewestOnly")
+#define T_CONTAINER_MODE_NEWEST_N T_("ContainerMode.NewestN")
+#define T_NEWEST_COUNT T_("NewestCount")
+#define T_STILL_DURATION T_("StillDuration")
+#define T_FOLDER_CHECK_ENABLED T_("FolderCheckEnabled")
+#define T_FOLDER_CHECK_ENABLED_TOOLTIP T_("FolderCheckEnabled.Tooltip")
+#define T_FOLDER_CHECK_INTERVAL T_("FolderCheckInterval")
+#define T_LOCK_LIST_AT_START T_("LockListAtStart")
+#define T_LOCK_LIST_AT_START_TOOLTIP T_("LockListAtStart.Tooltip")
+#define T_APPLY_WAITING T_("ApplyWaitingChanges")
+#define T_APPLY_WAITING_TOOLTIP T_("ApplyWaitingChanges.Tooltip")
 
 #define T_PLAY_PAUSE T_("PlayPause")
 #define T_RESTART T_("Restart")
@@ -2366,6 +2393,89 @@ static void update_current_filename_property(struct media_playlist_source *mps, 
 	dstr_free(&long_desc);
 }
 
+/* N is asked for only in the newest N mode (R-DIR-7) */
+static bool container_mode_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	obs_property_set_visible(obs_properties_get(props, S_NEWEST_COUNT),
+				 obs_data_get_int(settings, S_CONTAINER_MODE) == PL_MODE_NEWEST_N);
+	return true;
+}
+
+/* the interval counts only while the folder check is on (R-DIR-3) */
+static bool folder_check_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	obs_property_set_enabled(obs_properties_get(props, S_FOLDER_CHECK_INTERVAL),
+				 obs_data_get_bool(settings, S_FOLDER_CHECK_ENABLED));
+	return true;
+}
+
+/* the Apply button has something to apply only while the list is locked (R-DIR-11) */
+static bool lock_list_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	obs_property_set_enabled(obs_properties_get(props, S_APPLY_WAITING),
+				 obs_data_get_bool(settings, S_LOCK_LIST_AT_START));
+	return true;
+}
+
+/* R-DIR-11: the lists the folders kept while locked are applied now, mid-show, without stopping; the same request
+ * as a playback trigger, which video_tick hands to every provider */
+static bool apply_waiting_clicked(obs_properties_t *props, obs_property_t *property, void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
+	struct media_playlist_source *mps = data;
+	obs_log(LOG_INFO, "apply waiting changes now: the folders apply the lists they kept");
+	os_atomic_set_bool(&mps->release_held, true);
+	return false;
+}
+
+/* The shared "Folder and feed options" group (R-LIST-3, D-7): one set of options for every folder row of the source,
+ * with the ranges of PLAN section 3.4 */
+static void add_folder_options(obs_properties_t *props, struct media_playlist_source *mps)
+{
+	obs_properties_t *group = obs_properties_create();
+	obs_property_t *p;
+
+	obs_properties_add_bool(group, S_INCLUDE_SUBFOLDERS, T_INCLUDE_SUBFOLDERS);
+
+	p = obs_properties_add_text(group, S_EXTENSION_FILTER, T_EXTENSION_FILTER, OBS_TEXT_DEFAULT);
+	obs_property_set_long_description(p, T_EXTENSION_FILTER_TOOLTIP);
+
+	p = obs_properties_add_list(group, S_SORT_KEY, T_SORT_KEY, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, T_SORT_KEY_DATE, PL_SORT_DATE);
+	obs_property_list_add_int(p, T_SORT_KEY_NAME, PL_SORT_NAME);
+	obs_property_list_add_int(p, T_SORT_KEY_LIST, PL_SORT_LIST);
+	obs_properties_add_bool(group, S_SORT_DESCENDING, T_SORT_DESCENDING);
+
+	p = obs_properties_add_list(group, S_CONTAINER_MODE, T_CONTAINER_MODE, OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, T_CONTAINER_MODE_FULL, PL_MODE_FULL);
+	obs_property_list_add_int(p, T_CONTAINER_MODE_NEWEST_ONLY, PL_MODE_NEWEST_ONLY);
+	obs_property_list_add_int(p, T_CONTAINER_MODE_NEWEST_N, PL_MODE_NEWEST_N);
+	obs_property_set_modified_callback(p, container_mode_modified);
+	obs_properties_add_int(group, S_NEWEST_COUNT, T_NEWEST_COUNT, 1, 1000, 1);
+
+	p = obs_properties_add_int(group, S_STILL_DURATION, T_STILL_DURATION, 1, 3600, 1);
+	obs_property_int_set_suffix(p, " s");
+
+	p = obs_properties_add_bool(group, S_FOLDER_CHECK_ENABLED, T_FOLDER_CHECK_ENABLED);
+	obs_property_set_long_description(p, T_FOLDER_CHECK_ENABLED_TOOLTIP);
+	obs_property_set_modified_callback(p, folder_check_modified);
+	p = obs_properties_add_int(group, S_FOLDER_CHECK_INTERVAL, T_FOLDER_CHECK_INTERVAL, 2, 3600, 1);
+	obs_property_int_set_suffix(p, " s");
+
+	p = obs_properties_add_bool(group, S_LOCK_LIST_AT_START, T_LOCK_LIST_AT_START);
+	obs_property_set_long_description(p, T_LOCK_LIST_AT_START_TOOLTIP);
+	obs_property_set_modified_callback(p, lock_list_modified);
+	p = obs_properties_add_button2(group, S_APPLY_WAITING, T_APPLY_WAITING, apply_waiting_clicked, mps);
+	obs_property_set_long_description(p, T_APPLY_WAITING_TOOLTIP);
+
+	obs_properties_add_group(props, S_FOLDER_OPTIONS, T_FOLDER_OPTIONS, OBS_GROUP_NORMAL, group);
+}
+
 static obs_properties_t *mps_properties(void *data)
 {
 	obs_properties_t *props = obs_properties_create();
@@ -2417,6 +2527,8 @@ static obs_properties_t *mps_properties(void *data)
 	dstr_cat(&filter, video_filter);
 	dstr_cat(&filter, obs_module_text("MediaFileFilter.AudioFiles"));
 	dstr_cat(&filter, audio_filter);
+	dstr_cat(&filter, obs_module_text("MediaFileFilter.StillImages"));
+	dstr_cat(&filter, still_filter);
 	dstr_cat(&filter, obs_module_text("MediaFileFilter.AllFiles"));
 	dstr_cat(&filter, " (*.*)");
 
@@ -2425,6 +2537,8 @@ static obs_properties_t *mps_properties(void *data)
 	dstr_free(&path);
 	dstr_free(&filter);
 	dstr_free(&exts);
+
+	add_folder_options(props, mps);
 
 	p = obs_properties_add_text(props, S_CURRENT_FILE_NAME, T_CURRENT_FILE_NAME, OBS_TEXT_INFO);
 	obs_property_set_long_description(p, "Due to OBS limitations, this will only update if any settings"

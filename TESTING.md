@@ -37,7 +37,11 @@ tries them once more and stops again); a corrupt still fails by its 5 s startup 
 fails the run unless the corrupt file was loaded exactly 3 times and the corrupt still once. A last source holds a
 valid still the runner makes (R-DIR-9) for 4 s: playing with the hold as its duration and on screen, a seek inside it
 ignored, a pause that freezes the hold, a stop after which nothing moves on, Play that holds it again from the start,
-and then the next row. It needs a portable
+and then the next row. After the newest-only source, a source with Lock list at start on the harness folder
+shows the folder options as one labeled group in Properties (ranges, tooltips and the Browse dialog's still images
+checked; N, the interval and the Apply button follow their options), keeps a new file waiting for 5 s while it
+plays, and adds it, without a reload, once Apply waiting changes now is pressed (R-LIST-3, R-DIR-11, R-UP-10). It
+needs a portable
 OBS 33 (with `portable_mode.txt`) and three local media files of different durations, and exits with 0 only
 when every check passed.
 
@@ -58,6 +62,7 @@ when every check passed.
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 1), after QA | 86 passed, 0 failed, no memory leaks, three runs in a row; the corrupt file loaded exactly 3 times and the corrupt still once. Mutation check: without a still's end waiting for its startup, the corrupt still loads 50 times and the run fails |
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 6 (part 2) | 95 passed, 0 failed, no memory leaks, three runs in a row; the still held 4 s, paused and resumed, stayed stopped after a stop, and was held again after Play |
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 6 (part 3) | 101 passed, 0 failed, no memory leaks, three runs in a row; the evicted item played on, restarted from its copy with Current File naming its row alone, and the newer file followed its end. Mutation check: with the eviction treated as a deletion, playback stops when the newer file arrives and 3 checks fail |
+| 2026-10-25 | 33.0.0 portable | Phase 2 step 7 (part 1) | 105 passed, 0 failed, no memory leaks, three runs in a row; the new file waited 5 s with the list locked and joined within one poll of the button. Mutation checks: with the button's request removed, the file is still waiting 15 s later (1 check fails); with the lock option ignored, the file joins at once (1 check fails) |
 
 ## OBS 33 child behavior (Phase 2 step 6 spike)
 
