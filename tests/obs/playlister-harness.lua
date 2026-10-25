@@ -379,11 +379,21 @@ end)
 
 step("stop", 4000, 4000, nil, function()
 	check("stop stays stopped on the same item", st() == STOPPED and dur() == D[2], status())
+	-- Play then Pause at once, as two quick presses: both happen. Play reloads the item; the pause comes while that
+	-- load has not reached the child, whose state is still the stopped one, and waits for the new media (R-UP-79)
+	obs.obs_source_media_play_pause(src, false)
+	obs.obs_source_media_play_pause(src, true)
+end)
+
+step("play then pause from stop", 2500, 2500, nil, function()
+	check("play then pause at once from stop: item 2 loads and stays paused near its start", st() == PAUSED and
+		dur() == D[2] and tm() < 2000, status())
 	obs.obs_source_media_play_pause(src, false)
 end)
 
-step("play from stop", 500, 15000, function() return st() == PLAYING and dur() > 0 end, function()
-	check("play after stop reloads item 2 and plays", st() == PLAYING and dur() == D[2] and tm() < 5000, status())
+step("play after the paused start", 500, 15000, function() return st() == PLAYING and dur() > 0 end, function()
+	check("play after that plays item 2 from near its start", st() == PLAYING and dur() == D[2] and tm() < 5000,
+		status())
 	obs.obs_source_media_play_pause(src, true)
 end)
 

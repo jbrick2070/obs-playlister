@@ -219,6 +219,7 @@ static void execute(struct pl_player *player, const struct pl_command *command)
 	case PL_COMMAND_LOAD:
 		player->pause_held = false;
 		execute_load(player, command);
+		os_atomic_inc_long(&player->loads_handled);
 		break;
 	case PL_COMMAND_PLAY_PAUSE:
 		player->pause_held = command->pause;
@@ -330,7 +331,14 @@ static void push_request(struct pl_player *player, struct pl_command *command)
 void pl_player_load(struct pl_player *player, const char *path, bool is_url, bool still)
 {
 	struct pl_command command = {.type = PL_COMMAND_LOAD, .path = bstrdup(path), .is_url = is_url, .still = still};
+	/* counted before the thread can handle it, so the handled count never runs ahead */
+	os_atomic_inc_long(&player->loads_requested);
 	push_request(player, &command);
+}
+
+bool pl_player_load_pending(struct pl_player *player)
+{
+	return os_atomic_load_long(&player->loads_requested) != os_atomic_load_long(&player->loads_handled);
 }
 
 void pl_player_play_pause(struct pl_player *player, bool pause)

@@ -22,7 +22,9 @@ local OTR_ORDER = os.getenv("PLAYLISTER_HARNESS_OTR_ORDER")
 local MOVE_FOLDER = os.getenv("PLAYLISTER_HARNESS_MOVE_FOLDER") -- two links, moved away and back
 local DENIED_FOLDER = os.getenv("PLAYLISTER_HARNESS_DENIED_FOLDER")
 local UNC_FOLDER = os.getenv("PLAYLISTER_HARNESS_UNC_FOLDER") -- unset when the admin share cannot be reached
-local PLAYING = 1
+local PLAYING, STOPPED = 1, 5
+local HARNESS_TEMP = (os.getenv("TEMP") or "."):gsub("\\", "/")
+local CORRUPT_STILL = HARNESS_TEMP .. "/playlister-acceptance-corrupt.jpg" -- written and removed by this script
 local src, item = nil, nil
 local NAMES = {} -- the render folder's files, oldest first
 local mark = {}
@@ -538,6 +540,147 @@ step("unc stays listed", 12000, 12000, nil, function()
 	check("2.11 the UNC folder stays listed past the folder check", text == "1: folder - 3 files" and info_type == 0,
 		text)
 	remove_source()
+end)
+
+-- 2.14: a folder listed for the first time while a render is still being copied into it (as when OBS starts during
+-- a copy): the admitted renders play at once, the copy is counted as being written and joins when it is complete
+local function in_move(name)
+	return MOVE_FOLDER .. "/" .. name
+end
+
+step("copy under way", 1500, 1500, nil, function()
+	mark.copying = io.open(in_move("c.mp4"), "wb")
+	mark.copying:write(string.rep("\0", 1024 * 1024))
+	mark.copying:flush()
+	create_source("acceptance-during-copy", function(settings)
+		set_playlist(settings, { { MOVE_FOLDER, "copying" } })
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	mark.copy_source_created = now_ms()
+	mark.copy_played_ms, mark.copy_listed, mark.copy_counted = nil, false, false
+end)
+
+step("first listing during a copy", 0, 20000, function()
+	if now_ms() - mark.copy_source_created < 6000 then
+		mark.copying:write(string.rep("\0", 1024 * 1024))
+		mark.copying:flush()
+		if not mark.copy_played_ms and st() == PLAYING and dur() > 0 then
+			mark.copy_played_ms = now_ms() - mark.copy_source_created
+		end
+		mark.copy_listed = mark.copy_listed or lists("copying:1:C.MP4")
+		mark.copy_counted = mark.copy_counted or
+			(status_block()):find("waiting for 1 file to finish writing", 1, true) ~= nil
+		return false
+	end
+	return true
+end, function()
+	mark.copying:close()
+	mark.copy_closed = now_ms()
+	check("2.14 listed for the first time during a copy, the admitted renders play within about 3 s",
+		mark.copy_played_ms ~= nil and mark.copy_played_ms < 3500, tostring(mark.copy_played_ms) .. " ms")
+	check("2.14 the copy is counted as being written and not listed while it grows", mark.copy_counted and
+		not mark.copy_listed, "counted " .. tostring(mark.copy_counted) .. ", listed " .. tostring(mark.copy_listed))
+end)
+
+step("copy joins", 0, 15000, function() return lists("copying:1:C.MP4") end, function()
+	check("2.14 once complete, the copy joins within about 3 s", lists("copying:1:C.MP4") and
+		now_ms() - mark.copy_closed < 4000, string.format("%d ms", now_ms() - mark.copy_closed))
+	remove_source()
+end)
+
+-- removed once nothing holds it open; tried until it is gone
+step("copy removed", 0, 10000, function()
+	os.remove(in_move("c.mp4"))
+	return not exists(in_move("c.mp4"))
+end, function()
+	check("the copy written into the moving folder is removed", not exists(in_move("c.mp4")))
+end)
+
+-- 2.19: an item's startup is not judged while its source is hidden (R-BEH-5): a corrupt still in a source that is in
+-- no scene being shown never fails, and fails within its 5 s window once shown; and with Close file when inactive and
+-- Always play, a hidden source's valid file is not failed either. (A paused source's window waits too; test-startup
+-- covers it. A corrupt file's child has failed at once, so a pause for it is rightly ignored as for a stopped one.)
+local function current_scene_add(source)
+	local scene_source = obs.obs_frontend_get_current_scene()
+	local added = obs.obs_scene_add(obs.obs_scene_from_source(scene_source), source)
+	obs.obs_source_release(scene_source)
+	return added
+end
+
+local function create_offscreen(name, fill)
+	local settings = obs.obs_data_create()
+	fill(settings)
+	src = obs.obs_source_create("obs_playlister_source", name, settings, nil)
+	obs.obs_data_release(settings)
+	mark.offscreen = obs.obs_scene_create_private(name .. "-offscreen")
+	obs.obs_scene_add(mark.offscreen, src)
+end
+
+local function remove_offscreen()
+	if mark.shown_item then
+		obs.obs_sceneitem_remove(mark.shown_item)
+		mark.shown_item = nil
+	end
+	obs.obs_scene_release(mark.offscreen)
+	mark.offscreen = nil
+	obs.obs_source_release(src)
+	src = nil
+end
+
+local function failed_shown()
+	local text, info_type = status_block()
+	return text:find("1: file - could not be played", 1, true) ~= nil and info_type == 2
+end
+
+step("hidden corrupt still", 1500, 1500, nil, function()
+	local file = io.open(CORRUPT_STILL, "wb")
+	file:write(string.rep("not media ", 2000))
+	file:close()
+	create_offscreen("acceptance-hidden", function(settings)
+		set_playlist(settings, { { CORRUPT_STILL, "still" } })
+		obs.obs_data_set_int(settings, "visibility_behavior", 1)
+	end)
+end)
+
+-- twice the startup window
+step("hidden for 10 s", 10000, 10000, nil, function()
+	-- loaded while hidden (its startup began), yet not judged
+	local loaded = current_file() == "1: " .. CORRUPT_STILL and st() ~= 0
+	check("2.19 a hidden source loads its item but does not judge its startup", loaded and
+		obs.obs_source_active(src) == false and not failed_shown() and st() ~= STOPPED,
+		current_file() .. ", " .. (status_block()) .. ", " .. status())
+	mark.shown_item = current_scene_add(src)
+	mark.shown_at = now_ms()
+end)
+
+step("shown, then judged", 0, 15000, failed_shown, function()
+	check("2.19 shown, the corrupt still fails within its startup window", failed_shown() and
+		now_ms() - mark.shown_at < 8000, string.format("%d ms", now_ms() - mark.shown_at))
+	remove_offscreen()
+	create_offscreen("acceptance-closed-when-hidden", function(settings)
+		set_playlist(settings, { { FILES[1], "file" } })
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+		obs.obs_data_set_bool(settings, "close_when_inactive", true)
+	end)
+end)
+
+step("closed while hidden for 10 s", 10000, 10000, nil, function()
+	check("2.19 with Close file when inactive and Always play, a hidden source's file is not failed",
+		not failed_shown(), (status_block()) .. ", " .. status())
+	mark.shown_item = current_scene_add(src)
+end)
+
+step("shown, it plays", 0, 15000, function() return st() == PLAYING and dur() > 0 and tm() > 1000 end, function()
+	check("2.19 shown, the same file plays", st() == PLAYING and not failed_shown() and
+		(status_block()) == "1: file", (status_block()) .. ", " .. status())
+	remove_offscreen()
+end)
+
+step("corrupt still removed", 0, 10000, function()
+	os.remove(CORRUPT_STILL)
+	return not exists(CORRUPT_STILL)
+end, function()
+	check("the corrupt still this script wrote is removed", not exists(CORRUPT_STILL))
 end)
 
 step("done", 1500, 1500, nil, function()

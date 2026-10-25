@@ -10,7 +10,7 @@ ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure --no-tests=erro
 
 `tests/obs/run-harness.ps1` runs `tests/obs/playlister-harness.lua` inside a portable OBS 33 and drives one
 OBS Playlister source through: play, auto-advance at the end of a file, next and previous, stop (no advance),
-play after stop, pause, seek, restart, a speed change, hide and show (stop/restart and stop/play-next), end of
+Play then Pause at once from stop (both happen: the item reloads and stays paused), Play again, pause, seek, restart, a speed change, hide and show (stop/restart and stop/play-next), end of
 the list with loop off, wrap-around with loop on, next then pause in a row, Properties (the Select File list,
 Refresh Filename, the identities Select File stores, Play Selected File with nothing chosen, with a position
 saved before Phase 2 (reported, not played) and with item 1 chosen, counting `media_next` signals)
@@ -67,6 +67,7 @@ when every check passed.
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 6 (part 3) | 101 passed, 0 failed, no memory leaks, three runs in a row; the evicted item played on, restarted from its copy with Current File naming its row alone, and the newer file followed its end. Mutation check: with the eviction treated as a deletion, playback stops when the newer file arrives and 3 checks fail |
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 7 (part 1) | 105 passed, 0 failed, no memory leaks, three runs in a row; the new file waited 5 s with the list locked and joined within one poll of the button. Mutation checks: with the button's request removed, the file is still waiting 15 s later (1 check fails); with the lock option ignored, the file joins at once (1 check fails) |
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 7 (part 2) | 116 passed, 0 failed, no memory leaks, three runs in a row, and once more after the stale-choice check also read the info type. Mutation checks: with the snapshot's change count left at 0, the waiting-change check fails; without the status update in Play Selected, the stale notice is missing from the open Properties and 2 checks fail. How the dialog draws the block is item 2.1 |
+| 2026-10-25 | 33.0.0 portable | Phase 2 step 8 (part 2) | 117 passed, 0 failed, no memory leaks, four runs (the last after the QA fixes); Play then Pause at once from stop left item 2 paused at 120 ms. Mutation check: without the pending-load rule the pause is dropped and the item plays on to 2.4 s (1 check fails) |
 
 ## Phase 2 acceptance (automated, needs OBS)
 
@@ -96,10 +97,13 @@ the script refuses a link folder the runner did not make.
 | 2.9 | A watched folder moved away, then back | "the folder went away ...; showing the last list, from <time>" as an error, the list kept; back to "2 files" when it returns |
 | 2.10 | A folder the user may not read, added as a row | still a folder row (by its attributes), "access denied (permissions or security software)" as an error; the log names Win32 error 5 (the runner fails the run without that line) |
 | 2.11 | The media folder by a UNC path (`\\localhost\C$\...`) | listed, plays, and still listed 12 s later, past the folder check; the share's overflow right after the first listing is logged and listed again |
+| 2.14 | A folder listed for the first time while a render is still being copied into it (the plugin's side of OBS starting during a copy) | the admitted renders play within about 3 s; the copy is counted as being written and not listed while it grows; it joins within about 3 s once complete |
+| 2.19 | A corrupt still in a source shown in no scene (Pause when not visible), then shown; a valid file with Close file when inactive and Always play in a source shown in no scene, then shown | hidden for 10 s, the still is not failed, and once shown it fails within its 5 s window; the hidden file is not failed and plays once shown. (A paused source's window waits too, checked by `test-startup`; a pause is ignored for a child that has already failed, as for a stopped one) |
 
 | Date | OBS | Build | Result |
 |------|-----|-------|--------|
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 8 (part 1) | 29 passed, 0 failed, no memory leaks, in four runs (the last on the final code); the first listing of 177 renders took 91 to 699 ms; one overflow logged per run (the share's, right after its first listing); the renders unchanged afterwards (177 files, none written, one link each). The first runs, before the fixes, failed 2.10 (the denied folder became a file row) and 2.11 (the UNC row flapped with Win32 error 234) |
+| 2026-10-25 | 33.0.0 portable | Phase 2 step 8 (part 2) | 38 passed, 0 failed, no memory leaks, three runs (the last after the QA fixes); the admitted renders played 0.2 s after a first listing during a copy, and the copy joined 2.6 s after it was complete; the hidden still failed 5.0 s after it was shown; the renders unchanged and nothing left behind |
 
 ## OBS 33 child behavior (Phase 2 step 6 spike)
 
@@ -176,14 +180,13 @@ Setup as Phase 1, with the Phase 2 build. Items the runtime harness covers are n
 | 2.1 | Open Properties of a source whose list has a file, a folder and a missing file; press Esc without changing anything; then choose an item, remove it from the folder, press Play Selected File | the Status block under the playlist shows one row per line (`1: file`, `2: folder - N files`, `3: file - could not be played` once it failed), in the error color when a row failed; Esc closes Properties without asking to save; after Play Selected File the block shows the "list changed" notice in the warning color, and Refresh Filename clears it | |
 | 2.12 | Close OBS while a folder item plays; start it again | the same folder item resumes, not the folder's first item |
 | 2.13 | OBS hotkeys for Play/Pause, Restart, Stop, Next and Previous on a folder row; Next then Play/Pause at once | each acts as its button does; the load and the pause both happen; Stop never advances |
-| 2.14 | Start OBS while a 300 MB render is being copied into the watched folder | the admitted renders play within about 3 s; the new one joins when its copy finishes |
 | 2.15 | A watched folder on a removable drive: unplug it, plug it back | "the folder went away" with the last list kept; the row recovers when the drive is back |
 | 2.16 | A watched folder on another machine's share; stall the share (pull its network) during a scan, then remove the source | the row shows the error and keeps its list; removing the source returns at once (otherwise record a residual risk); on a share without change notifications the log says `rescan-only` and the 10 s check still finds a new render |
 | 2.17 | A OneDrive folder with cloud-only files as a folder row | "N cloud-only files not downloaded ..." as a warning; no download starts |
 | 2.18 | A still followed by a video in a folder row | no still frame lingers into the video |
-| 2.19 | A hidden source (Stop when not visible) and a paused one, each on a corrupt file; Close file when inactive with Always play while hidden | no item times out while hidden or paused; the always-playing hidden source keeps playing |
 | 2.20 | The operator's OTR scene: replace the Directory Sorter script with a folder row on the render folder, default options | the same order as the script gave (date modified, ascending); a new render joins in about 3 s; the script is no longer needed |
 | 2.21 | A render held open for writing for a whole session (a stuck render process), then an OBS restart | the other renders play and the list resumes where it was; the held file joins once released |
+| 2.22 | Start OBS while a 300 MB render is being copied into the watched folder (with Defender scanning it) | the admitted renders play within about 3 s; the new one joins when its copy and the scan finish (2.14 checks the plugin's side) |
 
 ## Known residual risks
 

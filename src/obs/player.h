@@ -33,8 +33,10 @@ struct pl_player {
 	os_event_t *child_updated;   /* signaled by the child's "update" signal */
 	volatile bool shutting_down; /* stops waiting for child updates */
 	struct pl_load_tracker tracker;
-	volatile long applied_epoch; /* the load whose child update has applied: its startup is judged (R-BEH-5) */
-	volatile long audio_epoch;   /* the applied load when the child last delivered audio */
+	volatile long applied_epoch;   /* the load whose child update has applied: its startup is judged (R-BEH-5) */
+	volatile long audio_epoch;     /* the applied load when the child last delivered audio */
+	volatile long loads_requested; /* load requests made so far */
+	volatile long loads_handled;   /* load requests the thread has executed or passed over as superseded */
 
 	/* player thread only */
 	struct pl_child_settings settings;
@@ -72,6 +74,10 @@ void pl_player_child_audio(struct pl_player *player);
  * auto-advance (a stop, clear, hide or newer load withdraws it, and then its startup is not judged) */
 bool pl_player_load_ended(struct pl_player *player, long epoch);
 bool pl_player_load_eligible(struct pl_player *player, long epoch);
+
+/* Whether a load request has not reached the child yet: until then the child's state is still the old media's. Any
+ * thread. */
+bool pl_player_load_pending(struct pl_player *player);
 
 /* Logs "<what> <path>", a URL with scheme, host and path only (it can carry credentials) */
 void pl_player_log_location(int level, const char *what, const char *path);

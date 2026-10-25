@@ -1181,7 +1181,11 @@ static void mps_play_pause(void *data, bool pause)
 	 * then would only make the child report PAUSED for media that cannot resume, so it is ignored. */
 	/* read once: the hold can start between two reads */
 	bool held = hold_shown(mps);
-	bool stopped = playback_stopped(mps, held);
+	/* a load that has not reached the child yet (just requested by an update, Play, Restart or Next): the child's
+	 * state is still the old media's, so the source's own decides, and a pause is queued behind the load, which the
+	 * player holds until the new media starts (R-UP-79) */
+	bool loading = pl_player_load_pending(&mps->player) && !state_stopped(mps->state);
+	bool stopped = !loading && playback_stopped(mps, held);
 	if (!pause) {
 		if (!stopped) {
 			/* the child of a held still has ended: only the hold resumes (R-DIR-9) */
