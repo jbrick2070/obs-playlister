@@ -225,11 +225,31 @@ static void test_growing_file(void)
 	assert(tick(&gate, &folder, now) == 1);
 	assert(is_admitted(&gate, "render.mp4"));
 
-	/* an admitted file that changes becomes a candidate again */
+	const struct pl_gate_file *render = pl_gate_find(&gate, "render.mp4");
+	assert(render && render->has_version && render->version_size == 4000 &&
+	       render->version_write_ms == now - W - 100);
+	int64_t admitted_write = render->version_write_ms;
+
+	/* an admitted file that changes becomes a candidate again, and keeps the version that was admitted */
 	lookup(&folder, "render.mp4")->size = 5000;
 	lookup(&folder, "render.mp4")->write_ms = now;
 	scan(&gate, &folder, false, now);
 	assert(!is_admitted(&gate, "render.mp4"));
+	render = pl_gate_find(&gate, "render.mp4");
+	assert(render->has_version && render->version_size == 4000 && render->version_write_ms == admitted_write);
+	assert(render->size == 5000);
+
+	/* the new version replaces it once admitted, one window after the listing saw it */
+	now += W;
+	assert(tick(&gate, &folder, now) == 1);
+	render = pl_gate_find(&gate, "render.mp4");
+	assert(render->admitted && render->version_size == 5000 && render->version_write_ms == now - W);
+
+	/* a new file has no version until it is admitted */
+	add_file(&folder, "next.mp4", 10, now);
+	scan(&gate, &folder, false, now);
+	assert(!pl_gate_find(&gate, "next.mp4")->has_version);
+	assert(!pl_gate_find(&gate, "missing.mp4"));
 	pl_gate_free(&gate);
 }
 

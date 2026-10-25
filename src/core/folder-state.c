@@ -97,6 +97,9 @@ static bool apply_probe(struct pl_gate_file *file, enum pl_probe_result result, 
 	case PL_PROBE_OK:
 		file->admitted = true;
 		file->denied = false;
+		file->has_version = true;
+		file->version_size = file->size;
+		file->version_write_ms = file->write_ms;
 		return true;
 	case PL_PROBE_DENIED:
 		file->denied = true;
@@ -246,6 +249,12 @@ bool pl_gate_rename(struct pl_gate *gate, const char *old_key, const char *new_k
 	locate(gate, new_key, &position);
 	da_insert(gate->files, position, &file);
 	return true;
+}
+
+const struct pl_gate_file *pl_gate_find(const struct pl_gate *gate, const char *key)
+{
+	size_t index;
+	return locate(gate, key, &index) ? &gate->files.array[index] : NULL;
 }
 
 size_t pl_gate_pending_count(const struct pl_gate *gate)

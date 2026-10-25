@@ -72,6 +72,9 @@ target_sources(
     src/core/sort.c
     src/providers/fold-key-win.h
     src/providers/fold-key-win.c
+    src/providers/provider.h
+    src/providers/provider.c
+    src/providers/provider-folder-win.c
 )
 # sources in src/obs/ include the shared headers by their path under src/ (core/..., shuffler.h, playlist.h)
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE src)

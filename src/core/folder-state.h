@@ -67,6 +67,11 @@ struct pl_gate_file {
 	bool denied;         /* the last probe was refused: the row shows "access denied" */
 	int64_t sampled_ms;  /* candidates: monotonic time the current size and time were first seen */
 	int64_t deadline_ms; /* candidates: monotonic time they are next due */
+	/* The last admitted version. A file rewritten in place (a render saved again under its name) goes back through
+	 * the gate, but its row keeps this version, with its place, until the new one is admitted (PLAN step 5). */
+	bool has_version;
+	uint64_t version_size;
+	int64_t version_write_ms;
 };
 
 /* Files are kept sorted by key */
@@ -102,6 +107,8 @@ int64_t pl_gate_next_deadline(const struct pl_gate *gate);
 bool pl_gate_rename(struct pl_gate *gate, const char *old_key, const char *new_key, const char *new_location,
 		    uint64_t size, int64_t write_ms, int64_t mono_ms);
 
+/* The file with this key, or NULL */
+const struct pl_gate_file *pl_gate_find(const struct pl_gate *gate, const char *key);
 size_t pl_gate_pending_count(const struct pl_gate *gate);
 size_t pl_gate_admitted_count(const struct pl_gate *gate);
 /* Candidates whose last probe was refused; above 0 the row shows "access denied" (R-PLAT-10) */
