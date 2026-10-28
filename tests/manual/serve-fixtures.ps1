@@ -18,14 +18,61 @@
 #   /gzip-at-cap            a gzip body that inflates to exactly 16 MB
 #   /gzip-over-cap          a gzip body that inflates to 16 MB plus one byte
 #   /slow                   the vlc.m3u fixture, one byte every 100 ms
+#   /switchable/<name>      a file like /fixtures/<name>, or an empty response with the status that <name>.status
+#                           holds while that file exists (a list that starts failing after a good fetch)
+#   /media/<n>              the n-th -Media file (from 1) as video/mp4, at a URL without an extension; byte ranges are
+#                           answered, and the body is sent in the background, so a player's second connection is served
+#                           while the first is still open
+#
+# The Phase 3a acceptance (tests/obs/phase3a-acceptance.lua) starts it with -Root (a copy of the fixtures, where the
+# script writes its own lists), -Media and -Log (one line per request when it starts, and one more when a media body
+# ends: time, path, user agent, bytes read for the client, outcome).
 
 param(
-	[int]$Port = 8765
+	[int]$Port = 8765,
+	[string]$Root = '',
+	[string[]]$Media = @(),
+	[string]$Log = ''
 )
 
 $ErrorActionPreference = 'Stop'
-$fixtures = Join-Path $PSScriptRoot '..\fixtures\playlists'
+# powershell -File passes an array as one string, so the files may also come as one, separated by |
+$Media = @($Media | ForEach-Object { $_ -split '\|' } | Where-Object { $_ })
+$fixtures = if ($Root) { $Root } else { Join-Path $PSScriptRoot '..\fixtures\playlists' }
 $cap = 16 * 1024 * 1024
+# the media bodies being sent: @{ Task; File; Response; Start; Path; Agent }
+$streams = New-Object System.Collections.ArrayList
+
+# bytes: for a media body, what was read from the file for the client (at most one 64 KB buffer more than it took);
+# 0 for every other route, logged as "started" before it is answered
+function Write-Request([string]$path, [string]$agent, [long]$bytes, [string]$outcome) {
+	if ($Log) {
+		$line = '{0:HH:mm:ss.fff}	{1}	{2}	{3}	{4}' -f (Get-Date), $path, $agent, $bytes, $outcome
+		[System.IO.File]::AppendAllText($Log, $line + "`n")
+	}
+}
+
+# Closes the media bodies that finished or whose client went away, and logs how much of each was sent
+function Complete-Streams {
+	for ($i = $streams.Count - 1; $i -ge 0; $i--) {
+		$s = $streams[$i]
+		if (-not $s.Task.IsCompleted) { continue }
+		# one stream's trouble (a log the antivirus holds, say) must not end the server
+		try {
+			$read = $s.File.Position - $s.Start
+			$outcome = if ($s.Task.Status -eq 'RanToCompletion') { 'complete' } else { 'closed by the client' }
+			try {
+				if ($outcome -eq 'complete') { $s.Response.Close() } else { $s.Response.Abort() }
+			} catch { }
+			Write-Request $s.Path $s.Agent $read $outcome
+		} catch {
+			Write-Host "  $($_.Exception.Message)"
+		} finally {
+			$s.File.Dispose()
+			$streams.RemoveAt($i)
+		}
+	}
+}
 
 function Get-Gzip([long]$size) {
 	$memory = New-Object System.IO.MemoryStream
@@ -57,6 +104,7 @@ function Get-Type([string]$name) {
 		'.m3u' { 'audio/x-mpegurl' }
 		'.m3u8' { 'application/vnd.apple.mpegurl' }
 		'.pls' { 'audio/x-scpls' }
+		'.rss' { 'application/rss+xml' }
 		default { 'application/octet-stream' }
 	}
 }
@@ -74,13 +122,61 @@ try {
 	while ($listener.IsListening) {
 		# polled, as a blocking GetContext() would not let Ctrl+C through until a request came
 		$pending = $listener.GetContextAsync()
-		while (-not $pending.AsyncWaitHandle.WaitOne(250)) { }
+		while (-not $pending.AsyncWaitHandle.WaitOne(250)) { try { Complete-Streams } catch { } }
+		try { Complete-Streams } catch { }
 		$context = $pending.GetAwaiter().GetResult()
 		$path = $context.Request.Url.AbsolutePath
+		$agent = [string]$context.Request.UserAgent
 		$response = $context.Response
 		Write-Host ("{0:HH:mm:ss} {1}" -f (Get-Date), $path)
+		$mediaFile = $null
 		try {
-			if ($path -like '/fixtures/*') {
+			Write-Request $path $agent 0 'started'
+			if ($path -match '^/media/(\d+)$' -and [int]$Matches[1] -ge 1 -and [int]$Matches[1] -le $Media.Count) {
+				$mediaFile = [System.IO.File]::Open($Media[[int]$Matches[1] - 1], 'Open', 'Read', 'ReadWrite, Delete')
+				$length = $mediaFile.Length
+				$start = 0L
+				# bytes=N- (what FFmpeg asks for); a bounded range is answered to the end of the file, which FFmpeg accepts
+				if ($context.Request.Headers['Range'] -match '^bytes=(\d+)-') {
+					$start = [long]$Matches[1]
+				}
+				$response.AddHeader('Accept-Ranges', 'bytes')
+				$response.ContentType = 'video/mp4'
+				if ($start -ge $length -and $length -gt 0) {
+					$mediaFile.Dispose()
+					$mediaFile = $null
+					$response.StatusCode = 416
+					$response.AddHeader('Content-Range', "bytes */$length")
+					$response.Close()
+					Write-Request $path $agent 0 '416'
+				} else {
+					if ($start -gt 0) {
+						$response.StatusCode = 206
+						$response.AddHeader('Content-Range', "bytes $start-$($length - 1)/$length")
+					}
+					$response.ContentLength64 = $length - $start
+					[void]$mediaFile.Seek($start, 'Begin')
+					$task = $mediaFile.CopyToAsync($response.OutputStream, 65536)
+					[void]$streams.Add(@{ Task = $task; File = $mediaFile; Response = $response; Start = $start; Path = $path; Agent = $agent })
+					# Complete-Streams closes it from here on
+					$mediaFile = $null
+				}
+				continue
+			}
+			if ($path -match '^/switchable/(.+)$') {
+				$name = [System.IO.Path]::GetFileName($Matches[1])
+				$statusFile = Join-Path $fixtures "$name.status"
+				$file = Join-Path $fixtures $name
+				if (Test-Path -LiteralPath $statusFile) {
+					$response.StatusCode = [int]([System.IO.File]::ReadAllText($statusFile).Trim())
+					$response.Close()
+				} elseif (Test-Path -LiteralPath $file) {
+					Send-Bytes $response ([System.IO.File]::ReadAllBytes($file)) (Get-Type $name)
+				} else {
+					$response.StatusCode = 404
+					$response.Close()
+				}
+			} elseif ($path -like '/fixtures/*') {
 				$name = [System.IO.Path]::GetFileName($path.Substring(10))
 				$file = Join-Path $fixtures $name
 				if (Test-Path -LiteralPath $file) {
@@ -146,9 +242,14 @@ try {
 		} catch {
 			Write-Host "  $($_.Exception.Message)"
 			try { $response.Abort() } catch { }
+			if ($mediaFile) { $mediaFile.Dispose() }
 		}
 	}
 } finally {
+	foreach ($s in $streams) {
+		try { $s.Response.Abort() } catch { }
+		$s.File.Dispose()
+	}
 	$listener.Stop()
 	$listener.Close()
 }

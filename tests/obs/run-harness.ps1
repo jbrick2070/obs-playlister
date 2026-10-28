@@ -22,6 +22,13 @@
 # admin share for a UNC path:
 #   .\tests\obs\run-harness.ps1 -ObsRoot C:\OBS-Portable -Files a.mp4, b.mp4, c.mp4 -Script phase2-acceptance.lua `
 #     -Otr C:\renders -TimeoutSeconds 600
+#
+# The Phase 3a acceptance (phase3a-acceptance.lua) gets a temporary server root: a copy of tests/fixtures/playlists,
+# where the script writes its own lists, and hard links to the three files in its media folder. Two copies of
+# tests/manual/serve-fixtures.ps1 serve it on free localhost ports, one for lists and one for media (each answers one
+# request at a time, so a stream or a hang on one never holds up the other), and log every request:
+#   .\tests\obs\run-harness.ps1 -ObsRoot C:\OBS-Portable -Files a.mp4, b.mp4, c.mp4 -Script phase3a-acceptance.lua `
+#     -TimeoutSeconds 900
 param(
 	[Parameter(Mandatory = $true)][string]$ObsRoot,
 	[Parameter(Mandatory = $true)][string[]]$Files,
@@ -84,6 +91,8 @@ $otrOrder = $null
 $moveFolder = $null
 $moveLinks = @()
 $deniedFolder = $null
+$serverRoot = $null
+$servers = @()
 try {
 	if (Test-Path $userIni) {
 		Copy-Item $userIni $userIniBackup
@@ -166,6 +175,41 @@ try {
 			Remove-Item Env:\PLAYLISTER_HARNESS_UNC_FOLDER -ErrorAction SilentlyContinue
 		}
 	}
+	if ($Script -eq 'phase3a-acceptance.lua') {
+		$serverRoot = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-3a-' + [guid]::NewGuid().ToString('N'))
+		New-Item -ItemType Directory $serverRoot | Out-Null
+		Copy-Item (Join-Path $Repo 'tests\fixtures\playlists\*') $serverRoot
+		New-Item -ItemType Directory (Join-Path $serverRoot 'media') | Out-Null
+		$clips = @()
+		for ($i = 0; $i -lt 3; $i++) {
+			$link = Join-Path $serverRoot ('media\clip-{0}.mp4' -f ($i + 1))
+			New-Item -ItemType HardLink -Path $link -Target (Resolve-Path $Files[$i]).Path | Out-Null
+			$clips += $link
+		}
+		$serve = Join-Path $Repo 'tests\manual\serve-fixtures.ps1'
+		foreach ($role in 'list', 'media') {
+			# a free port: the system picks one for a listener that is closed at once
+			$probe = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Loopback, 0)
+			$probe.Start()
+			$port = $probe.LocalEndpoint.Port
+			$probe.Stop()
+			$requestLog = Join-Path $serverRoot "$role-requests.log"
+			$arguments = @('-NoProfile', '-File', "`"$serve`"", '-Port', $port, '-Root', "`"$serverRoot`"", '-Log', "`"$requestLog`"")
+			# -File passes an array as one string, so the files go as one, separated by |
+			if ($role -eq 'media') { $arguments += @('-Media', "`"$($clips -join '|')`"") }
+			$servers += Start-Process powershell -ArgumentList $arguments -WindowStyle Hidden -PassThru
+			$url = "http://localhost:$port"
+			$ready = $false
+			for ($i = 0; $i -lt 60 -and -not $ready; $i++) {
+				Start-Sleep -Seconds 1
+				try { Invoke-WebRequest "$url/fixtures/vlc.m3u" -UseBasicParsing -TimeoutSec 5 | Out-Null; $ready = $true } catch { }
+			}
+			if (-not $ready) { throw "the $role server did not answer on $url" }
+			Set-Item "Env:\PLAYLISTER_HARNESS_$($role.ToUpper())_SERVER" $url
+			Set-Item "Env:\PLAYLISTER_HARNESS_$($role.ToUpper())_LOG" ($requestLog -replace '\\', '/')
+		}
+		$env:PLAYLISTER_HARNESS_SERVER_ROOT = $serverRoot -replace '\\', '/'
+	}
 	# PowerShell names are case-insensitive: a $script here would overwrite the -Script parameter
 	$scriptPath = (Join-Path $PSScriptRoot $Script) -replace '\\', '/'
 	$json = Get-Content $collection -Raw | ConvertFrom-Json
@@ -224,6 +268,13 @@ try {
 		$overflows = @(Select-String -Path $log.FullName -Pattern 'more changes than the buffer holds').Count
 		"overflows logged: $overflows"
 	}
+	if ($Script -eq 'phase3a-acceptance.lua') {
+		# the list provider's worker, fetch handles and parsed lists are freed when each source goes
+		if (-not (Select-String -Path $log.FullName -Pattern 'Number of memory leaks: 0$' -Quiet)) {
+			'FAIL OBS did not report 0 memory leaks'
+			$logLineMissing = $true
+		}
+	}
 	"summary: $passes passed, $fails failed"
 	$failed = (-not $done) -or $fails -gt 0 -or $folderLoads -gt 0 -or $loadCountsWrong -or $logLineMissing
 }
@@ -248,7 +299,18 @@ finally {
 	Remove-Item Env:\PLAYLISTER_HARNESS_MISSING_FOLDER -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_MEDIA_JUNCTION -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_STILL -ErrorAction SilentlyContinue
-	foreach ($name in 'OTR_FOLDER', 'OTR_ORDER', 'MOVE_FOLDER', 'DENIED_FOLDER', 'UNC_FOLDER') {
+	foreach ($server in $servers) {
+		if (-not $server.HasExited) {
+			Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+			$server.WaitForExit(10000) | Out-Null
+		}
+	}
+	# the server root holds copies, the script's own lists and hard links (removing a link leaves its file)
+	if ($serverRoot -and $serverRoot -like '*playlister-harness-3a-*' -and (Test-Path $serverRoot)) {
+		try { Remove-Item -LiteralPath $serverRoot -Recurse -Force } catch { "warning: could not remove ${serverRoot}: $_" }
+	}
+	foreach ($name in 'OTR_FOLDER', 'OTR_ORDER', 'MOVE_FOLDER', 'DENIED_FOLDER', 'UNC_FOLDER', 'SERVER_ROOT', 'LIST_SERVER',
+		'LIST_LOG', 'MEDIA_SERVER', 'MEDIA_LOG') {
 		Remove-Item "Env:\PLAYLISTER_HARNESS_$name" -ErrorAction SilentlyContinue
 	}
 	# the acceptance folders: only what this run made is removed (links, never the files they name); a file the
