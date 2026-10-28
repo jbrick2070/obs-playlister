@@ -82,6 +82,9 @@ set(_providers "${CMAKE_SOURCE_DIR}/src/providers")
 obs_playlister_add_test(test-provider-folder test-provider-folder.c "${_providers}/provider.c" "${_providers}/provider-folder-win.c" "${_providers}/fold-key-win.c" "${_core}/entry-list.c" "${_core}/filter.c" "${_core}/folder-state.c" "${_core}/keys.c" "${_core}/merge.c" "${_core}/modes.c" "${_core}/natural.c" "${_core}/sort.c")
 # the provider logs through obs_log
 target_link_libraries(test-provider-folder PRIVATE plugin-support)
+# One HTTP GET against a server inside the test on 127.0.0.1 (R-REM-5)
+obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-winhttp.c")
+target_link_libraries(test-fetch PRIVATE winhttp ws2_32)
 
 # Every locale key used in src/ is in en-US.ini (R-TST-1); the second test proves the check fails on a missing key
 add_test(

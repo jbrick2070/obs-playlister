@@ -58,7 +58,7 @@ static void put_utf8(struct dstr *out, uint32_t cp)
 		bytes[3] = (char)(0x80 | (cp & 0x3F));
 		n = 4;
 	}
-	/* dstr_ncat stops at nothing, so a NUL code point stays in the text */
+	/* not dstr_ncat, which drops bytes that start with a NUL: a NUL code point must stay for the line reader */
 	dstr_ensure_capacity(out, out->len + n + 1);
 	memcpy(out->array + out->len, bytes, n);
 	out->len += n;

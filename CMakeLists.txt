@@ -16,6 +16,8 @@ add_library(${CMAKE_PROJECT_NAME} MODULE)
 
 find_package(libobs REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
+# remote lists are fetched with WinHTTP, part of Windows: no new DLLs ship (R-REM-5)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp)
 
 if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
@@ -80,6 +82,8 @@ target_sources(
     src/core/startup.c
     src/core/url.h
     src/core/url.c
+    src/providers/fetch.h
+    src/providers/fetch-winhttp.c
     src/providers/fold-key-win.h
     src/providers/fold-key-win.c
     src/providers/provider.h
