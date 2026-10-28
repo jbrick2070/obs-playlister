@@ -1,0 +1,5 @@
+#EXTM3U x-tvg-url="http://epg.example.com/epg.xml"
+#EXTINF:-1 tvg-id="a" tvg-name="News, Live" group-title="News",News Channel
+https://cdn.example.com/news/index.m3u8
+#EXTINF:-1 tvg-name="Music",Music TV
+https://cdn.example.com/music/live.ts

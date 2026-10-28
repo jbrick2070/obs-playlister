@@ -1,0 +1,9 @@
+[playlist]
+NumberOfEntries=3
+File3=http://radio.example.com/c
+Title3=Third
+File1=http://radio.example.com/a
+Title1=First
+Length1=-1
+File2=http://radio.example.com/b
+Version=2

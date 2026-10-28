@@ -61,6 +61,23 @@ obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/p
 obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")
 obs_playlister_add_test(test-row-kind test-row-kind.c "${_core}/row-kind.c" "${_core}/filter.c")
 obs_playlister_add_test(test-startup test-startup.c "${_core}/startup.c")
+# Playlists (R-REM-1): URL and path resolution, M3U and PLS against fixtures
+obs_playlister_add_test(test-url test-url.c "${_core}/url.c")
+set(
+  _list_parse
+  "${_core}/list-parse.c"
+  "${_core}/url.c"
+  "${_core}/filter.c"
+  "${_core}/keys.c"
+  "${_core}/sort.c"
+  "${_core}/natural.c"
+  "${_core}/entry-list.c"
+)
+obs_playlister_add_test(test-parse-m3u test-parse-m3u.c "${_core}/parse-m3u.c" ${_list_parse})
+obs_playlister_add_test(test-parse-pls test-parse-pls.c "${_core}/parse-pls.c" ${_list_parse})
+foreach(_test IN ITEMS test-parse-m3u test-parse-pls)
+  target_compile_definitions(${_test} PRIVATE "FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/playlists\"")
+endforeach()
 set(_providers "${CMAKE_SOURCE_DIR}/src/providers")
 obs_playlister_add_test(test-provider-folder test-provider-folder.c "${_providers}/provider.c" "${_providers}/provider-folder-win.c" "${_providers}/fold-key-win.c" "${_core}/entry-list.c" "${_core}/filter.c" "${_core}/folder-state.c" "${_core}/keys.c" "${_core}/merge.c" "${_core}/modes.c" "${_core}/natural.c" "${_core}/sort.c")
 # the provider logs through obs_log

@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:183,Artist - Song One
+file:///C:/Music/Song%20One.mp3
+#EXTINF:-1,Live Radio
+http://radio.example.com:8000/stream
+#EXTINF:240,Song, With Comma
+file:///D:/Music/Album/Track%2002.flac

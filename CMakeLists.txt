@@ -58,6 +58,8 @@ target_sources(
     src/core/folder-state.c
     src/core/keys.h
     src/core/keys.c
+    src/core/list-parse.h
+    src/core/list-parse.c
     src/core/load-tracker.h
     src/core/load-tracker.c
     src/core/merge.h
@@ -66,12 +68,18 @@ target_sources(
     src/core/modes.c
     src/core/natural.h
     src/core/natural.c
+    src/core/parse-m3u.h
+    src/core/parse-m3u.c
+    src/core/parse-pls.h
+    src/core/parse-pls.c
     src/core/row-kind.h
     src/core/row-kind.c
     src/core/sort.h
     src/core/sort.c
     src/core/startup.h
     src/core/startup.c
+    src/core/url.h
+    src/core/url.c
     src/providers/fold-key-win.h
     src/providers/fold-key-win.c
     src/providers/provider.h
