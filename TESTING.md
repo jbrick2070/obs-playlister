@@ -70,6 +70,7 @@ when every check passed.
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 8 (part 2) | 117 passed, 0 failed, no memory leaks, four runs (the last after the QA fixes); Play then Pause at once from stop left item 2 paused at 120 ms. Mutation check: without the pending-load rule the pause is dropped and the item plays on to 2.4 s (1 check fails) |
 | 2026-10-25 | 33.0.0 portable | 0.3.0 (version bump) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.3.0)` |
 | 2026-10-25 | 33.0.0 portable | 0.3.1 (renamed Playlister) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.3.1)`; the sources are found by their unchanged id |
+| 2026-10-28 | 33.0.0 portable | Phase 3a step 5 (part 1), ecc1439 | 117 passed, 0 failed, no memory leaks, twice. Every run on 2026-10-27/28 before this failed with media time stuck at 40 ms: Studio Mode was on in this portable OBS (it is shared with other projects' tests), so the harness sources sat in a preview scene that never played. With Studio Mode on the same build failed 11 checks; with it off, nothing failed. The runner now turns Studio Mode off for its run and restores user.ini |
 
 ## Phase 2 acceptance (automated, needs OBS)
 
@@ -106,6 +107,7 @@ the script refuses a link folder the runner did not make.
 |------|-----|-------|--------|
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 8 (part 1) | 29 passed, 0 failed, no memory leaks, in four runs (the last on the final code); the first listing of 177 renders took 91 to 699 ms; one overflow logged per run (the share's, right after its first listing); the renders unchanged afterwards (177 files, none written, one link each). The first runs, before the fixes, failed 2.10 (the denied folder became a file row) and 2.11 (the UNC row flapped with Win32 error 234) |
 | 2026-10-25 | 33.0.0 portable | Phase 2 step 8 (part 2) | 38 passed, 0 failed, no memory leaks, three runs (the last after the QA fixes); the admitted renders played 0.2 s after a first listing during a copy, and the copy joined 2.6 s after it was complete; the hidden still failed 5.0 s after it was shown; the renders unchanged and nothing left behind |
+| 2026-10-28 | 33.0.0 portable | Phase 3a step 5 (part 1), ecc1439 | 38 passed, 0 failed, no memory leaks; folder publishing moved to `providers/publication.c` in Phase 3a step 3, and every item passed unchanged (the render folder now holds 30 files; first listing 199 ms) |
 
 ## OBS 33 child behavior (Phase 2 step 6 spike)
 
@@ -193,12 +195,12 @@ Setup as Phase 1, with the Phase 2 build. Items the runtime harness covers are n
 
 ## Phase 3a (playlists and URL rows, before 0.4.0)
 
-Setup as Phase 2, with the Phase 3a build (commit f44900c or later). Nothing here has run in OBS yet: on 2026-10-27
-and 28 the portable OBS on this machine played nothing (media time stuck at 40 ms in every harness check, on the
-step 2 build as well), so run the Phase 2 runtime harness first, and only go on when it passes again. The parsers,
+Setup as Phase 2, with the Phase 3a build (commit f44900c or later). The Phase 2 runtime harness and acceptance
+script pass on this build (2026-10-28; the stuck playback of the night before was Studio Mode left on, see the
+harness table). Run the harness again after any change, and go on only when it passes. The parsers,
 the fetching and the list provider are covered by `ctest` (`test-url`, `test-parse-m3u`, `test-parse-pls`,
 `test-fetch`, `test-provider-list`); these items check them in OBS. `tests\manual\serve-fixtures.ps1` serves the
-local cases on http://localhost:8765/ (it has never been run either: start it with
+local cases on http://localhost:8765/ (it has never been run: start it with
 `powershell -NoProfile -File tests\manual\serve-fixtures.ps1` and check that /fixtures/vlc.m3u answers before the
 items that need it).
 

@@ -6,7 +6,7 @@
 # current build (build_x64, RelWithDebInfo) into <ObsRoot>\plugins\obs-playlister, registers the harness in the
 # scene collection for this run only, creates an empty folder for the empty-folder checks (and names one that is
 # never created, for a saved folder row whose folder is absent), starts OBS, waits for
-# "HARNESS DONE", closes OBS, restores the scene collection, removes the folder and prints the results with the
+# "HARNESS DONE", closes OBS, restores the scene collection and user.ini (Studio Mode is off for the run), removes the folder and prints the results with the
 # plugin's log lines. Exit code 0 only when every check passed.
 #
 # The three files need different durations, and the second one must be longer than about 35 s (one step seeks to
@@ -49,6 +49,11 @@ $backup = "$collection.harness-backup"
 if (-not (Test-Path $collection)) { throw "scene collection not found: $collection" }
 # a backup left by an interrupted run may be the only good copy; restore it by hand before running again
 if (Test-Path $backup) { throw "a backup from an earlier run exists: $backup" }
+# Studio Mode leaves the harness sources in a preview scene that never plays (another project left it on here once,
+# and every playback check failed), so it is off for the run and user.ini is restored afterwards
+$userIni = Join-Path $ObsRoot 'config\obs-studio\user.ini'
+$userIniBackup = "$userIni.harness-backup"
+if (Test-Path $userIniBackup) { throw "a backup from an earlier run exists: $userIniBackup" }
 
 Push-Location $Repo
 try {
@@ -66,6 +71,7 @@ finally {
 }
 
 Copy-Item $collection $backup
+$obs = $null
 $failed = $true
 $emptyFolder = $null
 $mediaFolder = $null
@@ -79,6 +85,11 @@ $moveFolder = $null
 $moveLinks = @()
 $deniedFolder = $null
 try {
+	if (Test-Path $userIni) {
+		Copy-Item $userIni $userIniBackup
+		$ini = [IO.File]::ReadAllText($userIni) -replace '(?m)^PreviewProgramMode=true', 'PreviewProgramMode=false'
+		[IO.File]::WriteAllText($userIni, $ini, (New-Object Text.UTF8Encoding $false))
+	}
 	$emptyFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-empty-' + [guid]::NewGuid().ToString('N'))
 	New-Item -ItemType Directory $emptyFolder | Out-Null
 	$env:PLAYLISTER_HARNESS_EMPTY_FOLDER = $emptyFolder -replace '\\', '/'
@@ -217,6 +228,20 @@ try {
 	$failed = (-not $done) -or $fails -gt 0 -or $folderLoads -gt 0 -or $loadCountsWrong -or $logLineMissing
 }
 finally {
+	# OBS writes the scene collection and user.ini when it exits, so after Ctrl+C or an error it must be gone before
+	# the restores below
+	if ($obs -and -not $obs.HasExited) {
+		Stop-Process -Id $obs.Id -Force -ErrorAction SilentlyContinue
+		$obs.WaitForExit(10000) | Out-Null
+	}
+	# user.ini first, so a failed collection restore cannot leave Studio Mode off
+	if (Test-Path $userIniBackup) {
+		try {
+			Copy-Item $userIniBackup $userIni -Force
+			Remove-Item $userIniBackup -Force
+		}
+		catch { "warning: could not restore ${userIni} from ${userIniBackup}: $_" }
+	}
 	Remove-Item Env:\PLAYLISTER_HARNESS_FILES -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_EMPTY_FOLDER -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_MEDIA_FOLDER -ErrorAction SilentlyContinue
