@@ -61,6 +61,7 @@ struct pl_container_options {
 	bool folder_check_enabled;        /* R-DIR-3 */
 	uint32_t folder_check_interval_s; /* R-DIR-3 */
 	bool lock_list_at_start;          /* R-DIR-11 */
+	uint32_t remote_refresh_s;        /* R-REM-4: how often a remote list is fetched again */
 };
 
 /* Called on the provider's worker thread with the list it just built; the receiver owns snapshot. Never called after
@@ -70,9 +71,10 @@ typedef void (*pl_publish_fn)(void *owner, struct pl_snapshot *snapshot);
 
 struct pl_provider;
 
-/* Starts a provider for a container row (only PL_ROW_FOLDER so far). Copies location, row_uuid, options and the
- * filter string before returning. The caller has already registered instance_id as the row's expected instance
- * (R-THR-2). NULL when the worker cannot be started. */
+/* Starts a provider for a container row: a folder, a playlist (a local file or a URL) or a remote row (an http(s) URL
+ * its first response classifies, R-LIST-1). Copies location, row_uuid, options and the filter string before
+ * returning. The caller has already registered instance_id as the row's expected instance (R-THR-2). NULL for a file
+ * row or when the worker cannot be started. */
 struct pl_provider *pl_provider_create(enum pl_row_kind kind, const char *location, const char *row_uuid,
 				       uint64_t instance_id, const struct pl_container_options *options,
 				       pl_publish_fn publish, void *owner);
@@ -80,9 +82,10 @@ struct pl_provider *pl_provider_create(enum pl_row_kind kind, const char *locati
 /* Lists the container again now (the Properties Refresh button) */
 void pl_provider_refresh_now(struct pl_provider *provider);
 
-/* Filter, sort, direction, mode, N, the folder check and lock-list-at-start, applied to the running provider: the
- * view options are applied again to the last listing and republished, the interval re-armed; no rescan, and the
- * admitted-file cache is kept. include_subfolders is ignored here: changing it re-creates the provider. */
+/* Filter, sort, direction, mode, N, the folder check, lock-list-at-start and the refresh interval, applied to the
+ * running provider: the view options are applied again to the last listing and republished, the intervals re-armed;
+ * no rescan or re-fetch, and the admitted-file cache is kept. include_subfolders is ignored here: changing it
+ * re-creates a folder's provider. */
 void pl_provider_set_options(struct pl_provider *provider, const struct pl_container_options *options);
 
 /* R-DIR-11: publish the snapshot kept while the list is locked, through the normal path (no rescan) */

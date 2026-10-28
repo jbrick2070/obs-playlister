@@ -79,9 +79,35 @@ foreach(_test IN ITEMS test-parse-m3u test-parse-pls)
   target_compile_definitions(${_test} PRIVATE "FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/playlists\"")
 endforeach()
 set(_providers "${CMAKE_SOURCE_DIR}/src/providers")
-obs_playlister_add_test(test-provider-folder test-provider-folder.c "${_providers}/provider.c" "${_providers}/provider-folder-win.c" "${_providers}/fold-key-win.c" "${_core}/entry-list.c" "${_core}/filter.c" "${_core}/folder-state.c" "${_core}/keys.c" "${_core}/merge.c" "${_core}/modes.c" "${_core}/natural.c" "${_core}/sort.c")
-# the provider logs through obs_log
-target_link_libraries(test-provider-folder PRIVATE plugin-support)
+# Every provider source: provider.c starts either kind, so both tests build both
+set(
+  _provider_sources
+  "${_providers}/provider.c"
+  "${_providers}/provider-folder-win.c"
+  "${_providers}/provider-list.c"
+  "${_providers}/publication.c"
+  "${_providers}/fetch-winhttp.c"
+  "${_providers}/fold-key-win.c"
+  "${_core}/entry-list.c"
+  "${_core}/filter.c"
+  "${_core}/folder-state.c"
+  "${_core}/keys.c"
+  "${_core}/merge.c"
+  "${_core}/modes.c"
+  "${_core}/natural.c"
+  "${_core}/sort.c"
+  "${_core}/list-parse.c"
+  "${_core}/parse-m3u.c"
+  "${_core}/parse-pls.c"
+  "${_core}/url.c"
+)
+obs_playlister_add_test(test-provider-folder test-provider-folder.c ${_provider_sources})
+# The list provider through a stand-in fetcher and on real playlist files (R-REM-1, R-REM-4, R-LIST-1, D-12)
+obs_playlister_add_test(test-provider-list test-provider-list.c ${_provider_sources})
+foreach(_test IN ITEMS test-provider-folder test-provider-list)
+  # the providers log through obs_log and fetch through WinHTTP
+  target_link_libraries(${_test} PRIVATE plugin-support winhttp)
+endforeach()
 # One HTTP GET against a server inside the test on 127.0.0.1 (R-REM-5)
 obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-winhttp.c")
 target_link_libraries(test-fetch PRIVATE winhttp ws2_32)

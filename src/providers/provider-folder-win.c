@@ -21,7 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * publishes snapshots of plain entries. The worker alone opens and closes its directory handle (R-THR-3); other
  * threads only leave requests and wake it. */
 
-#include "provider.h"
+#include "provider-kinds.h"
 
 #include <windows.h>
 
@@ -38,6 +38,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/keys.h"
 #include "core/merge.h"
 #include "fold-key-win.h"
+#include "publication.h"
 
 #define WORKER_STACK_SIZE (256 * 1024)  /* R-THR-2 */
 #define NOTIFY_BUFFER_BYTES (64 * 1024) /* the largest ReadDirectoryChangesW buffer a network share takes */
@@ -81,13 +82,10 @@ enum scan_result {
 	SCAN_STOPPED,
 };
 
-struct pl_provider {
+struct pl_folder_provider {
 	/* fixed at create */
 	char *location;  /* as the row gives it, without a trailing separator */
 	wchar_t *root_w; /* canonical, with its \\?\ prefix (R-THR-5); NULL when the path cannot be converted */
-	uint64_t instance_id;
-	pl_publish_fn publish;
-	void *owner;
 	bool include_subfolders;
 	HANDLE thread;
 	HANDLE stop_event; /* manual reset */
@@ -100,7 +98,6 @@ struct pl_provider {
 	bool options_changed;
 	bool refresh_requested;
 	bool release_requested;
-	volatile long held_changes;
 
 	/* worker only */
 	struct pl_container_options options; /* extension_filter points at filter_text */
@@ -126,16 +123,7 @@ struct pl_provider {
 	bool gate_fed;
 	size_t cloud_count;
 	int64_t last_ok_unix_ms;
-	uint64_t generation;
-	uint64_t content_revision;
-	char *last_signature;
-	struct pl_entry *published; /* the published membership, without renames */
-	size_t published_count;
-	char *published_content;
-	bool lock_ready;       /* R-DIR-11: the list taken at start is published; the lock applies from now */
-	struct pl_entry *held; /* R-DIR-11: the newest membership, kept while the list is locked */
-	size_t held_count;
-	char *held_content;
+	struct pl_publication publication; /* what the receiver was given, and the lock (R-DIR-11) */
 };
 
 /* ---- time and paths ---- */
@@ -206,7 +194,7 @@ static wchar_t *win32_path(const char *utf8)
 }
 
 /* A path below the root: root, a separator unless the root ends in one, the relative path with backslashes, suffix */
-static wchar_t *below_root(const struct pl_provider *p, const char *relative, const wchar_t *suffix)
+static wchar_t *below_root(const struct pl_folder_provider *p, const char *relative, const wchar_t *suffix)
 {
 	wchar_t *relative_w = NULL;
 	os_utf8_to_wcs_ptr(relative, 0, &relative_w);
@@ -296,13 +284,13 @@ static void free_listing(struct darray *array)
 	*array = files.da;
 }
 
-static bool stopping(struct pl_provider *p)
+static bool stopping(struct pl_folder_provider *p)
 {
 	return WaitForSingleObject(p->stop_event, 0) == WAIT_OBJECT_0;
 }
 
 /* Each skipped subfolder is logged once (R-DIR-1) */
-static void log_skipped_once(struct pl_provider *p, const char *relative, const char *why)
+static void log_skipped_once(struct pl_folder_provider *p, const char *relative, const char *why)
 {
 	for (size_t i = 0; i < p->logged_paths.num; i++) {
 		if (strcmp(p->logged_paths.array[i], relative) == 0)
@@ -324,7 +312,7 @@ static char *join_relative(const char *parent, const char *name)
 	return path.array;
 }
 
-static void add_listed_file(struct pl_provider *p, struct darray *array, const char *relative, const char *name,
+static void add_listed_file(struct pl_folder_provider *p, struct darray *array, const char *relative, const char *name,
 			    const WIN32_FIND_DATAW *data, uint32_t ordinal)
 {
 	DARRAY(struct listed_file) files;
@@ -346,7 +334,7 @@ static void add_listed_file(struct pl_provider *p, struct darray *array, const c
 /* Lists the folder (and its subfolders when the option is on) without opening any file. Below the root, hidden and
  * system folders are skipped and reparse points are never followed, so a link back up the tree cannot make the scan
  * loop (R-DIR-1); the root itself is opened even when it is a junction. */
-static enum scan_result scan_folder(struct pl_provider *p, struct darray *out, size_t *cloud_count, DWORD *error)
+static enum scan_result scan_folder(struct pl_folder_provider *p, struct darray *out, size_t *cloud_count, DWORD *error)
 {
 	DARRAY(struct listed_file) files;
 	DARRAY(char *) folders; /* relative folders still to list; "" is the root */
@@ -451,7 +439,7 @@ static enum scan_result scan_folder(struct pl_provider *p, struct darray *out, s
 
 /* Hands the files the filter admits to the gate, with occurrences numbered in listing order (R-KEY-1) and gate keys
  * made unique */
-static void feed_gate(struct pl_provider *p, bool initial)
+static void feed_gate(struct pl_folder_provider *p, bool initial)
 {
 	size_t count = 0;
 	for (size_t i = 0; i < p->files.num; i++) {
@@ -511,7 +499,7 @@ static void free_renames(struct darray *array)
 
 /* Keeps the key an item had at the last publication: A to B then B to C is one rename, A to C; back to A is none, and
  * so is a change of case only, as the key is the same */
-static void carry_rename(struct pl_provider *p, const char *old_key, const char *new_key)
+static void carry_rename(struct pl_folder_provider *p, const char *old_key, const char *new_key)
 {
 	if (strcmp(old_key, new_key) == 0)
 		return;
@@ -533,7 +521,7 @@ static void carry_rename(struct pl_provider *p, const char *old_key, const char 
 	da_push_back(p->renames, &pair);
 }
 
-static bool listing_has(const struct pl_provider *p, const char *key)
+static bool listing_has(const struct pl_folder_provider *p, const char *key)
 {
 	for (size_t i = 0; i < p->files.num; i++) {
 		if (strcmp(p->files.array[i].key, key) == 0)
@@ -546,7 +534,7 @@ static bool listing_has(const struct pl_provider *p, const char *key)
  * new name: one taken before the rename still shows the old one, and moving the file then would let that listing
  * gate the old name as new and drop the new one. Such a rename waits for the next listing, once. A folder rename is
  * not followed: the files below it are listed as new. */
-static void apply_notified_renames(struct pl_provider *p)
+static void apply_notified_renames(struct pl_folder_provider *p)
 {
 	DARRAY(struct rename_pair) waiting;
 	da_init(waiting);
@@ -585,7 +573,7 @@ static void apply_notified_renames(struct pl_provider *p)
 	p->notified_renames.da = waiting.da;
 }
 
-static void collect_notified_renames(struct pl_provider *p, DWORD bytes)
+static void collect_notified_renames(struct pl_folder_provider *p, DWORD bytes)
 {
 	const BYTE *cursor = (const BYTE *)p->buffer;
 	const BYTE *end = cursor + bytes;
@@ -616,7 +604,7 @@ static void collect_notified_renames(struct pl_provider *p, DWORD bytes)
 
 /* ---- the directory handle and the watch modes (R-DIR-3) ---- */
 
-static void close_dir(struct pl_provider *p)
+static void close_dir(struct pl_folder_provider *p)
 {
 	if (p->dir == INVALID_HANDLE_VALUE)
 		return;
@@ -631,7 +619,7 @@ static void close_dir(struct pl_provider *p)
 	p->dir = INVALID_HANDLE_VALUE;
 }
 
-static bool arm_dir(struct pl_provider *p)
+static bool arm_dir(struct pl_folder_provider *p)
 {
 	if (p->dir == INVALID_HANDLE_VALUE)
 		return false;
@@ -651,7 +639,7 @@ static bool arm_dir(struct pl_provider *p)
 	return true;
 }
 
-static enum pl_watch_event open_dir(struct pl_provider *p)
+static enum pl_watch_event open_dir(struct pl_folder_provider *p)
 {
 	close_dir(p);
 	if (!p->root_w) {
@@ -677,7 +665,7 @@ static enum pl_watch_event open_dir(struct pl_provider *p)
 
 /* Takes in a notification that completed with changes while the worker was busy, so the renames it reports are known
  * before the listing reaches the gate; anything else is left for the main loop */
-static void take_completed_changes(struct pl_provider *p)
+static void take_completed_changes(struct pl_folder_provider *p)
 {
 	if (!p->armed || !HasOverlappedIoCompleted(&p->overlapped))
 		return;
@@ -694,7 +682,7 @@ static void take_completed_changes(struct pl_provider *p)
 		p->debounce_ms = mono_now() + DEBOUNCE_MS;
 }
 
-static enum scan_result rescan(struct pl_provider *p)
+static enum scan_result rescan(struct pl_folder_provider *p)
 {
 	size_t cloud = 0;
 	DWORD error = ERROR_SUCCESS;
@@ -716,7 +704,7 @@ static enum scan_result rescan(struct pl_provider *p)
 	return SCAN_OK;
 }
 
-static void log_mode_change(struct pl_provider *p, const struct pl_watch_actions *actions)
+static void log_mode_change(struct pl_folder_provider *p, const struct pl_watch_actions *actions)
 {
 	if (actions->mode == PL_WATCH_MISSING || actions->mode == PL_WATCH_RESCAN_ONLY)
 		obs_log(LOG_WARNING, "folder %s: %s (%s; Win32 error %lu)", p->location,
@@ -728,7 +716,7 @@ static void log_mode_change(struct pl_provider *p, const struct pl_watch_actions
 
 /* Feeds an observation to the watch machine and does what it says, in its order (close, open or re-arm, rescan);
  * each outcome is the next observation */
-static void run_event(struct pl_provider *p, enum pl_watch_event first)
+static void run_event(struct pl_folder_provider *p, enum pl_watch_event first)
 {
 	enum pl_watch_event events[MAX_CHAINED_EVENTS];
 	size_t head = 0;
@@ -770,14 +758,14 @@ static void run_event(struct pl_provider *p, enum pl_watch_event first)
 
 /* More changes than the buffer holds: listed again (R-DIR-3), and said in the log, where a run of them that turns
  * the folder to rescan-only shows too */
-static void on_overflow(struct pl_provider *p)
+static void on_overflow(struct pl_folder_provider *p)
 {
 	obs_log(LOG_INFO, "folder %s: more changes than the buffer holds; listing it again", p->location);
 	run_event(p, PL_WATCH_OVERFLOW);
 }
 
 /* The armed call completed */
-static void on_notification(struct pl_provider *p)
+static void on_notification(struct pl_folder_provider *p)
 {
 	DWORD bytes = 0;
 	BOOL ok = GetOverlappedResult(p->dir, &p->overlapped, &bytes, FALSE);
@@ -828,30 +816,10 @@ static void on_notification(struct pl_provider *p)
 
 /* ---- snapshots ---- */
 
-static void free_entry_array(struct pl_entry **entries, size_t *count)
-{
-	pl_entries_free(*entries, *count);
-	*entries = NULL;
-	*count = 0;
-}
-
-static struct pl_entry *copy_entries(const struct pl_entry *entries, size_t count, bool keep_renames)
-{
-	struct pl_entry *copy = bzalloc((count ? count : 1) * sizeof(*copy));
-	for (size_t i = 0; i < count; i++) {
-		pl_entry_copy(&copy[i], &entries[i]);
-		if (!keep_renames) {
-			bfree(copy[i].previous_key);
-			copy[i].previous_key = NULL;
-		}
-	}
-	return copy;
-}
-
 /* The admitted files the filter lets through, in listing order. A file rewritten in place keeps its last admitted
  * version (size, date and so its place) while the new one is gated (PLAN step 5); a file gated for the first time is
  * not listed yet. The keys still in the gate go to pending. */
-static struct pl_entry *collect_entries(struct pl_provider *p, size_t *count, struct darray *pending_out)
+static struct pl_entry *collect_entries(struct pl_folder_provider *p, size_t *count, struct darray *pending_out)
 {
 	DARRAY(char *) pending;
 	da_init(pending);
@@ -891,188 +859,43 @@ static struct pl_entry *collect_entries(struct pl_provider *p, size_t *count, st
 	return entries;
 }
 
-/* An entry as text: its identity (R-KEY-1) and its version */
-struct identity {
-	char *id;
-	char *version;
-};
-
-static int compare_identities(const void *a, const void *b)
+/* The row status of the folder (R-LIST-5); message holds the text status points at */
+static void fill_status(struct pl_folder_provider *p, struct pl_publication_status *status, struct dstr *message)
 {
-	return strcmp(((const struct identity *)a)->id, ((const struct identity *)b)->id);
-}
-
-/* Sorted by identity, so the order a listing happens to give (FAT, exFAT, shares) changes nothing */
-static struct identity *identities(const struct pl_entry *entries, size_t count)
-{
-	struct identity *result = bmalloc((count ? count : 1) * sizeof(*result));
-	for (size_t i = 0; i < count; i++) {
-		struct dstr id = {0};
-		struct dstr version = {0};
-		dstr_printf(&id, "%s\x1f%u", entries[i].key, entries[i].occurrence);
-		dstr_printf(&version, "%llu\x1f%lld\x1f%s", (unsigned long long)entries[i].size,
-			    (long long)entries[i].date_unix_ms, entries[i].location);
-		result[i].id = id.array;
-		result[i].version = version.array;
-	}
-	qsort(result, count, sizeof(*result), compare_identities);
-	return result;
-}
-
-static void free_identities(struct identity *identities, size_t count)
-{
-	for (size_t i = 0; i < count; i++) {
-		bfree(identities[i].id);
-		bfree(identities[i].version);
-	}
-	bfree(identities);
-}
-
-/* What makes two memberships equal (R-DIR-8, R-BEH-5): the entries and their versions, not the view */
-static char *content_digest(const struct pl_entry *entries, size_t count)
-{
-	struct identity *sorted = identities(entries, count);
-	/* never NULL, as dstr_copy of "" leaves it, so an empty membership compares like any other */
-	struct dstr digest = {0};
-	dstr_copy(&digest, "membership\n");
-	for (size_t i = 0; i < count; i++)
-		dstr_catf(&digest, "%s\t%s\n", sorted[i].id, sorted[i].version);
-	free_identities(sorted, count);
-	return digest.array;
-}
-
-/* Entries one membership has and the other lacks, and entries whose version changed (a rewrite): the row status "N
- * changes waiting" (R-DIR-11) */
-static size_t count_changes(const struct pl_entry *a, size_t a_count, const struct pl_entry *b, size_t b_count)
-{
-	struct identity *x = identities(a, a_count);
-	struct identity *y = identities(b, b_count);
-	size_t i = 0, j = 0, changes = 0;
-	while (i < a_count || j < b_count) {
-		int order = i == a_count ? 1 : j == b_count ? -1 : strcmp(x[i].id, y[j].id);
-		changes += order != 0 || strcmp(x[i].version, y[j].version) != 0;
-		i += order <= 0;
-		j += order >= 0;
-	}
-	free_identities(x, a_count);
-	free_identities(y, b_count);
-	return changes;
-}
-
-static void fill_status(struct pl_provider *p, struct pl_snapshot *snapshot)
-{
-	struct dstr message = {0};
 	enum pl_status_level level = PL_STATUS_OK;
 	if (p->watch.mode == PL_WATCH_MISSING) {
 		level = PL_STATUS_ERROR;
 		switch (p->missing) {
 		case MISSING_DENIED:
-			dstr_copy(&message, "access denied (permissions or security software)");
+			dstr_copy(message, "access denied (permissions or security software)");
 			break;
 		case MISSING_LOST:
-			dstr_copy(&message, "the folder went away (deleted, share offline or drive removed)");
+			dstr_copy(message, "the folder went away (deleted, share offline or drive removed)");
 			break;
 		default:
-			dstr_copy(&message, "folder not found, or not a folder");
+			dstr_copy(message, "folder not found, or not a folder");
 			break;
 		}
-		snapshot->stale = p->listed;
+		status->stale = p->listed;
 	}
 	size_t denied = pl_gate_denied_count(&p->gate);
 	if (denied) {
 		level = PL_STATUS_ERROR;
-		if (message.len)
-			dstr_cat(&message, "; ");
-		dstr_catf(&message, "access denied (permissions or security software) to %zu files", denied);
+		if (message->len)
+			dstr_cat(message, "; ");
+		dstr_catf(message, "access denied (permissions or security software) to %zu files", denied);
 	}
 	if (p->cloud_count) {
 		if (level == PL_STATUS_OK)
 			level = PL_STATUS_WARNING;
-		if (message.len)
-			dstr_cat(&message, "; ");
-		dstr_catf(&message, "%zu cloud-only files not downloaded; mark the folder Always keep on this device",
+		if (message->len)
+			dstr_cat(message, "; ");
+		dstr_catf(message, "%zu cloud-only files not downloaded; mark the folder Always keep on this device",
 			  p->cloud_count);
 	}
-	snapshot->level = level;
-	snapshot->status_message = message.array;
-	snapshot->last_ok_unix_ms = p->last_ok_unix_ms;
-}
-
-/* Builds the published form of a membership: its own copy of the entries in display order (R-DIR-6), the mode's
- * visible list (R-DIR-7), the pending keys and the row status */
-static struct pl_snapshot *build_snapshot(struct pl_provider *p, const struct pl_entry *raw, size_t count,
-					  char **pending, size_t pending_count)
-{
-	struct pl_snapshot *snapshot = bzalloc(sizeof(*snapshot));
-	snapshot->instance_id = p->instance_id;
-	snapshot->entries = copy_entries(raw, count, true);
-	snapshot->count = count;
-	pl_sort_entries(snapshot->entries, count, p->options.sort_key, p->options.sort_descending);
-	snapshot->visible = bmalloc((count ? count : 1) * sizeof(size_t));
-	snapshot->visible_count =
-		pl_mode_select(snapshot->entries, count, p->options.mode, p->options.newest_count, snapshot->visible);
-	snapshot->initial_scan_complete = p->listed;
-	snapshot->pending_keys = bmalloc((pending_count ? pending_count : 1) * sizeof(char *));
-	for (size_t i = 0; i < pending_count; i++)
-		snapshot->pending_keys[i] = bstrdup(pending[i]);
-	snapshot->pending_count = pending_count;
-	fill_status(p, snapshot);
-	snapshot->held_changes = (size_t)os_atomic_load_long(&p->held_changes);
-	return snapshot;
-}
-
-/* Everything the receiver can see, to publish only what changed */
-static char *snapshot_signature(const struct pl_snapshot *snapshot)
-{
-	struct dstr signature = {0};
-	dstr_copy(&signature, "snapshot\n");
-	for (size_t i = 0; i < snapshot->count; i++) {
-		const struct pl_entry *entry = &snapshot->entries[i];
-		dstr_catf(&signature, "%s\t%s\t%u\t%llu\t%lld\t%s\n", entry->location, entry->key, entry->occurrence,
-			  (unsigned long long)entry->size, (long long)entry->date_unix_ms,
-			  entry->previous_key ? entry->previous_key : "");
-	}
-	dstr_cat(&signature, "visible");
-	for (size_t i = 0; i < snapshot->visible_count; i++)
-		dstr_catf(&signature, " %zu", snapshot->visible[i]);
-	dstr_catf(&signature, "\npending %zu\nheld %zu\nlevel %d %s\nstale %d initial %d\n", snapshot->pending_count,
-		  snapshot->held_changes, (int)snapshot->level,
-		  snapshot->status_message ? snapshot->status_message : "", snapshot->stale,
-		  snapshot->initial_scan_complete);
-	return signature.array;
-}
-
-/* Publishes this membership if anything the receiver sees changed (or when forced); it becomes the published one.
- * Takes raw and content. */
-static void publish_membership(struct pl_provider *p, struct pl_entry *raw, size_t count, char *content, char **pending,
-			       size_t pending_count, bool force)
-{
-	struct pl_snapshot *snapshot = build_snapshot(p, raw, count, pending, pending_count);
-	char *signature = snapshot_signature(snapshot);
-	if (!force && p->last_signature && strcmp(signature, p->last_signature) == 0) {
-		bfree(signature);
-		pl_snapshot_free(snapshot);
-		pl_entries_free(raw, count);
-		bfree(content);
-		return;
-	}
-	if (!p->published_content || strcmp(content, p->published_content) != 0)
-		p->content_revision++;
-	snapshot->content_revision = p->content_revision;
-	snapshot->generation = ++p->generation;
-	bfree(p->last_signature);
-	p->last_signature = signature;
-
-	/* renames are published once; the kept membership has none */
-	free_entry_array(&p->published, &p->published_count);
-	p->published = copy_entries(raw, count, false);
-	p->published_count = count;
-	pl_entries_free(raw, count);
-	bfree(p->published_content);
-	p->published_content = content;
-	free_renames(&p->renames.da);
-
-	p->publish(p->owner, snapshot);
+	status->level = level;
+	status->message = message->array;
+	status->last_ok_unix_ms = p->last_ok_unix_ms;
 }
 
 static void free_pending(struct darray *array)
@@ -1086,9 +909,8 @@ static void free_pending(struct darray *array)
 }
 
 /* After anything that can change what the row shows: build the current membership and publish it, or keep it while
- * the list is locked (R-DIR-11) and publish the locked membership in the current view and status. release (or the
- * lock turned off) publishes the newest membership, carrying the renames the kept one had. */
-static void update_publication(struct pl_provider *p, bool release)
+ * the list is locked (R-DIR-11) */
+static void update_publication(struct pl_folder_provider *p, bool release)
 {
 	/* nothing to say before the first listing, unless the folder is missing */
 	if (!p->listed && p->watch.mode != PL_WATCH_MISSING)
@@ -1096,38 +918,18 @@ static void update_publication(struct pl_provider *p, bool release)
 	size_t count = 0;
 	DARRAY(char *) pending;
 	struct pl_entry *raw = collect_entries(p, &count, &pending.da);
-	char *content = content_digest(raw, count);
-
-	/* the list taken at start is the first listing once the files it found being written are in; the lock holds
-	 * changes from then on (not an error published before any listing, nor a start with files still in the gate) */
-	bool locked = p->options.lock_list_at_start && p->lock_ready && strcmp(content, p->published_content) != 0;
-	if (locked && !release) {
-		/* renames the kept membership carried and this one does not compose (A to B kept, then B to C) */
-		if (p->held)
-			pl_merge_compose_renames(raw, count, p->held, p->held_count);
-		free_entry_array(&p->held, &p->held_count);
-		bfree(p->held_content);
-		p->held = raw;
-		p->held_count = count;
-		p->held_content = content;
+	struct dstr message = {0};
+	struct pl_publication_status status = {0};
+	fill_status(p, &status, &message);
+	status.listed = p->listed;
+	status.lock_point = p->listed;
+	status.pending_keys = pending.array;
+	status.pending_count = pending.num;
+	/* renames are published once, or dropped with a membership kept while the list is locked */
+	if (pl_publication_update(&p->publication, &p->options, raw, count, &status, release) !=
+	    PL_PUBLICATION_UNCHANGED)
 		free_renames(&p->renames.da);
-		os_atomic_set_long(&p->held_changes,
-				   (long)count_changes(p->published, p->published_count, p->held, p->held_count));
-		publish_membership(p, copy_entries(p->published, p->published_count, false), p->published_count,
-				   bstrdup(p->published_content), pending.array, pending.num, false);
-	} else {
-		/* a release publishes even an unchanged view; with nothing kept there is nothing to force */
-		bool released = release && p->held;
-		if (p->held)
-			pl_merge_compose_renames(raw, count, p->held, p->held_count);
-		free_entry_array(&p->held, &p->held_count);
-		bfree(p->held_content);
-		p->held_content = NULL;
-		os_atomic_set_long(&p->held_changes, 0);
-		publish_membership(p, raw, count, content, pending.array, pending.num, released);
-	}
-	if (p->listed && !pending.num && p->published_content)
-		p->lock_ready = true;
+	dstr_free(&message);
 	free_pending(&pending.da);
 }
 
@@ -1141,7 +943,7 @@ static void copy_options(struct pl_container_options *dst, char **filter_text, c
 	dst->extension_filter = *filter_text;
 }
 
-static void apply_options(struct pl_provider *p, const struct pl_container_options *options)
+static void apply_options(struct pl_folder_provider *p, const struct pl_container_options *options)
 {
 	bool filter_changed = strcmp(options->extension_filter, p->filter_text) != 0;
 	copy_options(&p->options, &p->filter_text, options);
@@ -1158,7 +960,7 @@ static void apply_options(struct pl_provider *p, const struct pl_container_optio
 	/* with the lock turned off, the next publication carries the waiting changes at once (R-DIR-11) */
 }
 
-static void take_requests(struct pl_provider *p, bool *release)
+static void take_requests(struct pl_folder_provider *p, bool *release)
 {
 	struct pl_container_options options = {0};
 	char *filter_text = NULL;
@@ -1184,7 +986,7 @@ static void take_requests(struct pl_provider *p, bool *release)
 
 static DWORD WINAPI worker_main(void *data)
 {
-	struct pl_provider *p = data;
+	struct pl_folder_provider *p = data;
 	os_set_thread_name("obs-playlister: folder");
 	pl_watch_init(&p->watch, p->options.folder_check_enabled, p->options.folder_check_interval_s, mono_now());
 
@@ -1229,7 +1031,7 @@ static DWORD WINAPI worker_main(void *data)
 
 /* ---- the interface ---- */
 
-static void free_provider(struct pl_provider *p)
+static void free_provider(struct pl_folder_provider *p)
 {
 	close_dir(p);
 	if (p->thread)
@@ -1253,24 +1055,20 @@ static void free_provider(struct pl_provider *p)
 	for (size_t i = 0; i < p->logged_paths.num; i++)
 		bfree(p->logged_paths.array[i]);
 	da_free(p->logged_paths);
-	bfree(p->last_signature);
-	free_entry_array(&p->published, &p->published_count);
-	bfree(p->published_content);
-	free_entry_array(&p->held, &p->held_count);
-	bfree(p->held_content);
+	pl_publication_free(&p->publication);
 	bfree(p->root_w);
 	bfree(p->location);
 	bfree(p);
 }
 
-struct pl_provider *pl_provider_create(enum pl_row_kind kind, const char *location, const char *row_uuid,
-				       uint64_t instance_id, const struct pl_container_options *options,
-				       pl_publish_fn publish, void *owner)
+struct pl_folder_provider *pl_folder_provider_create(const char *location, const char *row_uuid, uint64_t instance_id,
+						     const struct pl_container_options *options, pl_publish_fn publish,
+						     void *owner)
 {
 	UNUSED_PARAMETER(row_uuid);
-	if (kind != PL_ROW_FOLDER || !location || !options || !publish)
+	if (!location || !options || !publish)
 		return NULL;
-	struct pl_provider *p = bzalloc(sizeof(*p));
+	struct pl_folder_provider *p = bzalloc(sizeof(*p));
 	p->location = bstrdup(location);
 	/* entries are "<location>/<relative path>", so the row's own trailing separators go (a drive root keeps
 	 * nothing after its colon) */
@@ -1278,9 +1076,7 @@ struct pl_provider *pl_provider_create(enum pl_row_kind kind, const char *locati
 	while (length > 1 && (p->location[length - 1] == '/' || p->location[length - 1] == '\\'))
 		p->location[--length] = '\0';
 	p->root_w = win32_path(location);
-	p->instance_id = instance_id;
-	p->publish = publish;
-	p->owner = owner;
+	pl_publication_init(&p->publication, instance_id, publish, owner);
 	p->include_subfolders = options->include_subfolders;
 	p->dir = INVALID_HANDLE_VALUE;
 	p->buffer = bmalloc(NOTIFY_BUFFER_BYTES);
@@ -1312,7 +1108,7 @@ struct pl_provider *pl_provider_create(enum pl_row_kind kind, const char *locati
 	return p;
 }
 
-void pl_provider_refresh_now(struct pl_provider *provider)
+void pl_folder_provider_refresh_now(struct pl_folder_provider *provider)
 {
 	pthread_mutex_lock(&provider->request_mutex);
 	provider->refresh_requested = true;
@@ -1320,7 +1116,7 @@ void pl_provider_refresh_now(struct pl_provider *provider)
 	SetEvent(provider->wake_event);
 }
 
-void pl_provider_set_options(struct pl_provider *provider, const struct pl_container_options *options)
+void pl_folder_provider_set_options(struct pl_folder_provider *provider, const struct pl_container_options *options)
 {
 	pthread_mutex_lock(&provider->request_mutex);
 	copy_options(&provider->requested, &provider->requested_filter, options);
@@ -1329,7 +1125,7 @@ void pl_provider_set_options(struct pl_provider *provider, const struct pl_conta
 	SetEvent(provider->wake_event);
 }
 
-void pl_provider_release_held(struct pl_provider *provider)
+void pl_folder_provider_release_held(struct pl_folder_provider *provider)
 {
 	pthread_mutex_lock(&provider->request_mutex);
 	provider->release_requested = true;
@@ -1337,12 +1133,12 @@ void pl_provider_release_held(struct pl_provider *provider)
 	SetEvent(provider->wake_event);
 }
 
-size_t pl_provider_held_changes(struct pl_provider *provider)
+size_t pl_folder_provider_held_changes(struct pl_folder_provider *provider)
 {
-	return (size_t)os_atomic_load_long(&provider->held_changes);
+	return pl_publication_held_changes(&provider->publication);
 }
 
-void pl_provider_destroy(struct pl_provider *provider)
+void pl_folder_provider_destroy(struct pl_folder_provider *provider)
 {
 	if (!provider)
 		return;

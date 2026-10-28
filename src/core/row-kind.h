@@ -24,8 +24,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 /* R-LIST-1: a row's kind is detected, not chosen */
 enum pl_row_kind {
-	PL_ROW_FILE,   /* handed to the child: a local file, or any URL until Phase 3a classifies http(s) ones */
-	PL_ROW_FOLDER, /* listed as a folder */
+	PL_ROW_FILE,     /* handed to the child: a local file, or any URL until Phase 3a classifies http(s) ones */
+	PL_ROW_FOLDER,   /* listed as a folder */
+	PL_ROW_PLAYLIST, /* an .m3u, .m3u8 or .pls file or URL, read by the list provider (Phase 3a) */
+	PL_ROW_REMOTE,   /* an http(s) URL its first response classifies (Phase 3a) */
 };
 
 /* Whether path is an existing directory: the only disk access classification makes */
