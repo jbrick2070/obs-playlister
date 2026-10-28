@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/darray.h>
 
 #include "core/entry.h"
+#include "core/row-kind.h"
 
 /* What a folder row's last snapshot said, for the status block and its log (R-LIST-5, R-BEH-2); owned by the row */
 struct row_report {
@@ -39,7 +40,8 @@ struct media_file_data {
 	char *filename; // filename with ext, ONLY for folder item checking
 	char *id;
 	bool is_url;
-	bool is_folder;
+	bool is_folder;        /* a container row: a folder, playlist or remote row with items from its provider */
+	enum pl_row_kind kind; /* rows: R-LIST-1 */
 	DARRAY(struct media_file_data) folder_items;
 	struct media_file_data *parent;
 	const char *parent_id; // for folder items

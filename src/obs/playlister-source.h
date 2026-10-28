@@ -39,6 +39,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 struct row_provider {
 	char *row_uuid;
 	char *location;
+	enum pl_row_kind kind; /* a row whose kind changes gets a new provider */
 	bool include_subfolders;
 	uint64_t instance_id;         /* the only instance whose snapshots the row accepts (R-THR-2) */
 	struct pl_provider *provider; /* NULL until created, or when it could not be */

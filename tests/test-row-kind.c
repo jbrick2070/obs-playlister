@@ -64,10 +64,27 @@ static void test_order(void)
 	struct pl_filter filter;
 	pl_filter_parse(&filter, PL_FILTER_DEFAULT);
 
-	/* URLs: never folders and never on disk, whatever was saved */
-	expect(&filter, "https://example.com/show/ep1", false, PL_ROW_FILE, 0);
+	/* URLs: never folders and never on disk, whatever was saved; http(s) by extension, the query left out */
+	expect(&filter, "https://example.com/show/ep1", false, PL_ROW_REMOTE, 0);
+	expect(&filter, "https://example.com/feed", true, PL_ROW_REMOTE, 0);
+	expect(&filter, "http://example.com", false, PL_ROW_REMOTE, 0);
+	expect(&filter, "https://example.com/show/ep1.mp4?token=a.m3u", false, PL_ROW_FILE, 0);
+	expect(&filter, "HTTPS://example.com/clip.MKV", false, PL_ROW_FILE, 0);
+	expect(&filter, "https://example.com/list.m3u?x=1.mp4", false, PL_ROW_PLAYLIST, 0);
+	expect(&filter, "https://example.com/live/index.m3u8", false, PL_ROW_PLAYLIST, 0);
+	expect(&filter, "http://radio.example.com/listen.PLS", false, PL_ROW_PLAYLIST, 0);
+	expect(&filter, "https://example.com/doc.pdf", false, PL_ROW_REMOTE, 0);
+	/* other schemes go to the child as they are */
 	expect(&filter, "rtmp://example.com/live", false, PL_ROW_FILE, 0);
-	expect(&filter, "https://example.com/feed", true, PL_ROW_FILE, 0);
+	expect(&filter, "srt://example.com:9000/list.m3u", false, PL_ROW_FILE, 0);
+
+	/* playlist files by extension, without a disk question, before the filter and the disk (R-LIST-1 rule 2) */
+	expect(&filter, "C:/lists/show.m3u", false, PL_ROW_PLAYLIST, 0);
+	expect(&filter, "C:/lists/live.M3U8", false, PL_ROW_PLAYLIST, 0);
+	expect(&filter, "\\\\server\\share\\radio.pls", false, PL_ROW_PLAYLIST, 0);
+	expect(&filter, "C:/lists/gone.m3u", false, PL_ROW_PLAYLIST, 0);
+	/* a saved folder kind still wins */
+	expect(&filter, "C:/lists/odd.m3u", true, PL_ROW_FOLDER, 0);
 
 	/* a saved folder kind wins without a disk question, even for a name that looks like media or is absent now */
 	expect(&filter, "C:/media/gone", true, PL_ROW_FOLDER, 0);

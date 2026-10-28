@@ -39,6 +39,8 @@ static const char *video_filter = " (*.mp4 *.mpg *.m4v *.ts *.mov *.mxf *.flv *.
 static const char *audio_filter = " (*.mp3 *.m4a *.mka *.aac *.ogg *.wav *.opus *.flac);;";
 /* R-UP-10: the stills the extension filter knows (core/filter.c), held for the still duration (R-DIR-9) */
 static const char *still_filter = " (*.jpg *.jpeg *.png *.webp *.bmp);;";
+/* Phase 3a: playlist files, read by the list provider (R-UP-10, R-LIST-1) */
+static const char *playlist_filter = " (*.m3u *.m3u8 *.pls);;";
 
 static void set_current_media_index(struct media_playlist_source *mps, size_t index);
 static size_t get_total_file_count(struct media_playlist_source *mps);
@@ -108,7 +110,7 @@ static void missing_file_callback(void *src, const char *new_path, void *data);
 static obs_missing_files_t *mps_missingfiles(void *data);
 
 static void set_parents(struct darray *array);
-static void add_file(struct darray *array, const char *path, const char *id, bool folder);
+static void add_file(struct darray *array, const char *path, const char *id, enum pl_row_kind kind);
 static void free_files(struct darray *array);
 
 struct obs_source_info media_playlist_source_info = {
@@ -169,6 +171,7 @@ struct obs_source_info media_playlist_source_info = {
 #define S_FOLDER_CHECK_ENABLED "folder_check_enabled"
 #define S_FOLDER_CHECK_INTERVAL "folder_check_interval_s"
 #define S_LOCK_LIST_AT_START "lock_list_at_start"
+#define S_REMOTE_REFRESH "remote_refresh_s"
 #define S_ROW_KINDS "row_kinds"                 /* row uuid -> {"kind": "folder", "path": ...} (R-LIST-1) */
 #define S_FOLDER_OPTIONS "folder_options"       /* the Properties group (R-LIST-3), no setting */
 #define S_APPLY_WAITING "apply_waiting_changes" /* the Properties button (R-DIR-11), no setting */
@@ -226,12 +229,16 @@ struct obs_source_info media_playlist_source_info = {
 #define T_FOLDER_CHECK_INTERVAL T_("FolderCheckInterval")
 #define T_LOCK_LIST_AT_START T_("LockListAtStart")
 #define T_LOCK_LIST_AT_START_TOOLTIP T_("LockListAtStart.Tooltip")
+#define T_REMOTE_REFRESH T_("RemoteRefresh")
+#define T_REMOTE_REFRESH_TOOLTIP T_("RemoteRefresh.Tooltip")
 #define T_APPLY_WAITING T_("ApplyWaitingChanges")
 #define T_APPLY_WAITING_TOOLTIP T_("ApplyWaitingChanges.Tooltip")
 #define T_ROW_STATUS T_("RowStatus")
 #define T_ROW_KIND_FILE T_("RowKind.File")
 #define T_ROW_KIND_URL T_("RowKind.Url")
 #define T_ROW_KIND_FOLDER T_("RowKind.Folder")
+#define T_ROW_KIND_PLAYLIST T_("RowKind.Playlist")
+#define T_ROW_KIND_REMOTE T_("RowKind.Remote")
 #define T_ROW_STATUS_SCANNING T_("RowStatus.Scanning")
 #define T_ROW_STATUS_EMPTY T_("RowStatus.Empty")
 #define T_ROW_STATUS_ONE_FILE T_("RowStatus.OneFile")
@@ -246,6 +253,7 @@ struct obs_source_info media_playlist_source_info = {
 #define T_ROW_STATUS_FILES_FAILED T_("RowStatus.FilesFailed")
 #define T_ROW_STATUS_LAST_LIST T_("RowStatus.LastList")
 #define T_ROW_STATUS_NOT_WATCHED T_("RowStatus.NotWatched")
+#define T_ROW_STATUS_NOT_READ T_("RowStatus.NotRead")
 #define T_ROW_STATUS_ALL_FAILED T_("RowStatus.AllFailed")
 
 #define T_PLAY_PAUSE T_("PlayPause")
@@ -896,7 +904,9 @@ static enum pl_status_level row_status(const struct media_playlist_source *mps, 
 		}
 	} else {
 		const struct row_report *report = &row->report;
-		dstr_copy(line, T_ROW_KIND_FOLDER);
+		dstr_copy(line, row->kind == PL_ROW_PLAYLIST ? T_ROW_KIND_PLAYLIST
+				: row->kind == PL_ROW_REMOTE ? T_ROW_KIND_REMOTE
+							     : T_ROW_KIND_FOLDER);
 		level = report->level;
 		size_t visible = row->folder_items.num;
 		if (row->awaiting) {
@@ -1092,7 +1102,8 @@ static bool restart_playing_copy(struct media_playlist_source *mps)
 {
 	if (!mps->playing_copy_active || mps->actual_media != &mps->playing_copy)
 		return false;
-	pl_player_load(&mps->player, mps->playing_copy.path, false, item_is_still(&mps->playing_copy));
+	pl_player_load(&mps->player, mps->playing_copy.path, mps->playing_copy.is_url,
+		       item_is_still(&mps->playing_copy));
 	mps->state = OBS_MEDIA_STATE_PLAYING;
 	cancel_resume(mps);
 	mps->all_failed = false;
@@ -1460,6 +1471,7 @@ static void mps_deactivate(void *data)
 struct provider_start {
 	char *row_uuid;
 	char *location;
+	enum pl_row_kind kind;
 	uint64_t instance_id;
 };
 
@@ -1537,6 +1549,7 @@ static void keep_playing_copy(struct media_playlist_source *mps, const struct me
 {
 	struct media_file_data copy = {0};
 	copy.path = bstrdup(item->path);
+	copy.is_url = item->is_url;
 	copy.filename = bstrdup(item->filename);
 	copy.id = bstrdup(row->id);
 	copy.parent = row;
@@ -1577,6 +1590,8 @@ static void install_items(struct media_file_data *row, const struct pl_snapshot 
 		const struct pl_entry *entry = &snapshot->entries[snapshot->visible[v]];
 		struct media_file_data item = {0};
 		item.path = bstrdup(entry->location);
+		/* a playlist entry may be a URL: it loads as one, with the longer startup window (R-BEH-5) */
+		item.is_url = strstr(entry->location, "://") != NULL;
 		const char *name = entry->location;
 		for (const char *c = entry->location; *c; c++) {
 			if (*c == '/' || *c == '\\')
@@ -1919,7 +1934,7 @@ static void reconcile_providers(struct media_playlist_source *mps, struct darray
 		for (size_t j = 0; j < mps->providers.num && !same; j++) {
 			struct row_provider *candidate = &mps->providers.array[j];
 			if (candidate->row_uuid && strcmp(candidate->row_uuid, row->id) == 0 &&
-			    strcmp(candidate->location, row->path) == 0)
+			    strcmp(candidate->location, row->path) == 0 && candidate->kind == row->kind)
 				same = candidate;
 		}
 		struct row_provider entry;
@@ -1939,7 +1954,8 @@ static void reconcile_providers(struct media_playlist_source *mps, struct darray
 				row->report = old_row->report;
 				memset(&old_row->report, 0, sizeof(old_row->report));
 			}
-			if (entry.include_subfolders != include_subfolders) {
+			/* include-subfolders matters to folders only */
+			if (row->kind == PL_ROW_FOLDER && entry.include_subfolders != include_subfolders) {
 				if (entry.provider)
 					da_push_back(retired, &entry.provider);
 				entry.provider = NULL;
@@ -1949,12 +1965,13 @@ static void reconcile_providers(struct media_playlist_source *mps, struct darray
 		} else {
 			entry.row_uuid = bstrdup(row->id);
 			entry.location = bstrdup(row->path);
+			entry.kind = row->kind;
 			entry.include_subfolders = include_subfolders;
 			entry.instance_id = ++mps->last_instance_id;
 			entry.provider = NULL;
 		}
 		if (!entry.provider) {
-			struct provider_start start = {bstrdup(entry.row_uuid), bstrdup(entry.location),
+			struct provider_start start = {bstrdup(entry.row_uuid), bstrdup(entry.location), entry.kind,
 						       entry.instance_id};
 			da_push_back(starts, &start);
 		}
@@ -1989,10 +2006,12 @@ static void start_and_stop_providers(struct media_playlist_source *mps, struct d
 
 	for (size_t i = 0; i < starts.num; i++) {
 		struct provider_start *start = &starts.array[i];
-		struct pl_provider *provider = pl_provider_create(PL_ROW_FOLDER, start->location, start->row_uuid,
+		struct pl_provider *provider = pl_provider_create(start->kind, start->location, start->row_uuid,
 								  start->instance_id, options, apply_snapshot, mps);
 		if (!provider)
-			obs_log(LOG_ERROR, "the folder %s cannot be watched; its row stays empty", start->location);
+			obs_log(LOG_ERROR,
+				"row %s cannot be read: its worker could not be started; the row stays empty",
+				start->location);
 		pthread_mutex_lock(&mps->mutex);
 		size_t row_index = 0;
 		struct media_file_data *row = provider ? NULL : folder_row(mps, start->row_uuid, &row_index);
@@ -2001,7 +2020,8 @@ static void start_and_stop_providers(struct media_playlist_source *mps, struct d
 			row->awaiting = false;
 			row->report.level = PL_STATUS_ERROR;
 			bfree(row->report.message);
-			row->report.message = bstrdup(T_ROW_STATUS_NOT_WATCHED);
+			row->report.message =
+				bstrdup(row->kind == PL_ROW_FOLDER ? T_ROW_STATUS_NOT_WATCHED : T_ROW_STATUS_NOT_READ);
 			log_row_status(mps, row, row_index);
 			if (mps->resume.pending && strcmp(mps->resume.row_uuid, row->id) == 0)
 				resume_row_has_nothing(mps, row_index);
@@ -2043,6 +2063,8 @@ static void read_container_options(obs_data_t *settings, struct pl_container_opt
 	long long interval = obs_data_get_int(settings, S_FOLDER_CHECK_INTERVAL);
 	options->folder_check_interval_s = interval < 2 ? 2 : interval > 3600 ? 3600 : (uint32_t)interval;
 	options->lock_list_at_start = obs_data_get_bool(settings, S_LOCK_LIST_AT_START);
+	long long refresh = obs_data_get_int(settings, S_REMOTE_REFRESH);
+	options->remote_refresh_s = refresh < 30 ? 30 : refresh > 86400 ? 86400 : (uint32_t)refresh;
 }
 
 /* Whether the running providers need these options (include-subfolders re-creates them instead) */
@@ -2055,7 +2077,8 @@ static bool container_options_changed(const struct media_playlist_source *mps,
 	       kept->mode != options->mode || kept->newest_count != options->newest_count ||
 	       kept->folder_check_enabled != options->folder_check_enabled ||
 	       kept->folder_check_interval_s != options->folder_check_interval_s ||
-	       kept->lock_list_at_start != options->lock_list_at_start;
+	       kept->lock_list_at_start != options->lock_list_at_start ||
+	       kept->remote_refresh_s != options->remote_refresh_s;
 }
 
 static void keep_container_options(struct media_playlist_source *mps, const struct pl_container_options *options)
@@ -2576,6 +2599,7 @@ static void mps_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, S_FOLDER_CHECK_ENABLED, true);
 	obs_data_set_default_int(settings, S_FOLDER_CHECK_INTERVAL, 10);
 	obs_data_set_default_bool(settings, S_LOCK_LIST_AT_START, false);
+	obs_data_set_default_int(settings, S_REMOTE_REFRESH, 300);
 }
 
 /* Each item is shown by its position, "N: location" or "N-M: location", and stored by its identity (R-UP-20) */
@@ -2601,6 +2625,9 @@ static void add_media_to_selection(obs_property_t *list, struct media_file_data 
 	}
 	dstr_cat(&name, ": ");
 	dstr_cat(&name, data->path);
+	/* a playlist entry's own title (#EXTINF, PLS TitleN) after its location */
+	if (data->entry && data->entry->title && *data->entry->title)
+		dstr_catf(&name, " (%s)", data->entry->title);
 	obs_property_list_add_string(list, name.array, identity);
 	dstr_free(&name);
 	bfree(identity);
@@ -2699,6 +2726,12 @@ static void add_folder_options(obs_properties_t *props, struct media_playlist_so
 	p = obs_properties_add_int(group, S_FOLDER_CHECK_INTERVAL, T_FOLDER_CHECK_INTERVAL, 2, 3600, 1);
 	obs_property_int_set_suffix(p, " s");
 
+	/* R-REM-4: how often a playlist or address on the web is fetched again; local playlist files go by the folder
+	 * check above (D-12 b) */
+	p = obs_properties_add_int(group, S_REMOTE_REFRESH, T_REMOTE_REFRESH, 30, 86400, 1);
+	obs_property_int_set_suffix(p, " s");
+	obs_property_set_long_description(p, T_REMOTE_REFRESH_TOOLTIP);
+
 	p = obs_properties_add_bool(group, S_LOCK_LIST_AT_START, T_LOCK_LIST_AT_START);
 	obs_property_set_long_description(p, T_LOCK_LIST_AT_START_TOOLTIP);
 	obs_property_set_modified_callback(p, lock_list_modified);
@@ -2761,6 +2794,8 @@ static obs_properties_t *mps_properties(void *data)
 	dstr_cat(&filter, audio_filter);
 	dstr_cat(&filter, obs_module_text("MediaFileFilter.StillImages"));
 	dstr_cat(&filter, still_filter);
+	dstr_cat(&filter, obs_module_text("MediaFileFilter.Playlists"));
+	dstr_cat(&filter, playlist_filter);
 	dstr_cat(&filter, obs_module_text("MediaFileFilter.AllFiles"));
 	dstr_cat(&filter, " (*.*)");
 
@@ -2852,9 +2887,10 @@ static void save_folder_kind(obs_data_t *row_kinds, const char *id, const char *
 	obs_data_release(kind);
 }
 
-/* A folder row starts with no items: its provider lists the folder on its own worker (PLAN section 3.3), and until
- * then the row is awaiting (R-KEY-2). Upstream listed the folder here, on the graphics thread, on every update. */
-static void add_file(struct darray *array, const char *path, const char *id, bool folder)
+/* A container row (a folder, a playlist or a remote row) starts with no items: its provider lists it on its own worker
+ * (PLAN section 3.3), and until then the row is awaiting (R-KEY-2). Upstream listed folders here, on the graphics
+ * thread, on every update. */
+static void add_file(struct darray *array, const char *path, const char *id, enum pl_row_kind kind)
 {
 	DARRAY(struct media_file_data) new_files;
 	new_files.da = *array;
@@ -2864,8 +2900,9 @@ static void add_file(struct darray *array, const char *path, const char *id, boo
 	data->index = new_files.num - 1;
 	data->path = bstrdup(path);
 	data->is_url = strstr(path, "://") != NULL;
-	data->is_folder = folder;
-	data->awaiting = folder;
+	data->kind = kind;
+	data->is_folder = kind != PL_ROW_FILE;
+	data->awaiting = data->is_folder;
 	da_init(data->folder_items);
 
 	*array = new_files.da;
@@ -3024,10 +3061,10 @@ static void mps_update(void *data, obs_data_t *settings)
 		const char *id = obs_data_get_string(item, S_ID);
 
 		if (path && *path) {
-			bool folder = pl_classify_row(path, saved_folder_kind(row_kinds, id, path), &filter,
-						      path_is_directory, NULL) == PL_ROW_FOLDER;
-			add_file(&new_files.da, path, id, folder);
-			if (folder && *id)
+			enum pl_row_kind kind = pl_classify_row(path, saved_folder_kind(row_kinds, id, path), &filter,
+								path_is_directory, NULL);
+			add_file(&new_files.da, path, id, kind);
+			if (kind == PL_ROW_FOLDER && *id)
 				save_folder_kind(new_row_kinds, id, path);
 		}
 		obs_data_release(item);

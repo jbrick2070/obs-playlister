@@ -59,7 +59,7 @@ obs_playlister_add_test(test-merge test-merge.c "${_core}/merge.c" "${_core}/ent
 obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-win.c")
 # The folder provider's write-complete gate and watch modes against a fake folder (R-DIR-3, R-DIR-4)
 obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")
-obs_playlister_add_test(test-row-kind test-row-kind.c "${_core}/row-kind.c" "${_core}/filter.c")
+obs_playlister_add_test(test-row-kind test-row-kind.c "${_core}/row-kind.c" "${_core}/filter.c" "${_core}/url.c")
 obs_playlister_add_test(test-startup test-startup.c "${_core}/startup.c")
 # Playlists (R-REM-1): URL and path resolution, M3U and PLS against fixtures
 obs_playlister_add_test(test-url test-url.c "${_core}/url.c")

@@ -24,20 +24,22 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 /* R-LIST-1: a row's kind is detected, not chosen */
 enum pl_row_kind {
-	PL_ROW_FILE,     /* handed to the child: a local file, or any URL until Phase 3a classifies http(s) ones */
+	PL_ROW_FILE,     /* handed to the child: a local file, an http(s) URL with a media extension, any other URL */
 	PL_ROW_FOLDER,   /* listed as a folder */
-	PL_ROW_PLAYLIST, /* an .m3u, .m3u8 or .pls file or URL, read by the list provider (Phase 3a) */
-	PL_ROW_REMOTE,   /* an http(s) URL its first response classifies (Phase 3a) */
+	PL_ROW_PLAYLIST, /* an .m3u, .m3u8 or .pls file or http(s) URL, read by the list provider */
+	PL_ROW_REMOTE,   /* any other http(s) URL: its first response says what it is */
 };
 
 /* Whether path is an existing directory: the only disk access classification makes */
 typedef bool (*pl_is_directory_fn)(const char *path, void *context);
 
-/* A row with a path, in R-LIST-1's order. A URL (any "scheme://") is a file row. Otherwise a folder kind saved for
- * this row with an unchanged path wins, so a watched folder that is absent when OBS starts is still a folder; a name
- * whose extension is in the filter is a file; a UNC path is a folder, decided by its provider on its worker; any
- * other path is a folder when is_directory says so, else a file (upstream, so a moved or mistyped file still reaches
- * the missing-files dialog). Only that last rule touches the disk. Playlist files come in Phase 3a. */
+/* A row with a path, in R-LIST-1's order. A URL ("scheme://") is decided without the network: http(s) with an .m3u,
+ * .m3u8 or .pls extension (query and fragment removed) is a playlist, with an extension in the filter a file, else a
+ * remote row; any other scheme is a file row. Otherwise a folder kind saved for this row with an unchanged path
+ * wins, so a watched folder that is absent when OBS starts is still a folder; an .m3u, .m3u8 or .pls name is a
+ * playlist; a name whose extension is in the filter is a file; a UNC path is a folder, decided by its provider on its
+ * worker; any other path is a folder when is_directory says so, else a file (upstream, so a moved or mistyped file
+ * still reaches the missing-files dialog). Only that last rule touches the disk. */
 enum pl_row_kind pl_classify_row(const char *path, bool saved_folder, const struct pl_filter *filter,
 				 pl_is_directory_fn is_directory, void *context);
 
