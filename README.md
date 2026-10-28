@@ -21,7 +21,8 @@ from scratch, and folders play in Playlister itself (the script could also
 fill a VLC Video Source or an Image Slideshow). Playlister is its
 own source type and installs next to Media Playlist Source without either one
 replacing the other; existing Media Playlist Source sources are left as they
-are. Remote playlists come next; see [PLAN.md](PLAN.md) and
+are. It also plays playlist files and lists on a web server (0.4.0);
+podcast feeds come next; see [PLAN.md](PLAN.md) and
 [REQUIREMENTS.md](REQUIREMENTS.md).
 
 **Bonus: no Python runtime needed.** The Directory Sorter script runs in OBS's
@@ -31,6 +32,15 @@ is nothing else to install or configure.
 
 ## Status
 
+Version 0.4.0 (Phase 3a): a row can be a playlist file (.m3u, .m3u8, .pls) or
+a web address. A playlist file is read again when it changes; a web address
+is a list on a server, checked again every few minutes ("Check web lists
+every", 5 minutes by default), or a video or stream address that plays
+directly. A list that fails to load keeps its last good copy and shows why in
+the row's status line. The Browse dialog has a Playlists group. Podcast feeds
+and web pages of links come in later versions. The checks that need no
+internet run unattended in OBS; live streams, a public feed, HTTPS and the
+Browse dialog are still to be checked by hand (TESTING.md).
 Version 0.3.0 (Phase 2): folder rows follow their folders as files are added,
 renamed or deleted, and a file still being written joins once it is complete;
 folders can be sorted by date or name and shown in full, newest only or newest
@@ -41,7 +51,6 @@ are skipped; still images are held for a set time. The manual checks in OBS
 Version 0.3.1 renames the plugin Playlister, as the OBS Project does not allow
 "OBS" in plugin names. Version 0.2.0 (Phase 1) was the original plugin renamed
 and built for OBS 33.
-Remote playlists come in Phase 3.
 
 ## Features (from Media Playlist Source)
 

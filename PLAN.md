@@ -1,7 +1,7 @@
 # obs-playlister -- Plan
 
-Status: 2026-10-25. Approved by the operator on 2026-10-24 (decisions: REQUIREMENTS section 14).
-Phase 1 (0.2.0) and Phase 2 (0.3.0; 0.3.1 renames the plugin Playlister) are implemented; the manual checks of both phases (TESTING.md) are pending; Phases 3-4 are not started.
+Status: 2026-10-28. Approved by the operator on 2026-10-24 (decisions: REQUIREMENTS section 14).
+Phase 1 (0.2.0), Phase 2 (0.3.0; 0.3.1 renames the plugin Playlister) and Phase 3a (0.4.0) are implemented; the manual checks of all three (TESTING.md) are pending, apart from the Phase 3a items the acceptance script runs; Phases 3b, 3c and 4 are not started.
 Revision: four-round panel review folded in (kibitz-runs/2026-10-24-obs-playlister-plan/).
 Companion to REQUIREMENTS.md; requirement IDs (R-...) and decisions (D-...)
 refer to that file. "src N" means src/media-playlist-source.c line N at f8d90bd.
@@ -366,6 +366,7 @@ Acceptance: `ctest` covers every Phase 2 core module, the locale keys and the sh
       - The server logs every request when it starts, and a media body again when it ends with the bytes read for it, so 3.7 does not depend on when the player closes a connection.
       - The runner fails the run unless OBS reports 0 memory leaks.
       - Result: 40 passed, three runs in a row; each mutation check fails its item (3 and 4 checks).
+      Version 0.4.0 (operator decision, 2026-10-28): bumped after the acceptance script passed (0baf504), with TESTING.md 3.8, 3.16, 3.17 and 3.9's public feed still manual and pending.
 3b. Feeds. `core/date.c` (RFC 822/2822 with named zones and numeric offsets, ISO 8601, invalid -> dateless), `core/xml-reader.h` over the D-4 parser in `third_party/` (+ `third_party/.clang-format` with `DisableFormat: true`, + `.gitignore` allowlist, R-STD-8), `parse-feed.c` (RSS 2.0 + Atom, enclosures, guid/id keys with occurrences, the R-REM-2 filter rule, mixed dated and dateless items) dispatched from `provider-list.c`.
 3c. HTTP index. `parse-http-index.c` (href HTML-entity decoding, percent-decoded display names) with fixtures for Apache, nginx autoindex, IIS and Python `http.server`; dateless (R-DIR-10); dispatched from `provider-list.c`.
 TESTING.md Phase 3: a local M3U, an M3U served by `serve-fixtures.ps1`, an extensionless M3U and PLS URL identified by Content-Type, a direct MP4 URL (must play without being downloaded first), a live stream URL, an HLS URL, a public podcast RSS, an nginx-style index, an unreachable URL, a hostname that does not resolve, a 429 response (last-good kept, error shown), a URL that returns HTML that is not an index, a gzip response at and over the size cap, a redirect chain, the 60 s overall deadline, removing the source while a fetch hangs in each of resolve, headers and body (must return at once, and no callback afterwards).
@@ -398,7 +399,7 @@ Nothing is built. The only commitment is R-VJ-2: everything that touches the chi
 
 ## 7. Order of work
 
-Phase 1 is one commit series on `master` (personal fork, no PR flow). Phases 2 and 3 each start with a REQUIREMENTS.md check (R-STD-6) and end with a version bump (0.3.0 after Phase 2; 0.4.0, 0.5.0, 0.6.0 after 3a, 3b, 3c). Nothing in Phase 2 starts until the Phase 1 acceptance list is green on OBS 33.0.0. (Waived by the operator on 2026-10-24: Phase 2 started with only TESTING.md 1.1 and the packaging checks done; the remaining Phase 1 items run on Phase 2 builds.) (Operator decision on 2026-10-25: the plugin is called "Playlister" from 0.3.1, as the OBS Project's branding policy does not allow "OBS" in any plugin's name; identifiers stay, D-3.) (Operator decision on 2026-10-25: 0.3.0 was bumped with the Phase 2 manual checks and the remaining Phase 1 items still to run; TESTING.md marks them pending.) Decisions are needed at the first phase that depends on them (REQUIREMENTS section 14).
+Phase 1 is one commit series on `master` (personal fork, no PR flow). Phases 2 and 3 each start with a REQUIREMENTS.md check (R-STD-6) and end with a version bump (0.3.0 after Phase 2; 0.4.0, 0.5.0, 0.6.0 after 3a, 3b, 3c). Nothing in Phase 2 starts until the Phase 1 acceptance list is green on OBS 33.0.0. (Waived by the operator on 2026-10-24: Phase 2 started with only TESTING.md 1.1 and the packaging checks done; the remaining Phase 1 items run on Phase 2 builds.) (Operator decision on 2026-10-25: the plugin is called "Playlister" from 0.3.1, as the OBS Project's branding policy does not allow "OBS" in any plugin's name; identifiers stay, D-3.) (Operator decision on 2026-10-25: 0.3.0 was bumped with the Phase 2 manual checks and the remaining Phase 1 items still to run; TESTING.md marks them pending.) (Operator decision on 2026-10-28: 0.4.0 was bumped after the Phase 3a acceptance script passed, with the manual Phase 3a items 3.8, 3.16, 3.17 and a public feed for 3.9 still to run, and the Phase 1 and 2 manual items still pending.) Decisions are needed at the first phase that depends on them (REQUIREMENTS section 14).
 
 ## 8. Verify-at-build checklist
 

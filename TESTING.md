@@ -71,6 +71,7 @@ when every check passed.
 | 2026-10-25 | 33.0.0 portable | 0.3.0 (version bump) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.3.0)` |
 | 2026-10-25 | 33.0.0 portable | 0.3.1 (renamed Playlister) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.3.1)`; the sources are found by their unchanged id |
 | 2026-10-28 | 33.0.0 portable | Phase 3a step 5 (part 1), ecc1439 | 117 passed, 0 failed, no memory leaks, twice. Every run on 2026-10-27/28 before this failed with media time stuck at 40 ms: Studio Mode was on in this portable OBS (it is shared with other projects' tests), so the harness sources sat in a preview scene that never played. With Studio Mode on the same build failed 11 checks; with it off, nothing failed. The runner now turns Studio Mode off for its run and restores user.ini |
+| 2026-10-28 | 33.0.0 portable | 0.4.0 (version bump) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.4.0)` |
 
 ## Phase 2 acceptance (automated, needs OBS)
 
@@ -148,7 +149,7 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 `release/RelWithDebInfo/obs-playlister`, so the folder holds exactly
 `obs-playlister.dll`, `obs-playlister.pdb`, `data\manifest.json` and
 `data\locale\en-US.ini`. From Phase 2 on these run on the current build (the waiver in PLAN section 7), so the
-version expected in 1.1 and 1.2 is that build's (0.3.1 now).
+version expected in 1.1 and 1.2 is that build's (0.4.0 now).
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
@@ -193,7 +194,7 @@ Setup as Phase 1, with the Phase 2 build. Items the runtime harness covers are n
 | 2.21 | A render held open for writing for a whole session (a stuck render process), then an OBS restart | the other renders play and the list resumes where it was; the held file joins once released | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.22 | Start OBS while a 300 MB render is being copied into the watched folder (with Defender scanning it) | the admitted renders play within about 3 s; the new one joins when its copy and the scan finish (2.14 checks the plugin's side) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 
-## Phase 3a (playlists and URL rows, before 0.4.0)
+## Phase 3a (playlists and URL rows, version 0.4.0)
 
 Setup as Phase 2, with the Phase 3a build (commit f44900c or later). The Phase 2 runtime harness and acceptance
 script pass on this build (2026-10-28; the stuck playback of the night before was Studio Mode left on, see the
@@ -258,3 +259,6 @@ An error row reads "web address - empty; <the error>": the row is listed and hol
   dialog as drawn, hotkeys, hardware decoding, a real OBS restart, a render held open across one, removable
   drives, another machine's share and its stalls, OneDrive cloud-only files, still-to-video transitions, OBS started
   during a large copy, the installer, and the operator's OTR scene without the Directory Sorter script.
+- The version was bumped to 0.4.0 (operator decision, 2026-10-28) after the Phase 3a acceptance script passed, with
+  Phase 3a items 3.8, 3.16, 3.17 and 3.9's public feed not yet run. Until they are, live HLS and radio streams, real
+  feeds, HTTPS and certificate errors, and the Browse dialog's Playlists group are unverified in OBS.
