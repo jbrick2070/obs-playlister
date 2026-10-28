@@ -191,6 +191,37 @@ Setup as Phase 1, with the Phase 2 build. Items the runtime harness covers are n
 | 2.21 | A render held open for writing for a whole session (a stuck render process), then an OBS restart | the other renders play and the list resumes where it was; the held file joins once released | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.22 | Start OBS while a 300 MB render is being copied into the watched folder (with Defender scanning it) | the admitted renders play within about 3 s; the new one joins when its copy and the scan finish (2.14 checks the plugin's side) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 
+## Phase 3a (playlists and URL rows, before 0.4.0)
+
+Setup as Phase 2, with the Phase 3a build (commit f44900c or later). Nothing here has run in OBS yet: on 2026-10-27
+and 28 the portable OBS on this machine played nothing (media time stuck at 40 ms in every harness check, on the
+step 2 build as well), so run the Phase 2 runtime harness first, and only go on when it passes again. The parsers,
+the fetching and the list provider are covered by `ctest` (`test-url`, `test-parse-m3u`, `test-parse-pls`,
+`test-fetch`, `test-provider-list`); these items check them in OBS. `tests\manual\serve-fixtures.ps1` serves the
+local cases on http://localhost:8765/ (it has never been run either: start it with
+`powershell -NoProfile -File tests\manual\serve-fixtures.ps1` and check that /fixtures/vlc.m3u answers before the
+items that need it).
+
+| # | Check | Expected | Result |
+|---|-------|----------|--------|
+| 3.1 | A local .m3u of three renders (relative names, one #EXTINF title) as a row | "1: playlist - 3 files"; they play in list order; Select File shows the title; date sort says "no dates; list order" | Pending |
+| 3.2 | Edit that .m3u while it plays (add a line, save from Notepad) | the new entry joins within the folder check interval; the playing item is not restarted | Pending |
+| 3.3 | Delete the .m3u, then put it back | the row keeps its list and shows "playlist file not found" with the last-list time; it recovers when the file is back | Pending |
+| 3.4 | A local .pls with File2 before File1, and a VLC-saved .m3u (file:/// lines) | entries in File order; the VLC list plays the same files | Pending |
+| 3.5 | http://localhost:8765/fixtures/vlc.m3u as a row (serve-fixtures) | "1: playlist - 1 file - 2 lines could not be used": a list on a server may not name files on this computer, so only its radio stream entry stays | Pending |
+| 3.6 | http://localhost:8765/extensionless-m3u and /extensionless-pls as rows | "web address"; read as M3U and PLS by Content-Type | Pending |
+| 3.7 | A direct MP4 URL with no extension the filter knows, served with Content-Type video/mp4 | plays at once, without the plugin downloading it first (watch the server log: one request from the plugin, then the child's own) | Pending |
+| 3.8 | A live HLS URL (.m3u8) and an internet radio stream URL | each plays as one entry; the HLS row is not fetched again on the interval | Pending |
+| 3.9 | A public podcast RSS URL | "web address - a podcast feed: feeds come in a later version" | Pending |
+| 3.10 | An unreachable host, a name that does not resolve, /status/429, /html | each row shows its error ("could not be reached", "server name could not be found", "HTTP 429", "a web page ...") and nothing plays from it; a 429 after a good fetch keeps the last list | Pending |
+| 3.11 | /gzip-at-cap and /gzip-over-cap | at the cap the list loads; over it, "the list is over 16 MB" | Pending |
+| 3.12 | /redirect/5 and /redirect/6 | five redirects load the list; six show "too many redirects" | Pending |
+| 3.13 | /hang as a row: wait past 60 s; then add /hang again and remove the source within 10 s (the script serves one request at a time, so nothing else answers for two minutes after each /hang) | "timed out" after about 60 s; removing the source returns at once and OBS stays responsive | Pending |
+| 3.14 | "Check web lists every" set to 30 s on a served list that is edited on disk | the change appears within 30 s; the interval change does not restart playback | Pending |
+| 3.15 | Lock list at start on, with a playlist row whose file is edited during playback | "1 change waiting" until Play/Restart or Apply waiting changes now | Pending |
+| 3.16 | An HTTPS playlist on a real server, and one with an expired or self-signed certificate | the first loads; the second shows "secure connection failed" | Pending |
+| 3.17 | The Browse dialog | a Playlists group lists .m3u, .m3u8 and .pls files | Pending |
+
 ## Known residual risks
 
 - Startup is judged by media time or audio only (R-BEH-5, step 6 spike). A live stream that delivers video but whose
