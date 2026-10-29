@@ -72,6 +72,7 @@ when every check passed.
 | 2026-10-25 | 33.0.0 portable | 0.3.1 (renamed Playlister) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.3.1)`; the sources are found by their unchanged id |
 | 2026-10-28 | 33.0.0 portable | Phase 3a step 5 (part 1), ecc1439 | 117 passed, 0 failed, no memory leaks, twice. Every run on 2026-10-27/28 before this failed with media time stuck at 40 ms: Studio Mode was on in this portable OBS (it is shared with other projects' tests), so the harness sources sat in a preview scene that never played. With Studio Mode on the same build failed 11 checks; with it off, nothing failed. The runner now turns Studio Mode off for its run and restores user.ini |
 | 2026-10-28 | 33.0.0 portable | 0.4.0 (version bump) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.4.0)` |
+| 2026-10-28 | 33.0.0 portable | 0.4.1 step 4 (R-BEH-7) | 123 passed, 0 failed, no memory leaks. New: a hidden source keeps the size it had (1920x1080); a stopped still keeps its own size (320x180, smaller than the canvas, so not the canvas fallback); save writes the size the source reports (320x180); in a scene that is not live a source that never played (state none) reports the canvas size (1920x1080), one with a saved size reports it (640x360) and one with no rows 0x0. Mutation check: with only the child's size reported, as before 0.4.1, 5 checks fail (0x0 for each) |
 
 ## Phase 2 acceptance (automated, needs OBS)
 
@@ -239,6 +240,7 @@ An error row reads "web address - empty; <the error>": the row is listed and hol
 | 3.15 | Lock list at start on, with a playlist row whose file is edited during playback | "1 change waiting" until Apply waiting changes now, which adds it without a restart | Passed (acceptance) |
 | 3.16 | An HTTPS playlist on a real server, and one with an expired or self-signed certificate | the first loads; the second shows "secure connection failed" | Pending (manual) |
 | 3.17 | The Browse dialog | a Playlists group lists .m3u, .m3u8 and .pls files | Pending (manual) |
+| 3.18 | Studio Mode on: add a second Playlister to the preview scene, with other videos than the first; then a Playlister to a scene that is not shown (R-UP-81, 0.4.1) | each is selected as a box of its own video's size (the canvas size before it ever played), whose handles can be dragged to move and resize it, not a tiny box at the top left; after a transition it plays in that box. The harness checks the sizes; this checks how OBS draws them | Pending (manual) |
 
 | Date | OBS | Build | Result |
 |------|-----|-------|--------|

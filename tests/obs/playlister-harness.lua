@@ -356,6 +356,7 @@ end)
 
 step("first item plays", 1000, 15000, function() return st() == PLAYING and dur() > 0 end, function()
 	D[1] = dur()
+	mark.width, mark.height = obs.obs_source_get_width(src), obs.obs_source_get_height(src)
 	check("first item plays", st() == PLAYING, status())
 	seek_near_end()
 end)
@@ -436,6 +437,10 @@ end)
 
 step("hide", 2500, 2500, nil, function()
 	check("hide stops without advancing (stop/restart)", st() == STOPPED and dur() == D[2], status())
+	-- R-BEH-7: the stopped child has no size; the source keeps the one it had
+	local w, h = obs.obs_source_get_width(src), obs.obs_source_get_height(src)
+	check("a hidden source keeps its size", w > 0 and w == mark.width and h == mark.height,
+		string.format("%dx%d, playing it was %dx%d", w, h, mark.width, mark.height))
 	obs.obs_sceneitem_set_visible(item, true)
 end)
 
@@ -1160,12 +1165,18 @@ end)
 
 step("still resumed", 500, 500, nil, function()
 	check("the hold runs again after unpause", st() == PLAYING and tm() > mark.still_paused_at, status())
+	-- the still is smaller than the canvas, so its size kept after the stop cannot be the canvas fallback
+	mark.still_width, mark.still_height = obs.obs_source_get_width(src), obs.obs_source_get_height(src)
 	obs.obs_source_media_stop(src)
 end)
 
 -- a stop ends the hold: nothing moves on by itself, however long; Play holds the still again from the start
 step("still stopped", 4500, 4500, nil, function()
 	check("a stopped still stays stopped: the hold ended, nothing moved on", st() == STOPPED, status())
+	-- R-BEH-7: the stopped still's child has no size; the source keeps the still's, not the canvas size
+	local w, h = obs.obs_source_get_width(src), obs.obs_source_get_height(src)
+	check("a stopped still keeps its own size", w == mark.still_width and h == mark.still_height and w > 0,
+		string.format("%dx%d, held it was %dx%d", w, h, mark.still_width, mark.still_height))
 	obs.obs_source_media_play_pause(src, false)
 end)
 
@@ -1176,7 +1187,84 @@ end)
 
 step("hold over", 500, 10000, function() return dur() == D[1] and st() == PLAYING end, function()
 	check("after the hold, playback moves on to the next row", dur() == D[1] and st() == PLAYING, status())
+	-- R-BEH-7: save writes the size the source reports, so it has it when it next loads. The video that just
+	-- started can get its size at any frame, so the size read before or after the save may be the one written.
+	local w1, h1 = obs.obs_source_get_width(src), obs.obs_source_get_height(src)
+	obs.obs_source_save(src)
+	local w2, h2 = obs.obs_source_get_width(src), obs.obs_source_get_height(src)
+	local settings = obs.obs_source_get_settings(src)
+	local saved_w = obs.obs_data_get_int(settings, "last_width")
+	local saved_h = obs.obs_data_get_int(settings, "last_height")
+	obs.obs_data_release(settings)
+	check("save writes the size the source reports", saved_w > 0 and
+		((saved_w == w1 and saved_h == h1) or (saved_w == w2 and saved_h == h2)),
+		string.format("saved %dx%d, size %dx%d before the save and %dx%d after", saved_w, saved_h, w1, h1, w2, h2))
 	remove_source()
+end)
+
+-- R-UP-81, R-BEH-7: sources in a scene that is not live never play, so their child has no size; each still reports
+-- one, so it is a box that can be placed: a saved size, else the canvas while it has rows, else none
+local other_scene = nil
+local off_air = {}
+
+local function add_off_air(name, fill)
+	local settings = obs.obs_data_create()
+	fill(settings)
+	local s = obs.obs_source_create("obs_playlister_source", name, settings, nil)
+	obs.obs_data_release(settings)
+	off_air[name] = { src = s, item = obs.obs_scene_add(other_scene, s) }
+end
+
+local function off_air_size(name)
+	local s = off_air[name].src
+	return obs.obs_source_get_width(s), obs.obs_source_get_height(s)
+end
+
+step("sources in a scene that is not live", 500, 500, nil, function()
+	other_scene = obs.obs_scene_create("playlister-harness-not-live")
+	add_off_air("never played", function(settings)
+		set_playlist(settings, { { FILES[1], "row-1" } })
+	end)
+	add_off_air("saved size", function(settings)
+		set_playlist(settings, { { FILES[2], "row-1" } })
+		obs.obs_data_set_int(settings, "last_width", 640)
+		obs.obs_data_set_int(settings, "last_height", 360)
+	end)
+	add_off_air("no rows", function(settings) end)
+end)
+
+-- reads every size first and releases the scene and its sources before checking, so a failed read cannot leak them
+step("sizes outside the live scene", 2000, 2000, nil, function()
+	local got = {}
+	local ok, err = pcall(function()
+		local ovi = obs.obs_video_info()
+		obs.obs_get_video_info(ovi)
+		got.canvas_w, got.canvas_h = ovi.base_width, ovi.base_height
+		got.never_w, got.never_h = off_air_size("never played")
+		got.never_state = obs.obs_source_media_get_state(off_air["never played"].src)
+		got.saved_w, got.saved_h = off_air_size("saved size")
+		got.empty_w, got.empty_h = off_air_size("no rows")
+	end)
+	for _, s in pairs(off_air) do
+		obs.obs_sceneitem_remove(s.item)
+		obs.obs_source_release(s.src)
+	end
+	off_air = {}
+	if other_scene then
+		obs.obs_source_release(obs.obs_scene_get_source(other_scene))
+		other_scene = nil
+	end
+	if not ok then
+		error(err)
+	end
+	check("a source that never played reports the canvas size", got.never_state ~= PLAYING and
+		got.never_w == got.canvas_w and got.never_h == got.canvas_h and got.never_w > 0,
+		string.format("%dx%d state=%d, canvas %dx%d", got.never_w, got.never_h, got.never_state, got.canvas_w,
+			got.canvas_h))
+	check("a source that never played this session reports its saved size", got.saved_w == 640 and
+		got.saved_h == 360, string.format("%dx%d", got.saved_w, got.saved_h))
+	check("a source with no rows reports no size", got.empty_w == 0 and got.empty_h == 0,
+		string.format("%dx%d", got.empty_w, got.empty_h))
 end)
 
 step("removed", 1500, 1500, nil, function()
