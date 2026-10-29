@@ -138,6 +138,11 @@ struct media_playlist_source {
 	struct media_file_data playing_copy;
 	bool playing_copy_active;
 
+	/* R-BEH-7: the size the child last had, packed as width << 16 | height (both at most 16384), and the number of
+	 * rows; read without the list lock, as libobs asks for the size with its own locks held (R-UP-72) */
+	volatile long kept_size;
+	volatile long row_count;
+
 	/* R-UP-20: the last Play Selected choice was no longer in the list; the status block says so until the next
 	 * choice is played or Refresh is pressed (R-LIST-5); under the list lock */
 	bool stale_choice;

@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/modes.h"
 #include "core/row-kind.h"
 #include "core/sort.h"
+#include "core/source-size.h"
 #include "providers/fold-key-win.h"
 
 /* the audio queue's planes go straight into struct obs_source_audio */
@@ -172,6 +173,9 @@ struct obs_source_info media_playlist_source_info = {
 #define S_FOLDER_CHECK_INTERVAL "folder_check_interval_s"
 #define S_LOCK_LIST_AT_START "lock_list_at_start"
 #define S_REMOTE_REFRESH "remote_refresh_s"
+/* 0.4.1 settings, written by save only (R-BEH-7) */
+#define S_LAST_WIDTH "last_width"
+#define S_LAST_HEIGHT "last_height"
 #define S_ROW_KINDS "row_kinds"                 /* row uuid -> {"kind": "folder", "path": ...} (R-LIST-1) */
 #define S_FOLDER_OPTIONS "folder_options"       /* the Properties group (R-LIST-3), no setting */
 #define S_APPLY_WAITING "apply_waiting_changes" /* the Properties button (R-DIR-11), no setting */
@@ -2126,14 +2130,29 @@ static void mps_destroy(void *data)
 	bfree(mps);
 }
 
+/* R-BEH-7: a size kept in one atomic, so width and height are read as a pair */
+static long pack_size(struct pl_size size)
+{
+	return (long)(size.width << 16 | size.height);
+}
+
+static struct pl_size unpack_size(long packed)
+{
+	return (struct pl_size){(uint32_t)packed >> 16, (uint32_t)packed & 0xffff};
+}
+
 static void *mps_create(obs_data_t *settings, obs_source_t *source)
 {
-	UNUSED_PARAMETER(settings);
-
 	struct media_playlist_source *mps = bzalloc(sizeof(*mps));
 
 	mps->first_update = true;
 	mps->source = source;
+	/* R-BEH-7: the size saved with the source, so it has its box before it ever plays in this session */
+	long long saved_width = obs_data_get_int(settings, S_LAST_WIDTH);
+	long long saved_height = obs_data_get_int(settings, S_LAST_HEIGHT);
+	if (saved_width > 0 && saved_width <= PL_SOURCE_SIZE_MAX && saved_height > 0 &&
+	    saved_height <= PL_SOURCE_SIZE_MAX)
+		mps->kept_size = pack_size((struct pl_size){(uint32_t)saved_width, (uint32_t)saved_height});
 
 	shuffler_init(&mps->shuffler);
 
@@ -2557,16 +2576,30 @@ static void mps_enum_sources(void *data, obs_source_enum_proc_t cb, void *param)
 	cb(mps->source, mps->current_media_source, param);
 }
 
+/* R-BEH-7: the child's size while it has one, which is also kept; else the kept size, else the canvas while the list
+ * has rows, so a source outside the live scene is a box that can be placed (R-UP-81). No list lock (R-UP-72). */
+static struct pl_size reported_size(struct media_playlist_source *mps)
+{
+	struct pl_size child = {obs_source_get_width(mps->current_media_source),
+				obs_source_get_height(mps->current_media_source)};
+	if (pl_size_known(child))
+		os_atomic_set_long(&mps->kept_size, pack_size(child));
+	struct pl_size canvas = {0, 0};
+	struct obs_video_info ovi;
+	if (obs_get_video_info(&ovi))
+		canvas = (struct pl_size){ovi.base_width, ovi.base_height};
+	return pl_source_size(child, unpack_size(os_atomic_load_long(&mps->kept_size)), canvas,
+			      os_atomic_load_long(&mps->row_count) > 0);
+}
+
 static uint32_t mps_width(void *data)
 {
-	struct media_playlist_source *mps = data;
-	return obs_source_get_width(mps->current_media_source);
+	return reported_size(data).width;
 }
 
 static uint32_t mps_height(void *data)
 {
-	struct media_playlist_source *mps = data;
-	return obs_source_get_height(mps->current_media_source);
+	return reported_size(data).height;
 }
 
 static void mps_defaults(obs_data_t *settings)
@@ -3178,6 +3211,7 @@ static void mps_update(void *data, obs_data_t *settings)
 		remember_item(mps, mps->actual_media);
 	old_files.da = mps->files.da;
 	mps->files.da = new_files.da;
+	os_atomic_set_long(&mps->row_count, (long)mps->files.num);
 	/* points into the old list until a branch below sets it again; none may leave it dangling */
 	mps->actual_media = NULL;
 
@@ -3324,6 +3358,12 @@ static void mps_save(void *data, obs_data_t *settings)
 	}
 	update_current_filename_setting(mps, settings);
 	pthread_mutex_unlock(&mps->mutex);
+	/* R-BEH-7: only a size the child has had, so a source that never played keeps a saved one */
+	struct pl_size kept = unpack_size(os_atomic_load_long(&mps->kept_size));
+	if (pl_size_known(kept)) {
+		obs_data_set_int(settings, S_LAST_WIDTH, kept.width);
+		obs_data_set_int(settings, S_LAST_HEIGHT, kept.height);
+	}
 }
 
 static void missing_file_callback(void *src, const char *new_path, void *data)
