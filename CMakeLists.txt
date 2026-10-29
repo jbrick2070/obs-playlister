@@ -78,6 +78,8 @@ target_sources(
     src/core/row-kind.c
     src/core/sort.h
     src/core/sort.c
+    src/core/source-size.h
+    src/core/source-size.c
     src/core/startup.h
     src/core/startup.c
     src/core/url.h

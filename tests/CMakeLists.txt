@@ -61,6 +61,8 @@ obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/p
 obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")
 obs_playlister_add_test(test-row-kind test-row-kind.c "${_core}/row-kind.c" "${_core}/filter.c" "${_core}/url.c")
 obs_playlister_add_test(test-startup test-startup.c "${_core}/startup.c")
+# The size a source reports while it is not playing (R-BEH-7)
+obs_playlister_add_test(test-source-size test-source-size.c "${_core}/source-size.c")
 # Playlists (R-REM-1): URL and path resolution, M3U and PLS against fixtures
 obs_playlister_add_test(test-url test-url.c "${_core}/url.c")
 set(
