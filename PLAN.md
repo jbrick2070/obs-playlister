@@ -221,6 +221,7 @@ Status: each snapshot carries its row status; `playlister-source.c` builds the s
 | `folder_check_interval_s` | int | 10 | 2-3600 | Phase 2 (R-DIR-3) |
 | `lock_list_at_start` | bool | false | -- | Phase 2 (R-DIR-11, D-9) |
 | `remote_refresh_s` | int | 300 | 30-86400 | Phase 3a (Phase 2 uses the constant) |
+| `last_width`, `last_height` | int, written by `save` only, never shown | 0 (no size yet) | 0-16384 | 0.4.1 (R-BEH-7) |
 
 ## 4. Phases
 
@@ -372,6 +373,23 @@ Acceptance: `ctest` covers every Phase 2 core module, the locale keys and the sh
 TESTING.md Phase 3: a local M3U, an M3U served by `serve-fixtures.ps1`, an extensionless M3U and PLS URL identified by Content-Type, a direct MP4 URL (must play without being downloaded first), a live stream URL, an HLS URL, a public podcast RSS, an nginx-style index, an unreachable URL, a hostname that does not resolve, a 429 response (last-good kept, error shown), a URL that returns HTML that is not an index, a gzip response at and over the size cap, a redirect chain, the 60 s overall deadline, removing the source while a fetch hangs in each of resolve, headers and body (must return at once, and no callback afterwards).
 
 Acceptance per increment: its parsers and helpers are covered by `ctest`; its TESTING.md items pass; no new DLLs ship.
+
+### 0.4.1 -- a source keeps its size while it is not playing (R-UP-81, R-BEH-7)
+
+Found 2026-10-29: a second Playlister added in a scene that is not live (another scene, the Studio Mode preview) is a tiny box at the top left until it plays, and Play Next does not wake it. Approved by the operator on 2026-10-29 ("do all the fixes without me"); the version bump stays the operator's call. Each step ends with the full `ctest`, the Sonnet QA (R-STD-9), one commit and one push (R-STD-4/5).
+
+1. Find why Play Next did nothing. In the spike, `obs_source_media_next` on a source in a scene that was not live left it at state none; the operator saw Next wake one. Log the player's load requests and `video_tick` for that source, and read whether OBS ticks a source that is not shown. Record the answer in R-UP-81. No code change; if Next is a separate defect, it gets its own R-UP number and a plan line here before it is touched.
+2. The size rule, as a pure function: `core/source-size.c` (`pl_source_size(child_w, child_h, last_w, last_h, canvas_w, canvas_h, has_rows)`), ctest `test-source-size`: a playing child wins; 0x0 child with a kept size gives the kept size; never played with rows gives the canvas; no rows gives 0x0; a child of one dimension 0 counts as no size; a later item of another size replaces the kept one.
+3. Source integration: two atomics in the source for the kept size, set from `get_width`/`get_height` whenever the child has a size (no list lock, R-UP-72); `get_width`/`get_height` call the rule; `has_rows` read through an atomic count kept by `update`; `save` writes `last_width`/`last_height` (inside the R-UP-80 guard, so an early save does not write 0 over a saved size) and `create` reads them. The settings table gains the two keys. Nothing changes for a source that plays.
+4. Tests in OBS: `tests/obs/playlister-harness.lua` gains checks, taken from the spike:
+   - a source made in a scene that is not live reports the canvas size;
+   - a source that played, then is hidden (Stop/restart), keeps the size it had;
+   - a source made from settings holding `last_width`/`last_height`, in a scene that is not live, reports that size;
+   - an empty source reports 0x0.
+   Mutation check: with the rule bypassed (child size only), the first three fail. The spike file is removed in this commit. TESTING.md gains item 3.18 (manual): in Studio Mode, add a second Playlister to the preview scene; its box is the video's size (or the canvas size before it ever played) and can be moved and resized; after a transition it plays in that box.
+5. Version 0.4.1, README status line, TESTING harness row, tag and draft release, each on the operator's word as for 0.4.0.
+
+Not in this fix: drawing a frame in a scene that is not live. That would start a decoder for every source outside the live scene; if wanted later, it is a setting of its own with its own plan.
 
 ### Phase 4 -- VJ modes (boundary only)
 
