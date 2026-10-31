@@ -278,7 +278,7 @@ jobs:
           : Build Plugin 🧱
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           cmake -S . -B build_arch -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
-          cmake --build build_arch --parallel
+          cmake --build build_arch --parallel -- -k 0
 
       - name: Run Tests 🧪
         run: ctest --test-dir build_arch --output-on-failure --no-tests=error

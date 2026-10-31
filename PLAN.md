@@ -407,7 +407,7 @@ Each step ends with the full `ctest` on Windows (and on Linux in CI once step 5 
 6. Runtime tests on Linux. `tests/obs/run-harness.sh`: the bash twin of `run-harness.ps1` (fresh OBS config dir per run, plugin copied into it, Studio Mode forced off, `xvfb-run` when there is no display), driving the same Lua scripts; checks that only mean something on Windows (UNC rows, cloud placeholders, paths over 260 characters) are skipped by platform with a log line, not deleted. Tried in CI first (V25); if OBS will not render under Xvfb there, the harness runs on the D-13 d test machine.
 7. Docs and release. README: Linux install (Ubuntu `.deb`; Arch build steps; `packaging/arch/PKGBUILD` that builds from the release tarball), what differs on Linux (no cloud placeholders, case-sensitive names, the network-folder note). TESTING.md: a Linux section (L.1 onward) for the manual items: Properties and Browse dialogs, a folder on ext4 and on a CIFS mount, a file copied in while playing, hardware decoding on/off, an HTTPS playlist. Version bump, tag and release on the operator's word.
 
-Not in this port: macOS (the split in steps 1-2 makes it a later addition of `*-mac.c` files), Flatpak, publishing to the AUR, ARM Linux.
+Not in this port: macOS (the split in steps 1-2 makes it a later addition of `*-mac.c` files); the operator wants it after this port and the speed and control updates (2026-10-31), Flatpak, publishing to the AUR, ARM Linux.
 
 Size: about as large as Phase 3a. Steps 1 and 2 are the risky ones for Windows users, which is why they come first, change nothing a user can see, and are proven by the existing harness.
 

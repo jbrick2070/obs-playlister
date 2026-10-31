@@ -37,6 +37,8 @@ endfunction()
 
 # Upstream shuffler self-tests (shuffler.c TEST_SHUFFLER block) plus regression tests, see test-shuffler.c
 obs_playlister_add_test(test-shuffler test-shuffler.c)
+# upstream's self-tests compare int loop counters with size_t fields; they are kept as upstream wrote them (R-TST-4)
+target_compile_options(test-shuffler PRIVATE $<$<C_COMPILER_ID:GNU,Clang>:-Wno-sign-compare>)
 # The shuffler's guards as the plugin is built, with asserts compiled out (R-UP-74)
 obs_playlister_add_test(test-shuffler-release test-shuffler-release.c)
 # The player's command FIFO

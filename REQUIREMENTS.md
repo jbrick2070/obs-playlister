@@ -273,7 +273,7 @@ first draft. Chosen by the operator as D-7 (a).
 
 ## 13. Non-goals
 
-- macOS and Linux are not targets. Their CI jobs are disabled (D-5); no feature work targets them. Superseded for Linux by D-13 (section 2a); macOS stays a non-goal.
+- macOS and Linux are not targets. Their CI jobs are disabled (D-5); no feature work targets them. Superseded for Linux by D-13 (section 2a). macOS: a port is wanted after the Linux port and the speed and control updates (operator, 2026-10-31); it gets its own requirements and plan then.
 - No migration of existing scene collections from source id `media_playlist_source_codeyan` to the new id. The two plugins coexist; users re-create sources.
 - No audio track or subtitle selection (upstream limitation, unchanged).
 - No scripting of OBS from Python.
