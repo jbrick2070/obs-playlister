@@ -17,13 +17,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 /* The folder provider (PLAN section 3.2, Phase 2 step 5). One worker thread per folder row lists the folder, watches
- * it with ReadDirectoryChangesW (R-DIR-2, R-DIR-3), admits files through the write-complete gate (R-DIR-4) and
- * publishes snapshots of plain entries. The worker alone opens and closes its directory handle (R-THR-3); other
- * threads only leave requests and wake it. */
+ * it for changes (R-DIR-2, R-DIR-3), admits files through the write-complete gate (R-DIR-4) and publishes snapshots
+ * of plain entries. The worker alone opens and closes its watch (R-THR-3); other threads only leave requests and wake
+ * it. Every operating-system call is in folder-os-*.c (R-LNX-2). */
 
 #include "provider-kinds.h"
-
-#include <windows.h>
 
 #include <util/bmem.h>
 #include <util/darray.h>
@@ -34,18 +32,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 
 #include "core/filter.h"
-#include "core/folder-state.h"
 #include "core/keys.h"
 #include "core/merge.h"
 #include "fold-key.h"
+#include "folder-os.h"
+#include "os.h"
 #include "publication.h"
 
-#define WORKER_STACK_SIZE (256 * 1024)  /* R-THR-2 */
-#define NOTIFY_BUFFER_BYTES (64 * 1024) /* the largest ReadDirectoryChangesW buffer a network share takes */
 #define DEBOUNCE_MS 500
-/* cloud placeholders: opening one starts a download (R-DIR-5) */
-#define CLOUD_ATTRIBUTES (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE)
-#define FILETIME_UNIX_EPOCH 116444736000000000LL /* 1970-01-01 in 100 ns units since 1601 */
 #define MAX_CHAINED_EVENTS 8
 
 /* One file as the last listing saw it. Every name the always-skip list and the attributes let through is kept, so a
@@ -75,21 +69,13 @@ enum missing_cause {
 	MISSING_LOST,
 };
 
-enum scan_result {
-	SCAN_OK,
-	SCAN_LOST,
-	SCAN_DENIED,
-	SCAN_STOPPED,
-};
-
 struct pl_folder_provider {
 	/* fixed at create */
-	char *location;  /* as the row gives it, without a trailing separator */
-	wchar_t *root_w; /* canonical, with its \\?\ prefix (R-THR-5); NULL when the path cannot be converted */
+	char *location; /* as the row gives it, without a trailing separator */
 	bool include_subfolders;
-	HANDLE thread;
-	HANDLE stop_event; /* manual reset */
-	HANDLE wake_event; /* auto reset: a request is waiting */
+	struct pl_thread *thread;
+	struct pl_stop *stop;
+	struct pl_wake *wake; /* a request is waiting */
 
 	/* requests, under request_mutex */
 	pthread_mutex_t request_mutex;
@@ -105,17 +91,11 @@ struct pl_folder_provider {
 	struct pl_filter filter;
 	struct pl_watch watch;
 	struct pl_gate gate;
-	HANDLE dir;
-	OVERLAPPED overlapped;
-	HANDLE overlapped_event;
-	DWORD *buffer;
-	bool armed;
-	bool arm_failed;     /* re-arming inside a rescan failed; the main loop reports it */
-	int64_t debounce_ms; /* when the debounced rescan is due; 0 when none is */
-	DWORD last_error;
+	struct pl_folder_os *os; /* the listing, the probe and the watch */
+	bool arm_failed;         /* re-arming inside a rescan failed; the main loop reports it */
+	int64_t debounce_ms;     /* when the debounced rescan is due; 0 when none is */
 	enum missing_cause missing;
 	DARRAY(struct rename_pair) notified_renames; /* paired events since the last listing (relative names) */
-	char *renamed_from;                          /* an old name whose new name has not come yet */
 	DARRAY(struct rename_pair) renames;          /* carried to the next publication: key to key */
 	DARRAY(struct listed_file) files;            /* the last good listing */
 	DARRAY(char *) logged_paths;                 /* skipped subfolders already logged (R-DIR-1) */
@@ -126,143 +106,11 @@ struct pl_folder_provider {
 	struct pl_publication publication; /* what the receiver was given, and the lock (R-DIR-11) */
 };
 
-/* ---- time and paths ---- */
+/* ---- time ---- */
 
 static int64_t mono_now(void)
 {
 	return (int64_t)(os_gettime_ns() / 1000000);
-}
-
-static int64_t filetime_to_unix_ms(FILETIME time)
-{
-	ULARGE_INTEGER value;
-	value.LowPart = time.dwLowDateTime;
-	value.HighPart = time.dwHighDateTime;
-	return ((int64_t)value.QuadPart - FILETIME_UNIX_EPOCH) / 10000;
-}
-
-static int64_t utc_now_ms(void)
-{
-	FILETIME now;
-	GetSystemTimePreciseAsFileTime(&now);
-	return filetime_to_unix_ms(now);
-}
-
-static wchar_t *wide_concat(const wchar_t *a, const wchar_t *b, const wchar_t *c)
-{
-	size_t size = wcslen(a) + wcslen(b) + wcslen(c) + 1;
-	wchar_t *result = bmalloc(size * sizeof(wchar_t));
-	wcscpy_s(result, size, a);
-	wcscat_s(result, size, b);
-	wcscat_s(result, size, c);
-	return result;
-}
-
-/* R-THR-5: canonicalized with GetFullPathNameW (backslashes, "." and ".." resolved, no trailing separator except at
- * a root), then given the \\?\ or \\?\UNC\ prefix; a path that already has a prefix is kept. NULL when it cannot be
- * converted. */
-static wchar_t *win32_path(const char *utf8)
-{
-	wchar_t *wide = NULL;
-	os_utf8_to_wcs_ptr(utf8, 0, &wide);
-	if (!wide || !*wide) {
-		bfree(wide);
-		return NULL;
-	}
-	DWORD needed = GetFullPathNameW(wide, 0, NULL, NULL);
-	wchar_t *full = needed ? bmalloc(needed * sizeof(wchar_t)) : NULL;
-	DWORD length = full ? GetFullPathNameW(wide, needed, full, NULL) : 0;
-	bfree(wide);
-	if (!length || length >= needed) {
-		bfree(full);
-		return NULL;
-	}
-	if (wcsncmp(full, L"\\\\?\\", 4) == 0 || wcsncmp(full, L"\\\\.\\", 4) == 0) {
-		/* the prefix turns off normalization, so the '/' of "<row>/<relative path>" becomes '\' here */
-		for (wchar_t *c = full; *c; c++) {
-			if (*c == L'/')
-				*c = L'\\';
-		}
-		return full;
-	}
-	while (length > 3 && full[length - 1] == L'\\')
-		full[--length] = L'\0';
-	bool unc = full[0] == L'\\' && full[1] == L'\\';
-	wchar_t *result = wide_concat(unc ? L"\\\\?\\UNC\\" : L"\\\\?\\", unc ? full + 2 : full, L"");
-	bfree(full);
-	return result;
-}
-
-/* A path below the root: root, a separator unless the root ends in one, the relative path with backslashes, suffix */
-static wchar_t *below_root(const struct pl_folder_provider *p, const char *relative, const wchar_t *suffix)
-{
-	wchar_t *relative_w = NULL;
-	os_utf8_to_wcs_ptr(relative, 0, &relative_w);
-	for (wchar_t *c = relative_w; *c; c++) {
-		if (*c == L'/')
-			*c = L'\\';
-	}
-	size_t root_length = wcslen(p->root_w);
-	bool separator = root_length && p->root_w[root_length - 1] != L'\\' && *relative_w;
-	wchar_t *joined = wide_concat(p->root_w, separator ? L"\\" : L"", relative_w);
-	wchar_t *result = joined;
-	if (*suffix) {
-		bool sep = *relative_w || (root_length && p->root_w[root_length - 1] != L'\\');
-		result = wide_concat(joined, sep ? L"\\" : L"", suffix);
-		bfree(joined);
-	}
-	bfree(relative_w);
-	return result;
-}
-
-/* ---- the gate's disk access ---- */
-
-static enum pl_probe_result probe_file(void *context, const char *location)
-{
-	UNUSED_PARAMETER(context);
-	wchar_t *path = win32_path(location);
-	if (!path)
-		return PL_PROBE_GONE;
-	/* reading while denying other writers: any open write handle makes this a sharing violation (R-DIR-4) */
-	HANDLE file =
-		CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	DWORD error = file == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
-	bfree(path);
-	if (file != INVALID_HANDLE_VALUE) {
-		CloseHandle(file);
-		return PL_PROBE_OK;
-	}
-	switch (error) {
-	case ERROR_FILE_NOT_FOUND:
-	case ERROR_PATH_NOT_FOUND:
-		return PL_PROBE_GONE;
-	case ERROR_ACCESS_DENIED:
-		return PL_PROBE_DENIED;
-	default:
-		/* sharing and lock violations, and anything that may pass: tried again one window later */
-		return PL_PROBE_BUSY;
-	}
-}
-
-/* The file's directory entry, as the listing reads it, so an unchanged file never looks changed (R-DIR-4) */
-static bool sample_file(void *context, const char *location, uint64_t *size, int64_t *write_ms,
-			int64_t *sampled_mono_ms)
-{
-	UNUSED_PARAMETER(context);
-	wchar_t *path = win32_path(location);
-	WIN32_FIND_DATAW data;
-	HANDLE find = path ? FindFirstFileExW(path, FindExInfoBasic, &data, FindExSearchNameMatch, NULL, 0)
-			   : INVALID_HANDLE_VALUE;
-	*sampled_mono_ms = mono_now();
-	bfree(path);
-	if (find == INVALID_HANDLE_VALUE)
-		return false;
-	FindClose(find);
-	if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-		return false;
-	*size = ((uint64_t)data.nFileSizeHigh << 32) | data.nFileSizeLow;
-	*write_ms = filetime_to_unix_ms(data.ftLastWriteTime);
-	return true;
 }
 
 /* ---- listing ---- */
@@ -286,12 +134,21 @@ static void free_listing(struct darray *array)
 
 static bool stopping(struct pl_folder_provider *p)
 {
-	return WaitForSingleObject(p->stop_event, 0) == WAIT_OBJECT_0;
+	return pl_stop_is_set(p->stop);
 }
 
+/* One listing in progress: the context of the listing sink */
+struct scan {
+	struct pl_folder_provider *provider;
+	DARRAY(struct listed_file) files;
+	uint32_t ordinal;
+	size_t cloud;
+};
+
 /* Each skipped subfolder is logged once (R-DIR-1) */
-static void log_skipped_once(struct pl_folder_provider *p, const char *relative, const char *why)
+static void log_skipped_once(void *context, const char *relative, const char *why)
 {
+	struct pl_folder_provider *p = ((struct scan *)context)->provider;
 	for (size_t i = 0; i < p->logged_paths.num; i++) {
 		if (strcmp(p->logged_paths.array[i], relative) == 0)
 			return;
@@ -301,140 +158,48 @@ static void log_skipped_once(struct pl_folder_provider *p, const char *relative,
 	obs_log(LOG_INFO, "folder %s: subfolder %s skipped (%s)", p->location, relative, why);
 }
 
-static char *join_relative(const char *parent, const char *name)
+static void add_listed_file(void *context, const char *relative, const char *name, uint64_t size, int64_t write_ms,
+			    bool cloud)
 {
-	struct dstr path = {0};
-	if (*parent) {
-		dstr_copy(&path, parent);
-		dstr_cat_ch(&path, '/');
+	struct scan *scan = context;
+	struct pl_folder_provider *p = scan->provider;
+	if (pl_filter_always_skipped(name))
+		return;
+	if (cloud) {
+		/* counted for the warning only when it would otherwise play */
+		if (pl_filter_matches(&p->filter, name))
+			scan->cloud++;
+		return;
 	}
-	dstr_cat(&path, name);
-	return path.array;
-}
-
-static void add_listed_file(struct pl_folder_provider *p, struct darray *array, const char *relative, const char *name,
-			    const WIN32_FIND_DATAW *data, uint32_t ordinal)
-{
-	DARRAY(struct listed_file) files;
-	files.da = *array;
-	struct listed_file *file = da_push_back_new(files);
+	struct listed_file *file = da_push_back_new(scan->files);
 	struct dstr location = {0};
 	dstr_copy(&location, p->location);
 	dstr_cat_ch(&location, '/');
 	dstr_cat(&location, relative);
 	file->location = location.array;
 	file->key = pl_fold_key(relative);
-	file->size = ((uint64_t)data->nFileSizeHigh << 32) | data->nFileSizeLow;
-	file->write_ms = filetime_to_unix_ms(data->ftLastWriteTime);
-	file->ordinal = ordinal;
+	file->size = size;
+	file->write_ms = write_ms;
+	file->ordinal = scan->ordinal++;
 	file->kind = pl_filter_kind(name);
-	*array = files.da;
 }
 
-/* Lists the folder (and its subfolders when the option is on) without opening any file. Below the root, hidden and
- * system folders are skipped and reparse points are never followed, so a link back up the tree cannot make the scan
- * loop (R-DIR-1); the root itself is opened even when it is a junction. */
-static enum scan_result scan_folder(struct pl_folder_provider *p, struct darray *out, size_t *cloud_count, DWORD *error)
+/* Lists the folder (and its subfolders when the option is on) without opening any file (R-DIR-1); the last good
+ * listing is replaced only by a complete one */
+static enum pl_folder_scan scan_folder(struct pl_folder_provider *p, size_t *cloud_count)
 {
-	DARRAY(struct listed_file) files;
-	DARRAY(char *) folders; /* relative folders still to list; "" is the root */
-	da_init(files);
-	da_init(folders);
-	char *root = bstrdup("");
-	da_push_back(folders, &root);
-	uint32_t ordinal = 0;
-	size_t cloud = 0;
-	enum scan_result result = p->root_w ? SCAN_OK : SCAN_LOST;
-	if (!p->root_w)
-		*error = ERROR_INVALID_NAME;
-
-	while (result == SCAN_OK && folders.num) {
-		char *relative = folders.array[folders.num - 1];
-		da_pop_back(folders);
-		bool is_root = !*relative;
-		if (stopping(p)) {
-			bfree(relative);
-			result = SCAN_STOPPED;
-			break;
-		}
-
-		wchar_t *pattern = below_root(p, relative, L"*");
-		WIN32_FIND_DATAW data;
-		HANDLE find = FindFirstFileExW(pattern, FindExInfoBasic, &data, FindExSearchNameMatch, NULL,
-					       FIND_FIRST_EX_LARGE_FETCH);
-		bfree(pattern);
-		if (find == INVALID_HANDLE_VALUE) {
-			DWORD find_error = GetLastError();
-			bool empty = find_error == ERROR_FILE_NOT_FOUND || find_error == ERROR_NO_MORE_FILES;
-			if (is_root && !empty) {
-				*error = find_error;
-				result = find_error == ERROR_ACCESS_DENIED ? SCAN_DENIED : SCAN_LOST;
-			} else if (find_error == ERROR_ACCESS_DENIED) {
-				log_skipped_once(p, relative, "access denied");
-			} else if (!empty && find_error != ERROR_PATH_NOT_FOUND) {
-				/* a subfolder that vanished is left out; any other failure (a share dropping after the root
-				 * was listed) fails the whole listing, so the last good list stays instead of shrinking */
-				*error = find_error;
-				result = SCAN_LOST;
-			}
-			bfree(relative);
-			continue;
-		}
-
-		DARRAY(char *) subfolders;
-		da_init(subfolders);
-		do {
-			if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0)
-				continue;
-			DWORD attributes = data.dwFileAttributes;
-			char *name = NULL;
-			os_wcs_to_utf8_ptr(data.cFileName, 0, &name);
-			char *child = join_relative(relative, name);
-			bool hidden = (attributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) != 0;
-			if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
-				if (p->include_subfolders && !hidden) {
-					if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-						log_skipped_once(p, child, "a junction, symbolic link or mount point");
-					} else {
-						da_push_back(subfolders, &child);
-						child = NULL;
-					}
-				}
-			} else if (attributes & CLOUD_ATTRIBUTES) {
-				/* counted for the warning only when it would otherwise play */
-				if (!hidden && !pl_filter_always_skipped(name) && pl_filter_matches(&p->filter, name))
-					cloud++;
-			} else if (!hidden && !pl_filter_always_skipped(name)) {
-				add_listed_file(p, &files.da, child, name, &data, ordinal++);
-			}
-			bfree(child);
-			bfree(name);
-		} while (FindNextFileW(find, &data));
-		DWORD next_error = GetLastError();
-		FindClose(find);
-		if (next_error != ERROR_NO_MORE_FILES) {
-			/* the listing broke off, as when a share drops: the last good list stays */
-			*error = next_error;
-			result = next_error == ERROR_ACCESS_DENIED ? SCAN_DENIED : SCAN_LOST;
-		}
-		/* depth first, in listing order */
-		for (size_t i = subfolders.num; i-- > 0;)
-			da_push_back(folders, &subfolders.array[i]);
-		da_free(subfolders);
-		bfree(relative);
-	}
-
-	for (size_t i = 0; i < folders.num; i++)
-		bfree(folders.array[i]);
-	da_free(folders);
-	if (result != SCAN_OK) {
-		free_listing(&files.da);
+	struct scan scan = {.provider = p};
+	da_init(scan.files);
+	struct pl_folder_listing_sink sink = {&scan, add_listed_file, log_skipped_once};
+	enum pl_folder_scan result = pl_folder_os_list(p->os, p->stop, &sink);
+	if (result != PL_FOLDER_SCAN_OK) {
+		free_listing(&scan.files.da);
 		return result;
 	}
-	free_listing(out);
-	*out = files.da;
-	*cloud_count = cloud;
-	return SCAN_OK;
+	free_listing(&p->files.da);
+	p->files.da = scan.files.da;
+	*cloud_count = scan.cloud;
+	return PL_FOLDER_SCAN_OK;
 }
 
 /* Hands the files the filter admits to the gate, with occurrences numbered in listing order (R-KEY-1) and gate keys
@@ -477,7 +242,7 @@ static void feed_gate(struct pl_folder_provider *p, bool initial)
 		listing[j].size = file->size;
 		listing[j].write_ms = file->write_ms;
 	}
-	pl_gate_listing(&p->gate, listing, count, initial, mono_now(), utc_now_ms(), probe_file, p);
+	pl_gate_listing(&p->gate, listing, count, initial, mono_now(), pl_utc_now_ms(), pl_folder_os_probe, p->os);
 	bfree(listing);
 	bfree(index);
 	bfree(view);
@@ -552,17 +317,14 @@ static void apply_notified_renames(struct pl_folder_provider *p)
 			bfree(new_key);
 			continue;
 		}
-		/* the row's own path as it is, then the relative path with '/' (the notification's names use '\') */
-		struct dstr relative = {0};
-		dstr_copy(&relative, pair->new_key);
-		dstr_replace(&relative, "\\", "/");
+		/* the row's own path as it is, then the relative path (the watch gives it with '/') */
 		struct dstr location = {0};
-		dstr_printf(&location, "%s/%s", p->location, relative.array);
-		dstr_free(&relative);
+		dstr_printf(&location, "%s/%s", p->location, pair->new_key);
 		uint64_t size = 0;
 		int64_t write_ms = 0;
 		int64_t sampled_ms = 0;
-		if (pl_gate_find(&p->gate, old_key) && sample_file(p, location.array, &size, &write_ms, &sampled_ms) &&
+		if (pl_gate_find(&p->gate, old_key) &&
+		    pl_folder_os_sample(p->os, location.array, &size, &write_ms, &sampled_ms) &&
 		    pl_gate_rename(&p->gate, old_key, new_key, location.array, size, write_ms, mono_now()))
 			carry_rename(p, old_key, new_key);
 		dstr_free(&location);
@@ -573,145 +335,59 @@ static void apply_notified_renames(struct pl_folder_provider *p)
 	p->notified_renames.da = waiting.da;
 }
 
-static void collect_notified_renames(struct pl_folder_provider *p, DWORD bytes)
+/* A paired rename the watch saw, kept until the next listing */
+static void note_rename(void *context, const char *old_relative, const char *new_relative)
 {
-	const BYTE *cursor = (const BYTE *)p->buffer;
-	const BYTE *end = cursor + bytes;
-	const size_t header = offsetof(FILE_NOTIFY_INFORMATION, FileName);
-	while (cursor + header <= end) {
-		const FILE_NOTIFY_INFORMATION *info = (const FILE_NOTIFY_INFORMATION *)cursor;
-		if (info->FileNameLength && cursor + header + info->FileNameLength <= end) {
-			char *name = NULL;
-			os_wcs_to_utf8_ptr(info->FileName, info->FileNameLength / sizeof(WCHAR), &name);
-			/* the old name is kept across completions, as a pair can be split between two */
-			if (info->Action == FILE_ACTION_RENAMED_OLD_NAME) {
-				bfree(p->renamed_from);
-				p->renamed_from = name;
-				name = NULL;
-			} else if (info->Action == FILE_ACTION_RENAMED_NEW_NAME && p->renamed_from) {
-				struct rename_pair pair = {p->renamed_from, name, 0};
-				da_push_back(p->notified_renames, &pair);
-				p->renamed_from = NULL;
-				name = NULL;
-			}
-			bfree(name);
-		}
-		if (!info->NextEntryOffset)
-			break;
-		cursor += info->NextEntryOffset;
-	}
+	struct pl_folder_provider *p = context;
+	struct rename_pair pair = {bstrdup(old_relative), bstrdup(new_relative), 0};
+	da_push_back(p->notified_renames, &pair);
 }
 
-/* ---- the directory handle and the watch modes (R-DIR-3) ---- */
-
-static void close_dir(struct pl_folder_provider *p)
-{
-	if (p->dir == INVALID_HANDLE_VALUE)
-		return;
-	if (p->armed) {
-		CancelIoEx(p->dir, &p->overlapped);
-		/* the buffer is the worker's again only once the call has finished (R-THR-3) */
-		DWORD bytes = 0;
-		GetOverlappedResult(p->dir, &p->overlapped, &bytes, TRUE);
-		p->armed = false;
-	}
-	CloseHandle(p->dir);
-	p->dir = INVALID_HANDLE_VALUE;
-}
-
-static bool arm_dir(struct pl_folder_provider *p)
-{
-	if (p->dir == INVALID_HANDLE_VALUE)
-		return false;
-	if (p->armed)
-		return true;
-	ResetEvent(p->overlapped_event);
-	memset(&p->overlapped, 0, sizeof(p->overlapped));
-	p->overlapped.hEvent = p->overlapped_event;
-	DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE |
-		       FILE_NOTIFY_CHANGE_SIZE;
-	if (!ReadDirectoryChangesW(p->dir, p->buffer, NOTIFY_BUFFER_BYTES, p->include_subfolders, filter, NULL,
-				   &p->overlapped, NULL)) {
-		p->last_error = GetLastError();
-		return false;
-	}
-	p->armed = true;
-	return true;
-}
-
-static enum pl_watch_event open_dir(struct pl_folder_provider *p)
-{
-	close_dir(p);
-	if (!p->root_w) {
-		p->last_error = ERROR_INVALID_NAME;
-		return PL_WATCH_OPEN_FAILED;
-	}
-	HANDLE dir = CreateFileW(p->root_w, FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-				 NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
-	if (dir == INVALID_HANDLE_VALUE) {
-		p->last_error = GetLastError();
-		return p->last_error == ERROR_ACCESS_DENIED ? PL_WATCH_DENIED : PL_WATCH_OPEN_FAILED;
-	}
-	BY_HANDLE_FILE_INFORMATION info;
-	if (!GetFileInformationByHandle(dir, &info) || !(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-		/* a file of that name: not a folder */
-		CloseHandle(dir);
-		p->last_error = ERROR_DIRECTORY;
-		return PL_WATCH_OPEN_FAILED;
-	}
-	p->dir = dir;
-	return arm_dir(p) ? PL_WATCH_OPENED_ARMED : PL_WATCH_OPENED_ARM_FAILED;
-}
+/* ---- the watch modes (R-DIR-3) ---- */
 
 /* Takes in a notification that completed with changes while the worker was busy, so the renames it reports are known
  * before the listing reaches the gate; anything else is left for the main loop */
 static void take_completed_changes(struct pl_folder_provider *p)
 {
-	if (!p->armed || !HasOverlappedIoCompleted(&p->overlapped))
+	if (!pl_folder_os_take_completed_changes(p->os, note_rename, p))
 		return;
-	DWORD bytes = 0;
-	if (!GetOverlappedResult(p->dir, &p->overlapped, &bytes, FALSE) || bytes == 0)
-		return;
-	ResetEvent(p->overlapped_event);
-	p->armed = false;
 	pl_watch_notified(&p->watch);
-	collect_notified_renames(p, bytes);
 	/* the watch machine hears of a failed re-arm from the main loop */
-	p->arm_failed = !arm_dir(p);
+	p->arm_failed = !pl_folder_os_arm(p->os);
 	if (!p->debounce_ms)
 		p->debounce_ms = mono_now() + DEBOUNCE_MS;
 }
 
-static enum scan_result rescan(struct pl_folder_provider *p)
+static enum pl_folder_scan rescan(struct pl_folder_provider *p)
 {
 	size_t cloud = 0;
-	DWORD error = ERROR_SUCCESS;
-	enum scan_result result = scan_folder(p, &p->files.da, &cloud, &error);
-	if (result != SCAN_OK) {
-		if (result != SCAN_STOPPED)
-			p->last_error = error;
+	enum pl_folder_scan result = scan_folder(p, &cloud);
+	if (result != PL_FOLDER_SCAN_OK)
 		return result;
-	}
 	p->cloud_count = cloud;
 	p->listed = true;
-	p->last_ok_unix_ms = utc_now_ms();
+	p->last_ok_unix_ms = pl_utc_now_ms();
 	/* a rename the listing already shows moves the admitted file before the gate sees the new name as new */
 	take_completed_changes(p);
 	apply_notified_renames(p);
 	/* the first listing admits what is old and not held open at once (R-DIR-4) */
 	feed_gate(p, !p->gate_fed);
 	p->gate_fed = true;
-	return SCAN_OK;
+	return PL_FOLDER_SCAN_OK;
 }
 
 static void log_mode_change(struct pl_folder_provider *p, const struct pl_watch_actions *actions)
 {
-	if (actions->mode == PL_WATCH_MISSING || actions->mode == PL_WATCH_RESCAN_ONLY)
-		obs_log(LOG_WARNING, "folder %s: %s (%s; Win32 error %lu)", p->location,
-			pl_watch_mode_name(actions->mode), actions->reason, (unsigned long)p->last_error);
-	else
+	if (actions->mode == PL_WATCH_MISSING || actions->mode == PL_WATCH_RESCAN_ONLY) {
+		struct dstr error = {0};
+		pl_folder_os_error_cat(p->os, &error);
+		obs_log(LOG_WARNING, "folder %s: %s (%s; %s)", p->location, pl_watch_mode_name(actions->mode),
+			actions->reason, error.array);
+		dstr_free(&error);
+	} else {
 		obs_log(LOG_INFO, "folder %s: %s (%s)", p->location, pl_watch_mode_name(actions->mode),
 			actions->reason);
+	}
 }
 
 /* Feeds an observation to the watch machine and does what it says, in its order (close, open or re-arm, rescan);
@@ -738,19 +414,19 @@ static void run_event(struct pl_folder_provider *p, enum pl_watch_event first)
 		if (actions.mode != PL_WATCH_MISSING)
 			p->missing = MISSING_NONE;
 		if (actions.close)
-			close_dir(p);
+			pl_folder_os_close(p->os);
 		if (actions.open && tail < MAX_CHAINED_EVENTS)
-			events[tail++] = open_dir(p);
+			events[tail++] = pl_folder_os_open(p->os);
 		else if (actions.rearm && tail < MAX_CHAINED_EVENTS)
 			/* a handle that cannot be armed may be dead (the folder deleted and made again): recovery opens it
 			 * again rather than re-arming it (R-THR-3) */
-			events[tail++] = arm_dir(p) ? PL_WATCH_OPENED_ARMED : open_dir(p);
+			events[tail++] = pl_folder_os_arm(p->os) ? PL_WATCH_OPENED_ARMED : pl_folder_os_open(p->os);
 		if (actions.rescan) {
 			p->debounce_ms = 0;
-			enum scan_result result = rescan(p);
-			if (result == SCAN_LOST && tail < MAX_CHAINED_EVENTS)
+			enum pl_folder_scan result = rescan(p);
+			if (result == PL_FOLDER_SCAN_LOST && tail < MAX_CHAINED_EVENTS)
 				events[tail++] = PL_WATCH_LOST;
-			else if (result == SCAN_DENIED && tail < MAX_CHAINED_EVENTS)
+			else if (result == PL_FOLDER_SCAN_DENIED && tail < MAX_CHAINED_EVENTS)
 				events[tail++] = PL_WATCH_DENIED;
 		}
 	}
@@ -764,51 +440,32 @@ static void on_overflow(struct pl_folder_provider *p)
 	run_event(p, PL_WATCH_OVERFLOW);
 }
 
-/* The armed call completed */
+/* The armed watch completed */
 static void on_notification(struct pl_folder_provider *p)
 {
-	DWORD bytes = 0;
-	BOOL ok = GetOverlappedResult(p->dir, &p->overlapped, &bytes, FALSE);
-	DWORD error = ok ? ERROR_SUCCESS : GetLastError();
-	if (!ok && error == ERROR_IO_INCOMPLETE)
+	switch (pl_folder_os_take_note(p->os, note_rename, p)) {
+	case PL_FOLDER_NOTE_NONE:
 		return;
-	ResetEvent(p->overlapped_event);
-	p->armed = false;
-	if (!ok) {
-		if (error == ERROR_OPERATION_ABORTED) {
-			/* not cancelled by us (close_dir waits for its own cancel): keep watching */
-			if (!arm_dir(p))
-				run_event(p, PL_WATCH_OPENED_ARM_FAILED);
-			return;
-		}
-		p->last_error = error;
-		/* more changes than the buffer holds: ERROR_NOTIFY_ENUM_DIR locally, and through a share (SMB) also
-		 * ERROR_MORE_DATA with nothing in the buffer, as seen on this machine's admin share (TESTING 2.11) */
-		if (error == ERROR_NOTIFY_ENUM_DIR || error == ERROR_MORE_DATA) {
-			on_overflow(p);
-		} else if (error == ERROR_ACCESS_DENIED) {
-			/* a deleted folder ends the call this way while our handle keeps it pending deletion: with the handle
-			 * closed, a folder that is gone is lost, not a permissions problem */
-			close_dir(p);
-			DWORD attributes = p->root_w ? GetFileAttributesW(p->root_w) : INVALID_FILE_ATTRIBUTES;
-			DWORD lookup_error = attributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
-			bool gone = lookup_error == ERROR_FILE_NOT_FOUND || lookup_error == ERROR_PATH_NOT_FOUND;
-			run_event(p, gone ? PL_WATCH_LOST : PL_WATCH_DENIED);
-		} else {
-			run_event(p, PL_WATCH_LOST);
-		}
+	case PL_FOLDER_NOTE_ABORTED:
+		/* not cancelled by us (close waits for its own cancel): keep watching */
+		if (!pl_folder_os_arm(p->os))
+			run_event(p, PL_WATCH_OPENED_ARM_FAILED);
 		return;
-	}
-	if (bytes == 0) {
-		/* more changes than the buffer holds */
-		p->last_error = ERROR_NOTIFY_ENUM_DIR;
+	case PL_FOLDER_NOTE_OVERFLOW:
 		on_overflow(p);
 		return;
+	case PL_FOLDER_NOTE_DENIED:
+		run_event(p, PL_WATCH_DENIED);
+		return;
+	case PL_FOLDER_NOTE_LOST:
+		run_event(p, PL_WATCH_LOST);
+		return;
+	case PL_FOLDER_NOTE_CHANGES:
+		break;
 	}
 	pl_watch_notified(&p->watch);
-	collect_notified_renames(p, bytes);
 	/* armed again before the debounced rescan, so a change made meanwhile is caught */
-	if (!arm_dir(p))
+	if (!pl_folder_os_arm(p->os))
 		run_event(p, PL_WATCH_OPENED_ARM_FAILED);
 	if (!p->debounce_ms)
 		p->debounce_ms = mono_now() + DEBOUNCE_MS;
@@ -867,7 +524,7 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 		level = PL_STATUS_ERROR;
 		switch (p->missing) {
 		case MISSING_DENIED:
-			dstr_copy(message, "access denied (permissions or security software)");
+			dstr_copy(message, PL_ACCESS_DENIED_TEXT);
 			break;
 		case MISSING_LOST:
 			dstr_copy(message, "the folder went away (deleted, share offline or drive removed)");
@@ -883,7 +540,7 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 		level = PL_STATUS_ERROR;
 		if (message->len)
 			dstr_cat(message, "; ");
-		dstr_catf(message, "access denied (permissions or security software) to %zu files", denied);
+		dstr_catf(message, PL_ACCESS_DENIED_TEXT " to %zu files", denied);
 	}
 	if (p->cloud_count) {
 		if (level == PL_STATUS_OK)
@@ -984,7 +641,7 @@ static void take_requests(struct pl_folder_provider *p, bool *release)
 
 /* ---- the worker ---- */
 
-static DWORD WINAPI worker_main(void *data)
+static void worker_main(void *data)
 {
 	struct pl_folder_provider *p = data;
 	os_set_thread_name("obs-playlister: folder");
@@ -1005,7 +662,8 @@ static DWORD WINAPI worker_main(void *data)
 			run_event(p, PL_WATCH_CHANGED);
 		}
 		if (pl_gate_next_deadline(&p->gate) <= mono_now())
-			pl_gate_tick(&p->gate, mono_now(), utc_now_ms(), sample_file, probe_file, p);
+			pl_gate_tick(&p->gate, mono_now(), pl_utc_now_ms(), pl_folder_os_sample, pl_folder_os_probe,
+				     p->os);
 		if (stopping(p))
 			break;
 		update_publication(p, release);
@@ -1017,46 +675,35 @@ static DWORD WINAPI worker_main(void *data)
 		if (gate_next < next)
 			next = gate_next;
 		int64_t wait_ms = next - mono_now();
-		DWORD timeout = wait_ms <= 0 ? 0 : wait_ms > 3600000 ? 3600000 : (DWORD)wait_ms;
-		HANDLE handles[3] = {p->stop_event, p->wake_event, p->overlapped_event};
-		DWORD signaled = WaitForMultipleObjects(p->armed ? 3 : 2, handles, FALSE, timeout);
-		if (signaled == WAIT_OBJECT_0)
+		uint32_t timeout = wait_ms <= 0 ? 0 : wait_ms > 3600000 ? 3600000 : (uint32_t)wait_ms;
+		enum pl_folder_wait signaled = pl_folder_os_wait(p->os, p->stop, p->wake, timeout);
+		if (signaled == PL_FOLDER_WAIT_STOP)
 			break;
-		if (signaled == WAIT_OBJECT_0 + 2)
+		if (signaled == PL_FOLDER_WAIT_NOTIFIED)
 			on_notification(p);
 	}
-	close_dir(p);
-	return 0;
+	pl_folder_os_close(p->os);
 }
 
 /* ---- the interface ---- */
 
 static void free_provider(struct pl_folder_provider *p)
 {
-	close_dir(p);
-	if (p->thread)
-		CloseHandle(p->thread);
-	if (p->stop_event)
-		CloseHandle(p->stop_event);
-	if (p->wake_event)
-		CloseHandle(p->wake_event);
-	if (p->overlapped_event)
-		CloseHandle(p->overlapped_event);
+	pl_folder_os_destroy(p->os);
+	pl_stop_destroy(p->stop);
+	pl_wake_destroy(p->wake);
 	pthread_mutex_destroy(&p->request_mutex);
 	bfree(p->requested_filter);
 	bfree(p->filter_text);
 	pl_filter_free(&p->filter);
 	pl_gate_free(&p->gate);
-	bfree(p->buffer);
 	free_renames(&p->notified_renames.da);
-	bfree(p->renamed_from);
 	free_renames(&p->renames.da);
 	free_listing(&p->files.da);
 	for (size_t i = 0; i < p->logged_paths.num; i++)
 		bfree(p->logged_paths.array[i]);
 	da_free(p->logged_paths);
 	pl_publication_free(&p->publication);
-	bfree(p->root_w);
 	bfree(p->location);
 	bfree(p);
 }
@@ -1075,11 +722,9 @@ struct pl_folder_provider *pl_folder_provider_create(const char *location, const
 	size_t length = strlen(p->location);
 	while (length > 1 && (p->location[length - 1] == '/' || p->location[length - 1] == '\\'))
 		p->location[--length] = '\0';
-	p->root_w = win32_path(location);
+	p->os = pl_folder_os_create(location, options->include_subfolders);
 	pl_publication_init(&p->publication, instance_id, publish, owner);
 	p->include_subfolders = options->include_subfolders;
-	p->dir = INVALID_HANDLE_VALUE;
-	p->buffer = bmalloc(NOTIFY_BUFFER_BYTES);
 	pthread_mutex_init_value(&p->request_mutex);
 	copy_options(&p->requested, &p->requested_filter, options);
 	copy_options(&p->options, &p->filter_text, options);
@@ -1090,18 +735,19 @@ struct pl_folder_provider *pl_folder_provider_create(const char *location, const
 	da_init(p->files);
 	da_init(p->logged_paths);
 
-	p->stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-	p->wake_event = CreateEventW(NULL, FALSE, FALSE, NULL);
-	p->overlapped_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-	if (pthread_mutex_init(&p->request_mutex, NULL) != 0 || !p->stop_event || !p->wake_event ||
-	    !p->overlapped_event) {
+	p->stop = pl_stop_create();
+	p->wake = pl_wake_create();
+	if (pthread_mutex_init(&p->request_mutex, NULL) != 0 || !p->stop || !p->wake || !p->os) {
 		free_provider(p);
 		return NULL;
 	}
-	p->thread = CreateThread(NULL, WORKER_STACK_SIZE, worker_main, p, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+	unsigned long error = 0;
+	p->thread = pl_thread_start(worker_main, p, &error);
 	if (!p->thread) {
-		obs_log(LOG_ERROR, "folder %s: the worker thread could not be started (Win32 error %lu)", p->location,
-			(unsigned long)GetLastError());
+		struct dstr code = {0};
+		pl_os_error_cat(&code, error);
+		obs_log(LOG_ERROR, "folder %s: the worker thread could not be started (%s)", p->location, code.array);
+		dstr_free(&code);
 		free_provider(p);
 		return NULL;
 	}
@@ -1113,7 +759,7 @@ void pl_folder_provider_refresh_now(struct pl_folder_provider *provider)
 	pthread_mutex_lock(&provider->request_mutex);
 	provider->refresh_requested = true;
 	pthread_mutex_unlock(&provider->request_mutex);
-	SetEvent(provider->wake_event);
+	pl_wake_set(provider->wake);
 }
 
 void pl_folder_provider_set_options(struct pl_folder_provider *provider, const struct pl_container_options *options)
@@ -1122,7 +768,7 @@ void pl_folder_provider_set_options(struct pl_folder_provider *provider, const s
 	copy_options(&provider->requested, &provider->requested_filter, options);
 	provider->options_changed = true;
 	pthread_mutex_unlock(&provider->request_mutex);
-	SetEvent(provider->wake_event);
+	pl_wake_set(provider->wake);
 }
 
 void pl_folder_provider_release_held(struct pl_folder_provider *provider)
@@ -1130,7 +776,7 @@ void pl_folder_provider_release_held(struct pl_folder_provider *provider)
 	pthread_mutex_lock(&provider->request_mutex);
 	provider->release_requested = true;
 	pthread_mutex_unlock(&provider->request_mutex);
-	SetEvent(provider->wake_event);
+	pl_wake_set(provider->wake);
 }
 
 size_t pl_folder_provider_held_changes(struct pl_folder_provider *provider)
@@ -1142,20 +788,8 @@ void pl_folder_provider_destroy(struct pl_folder_provider *provider)
 {
 	if (!provider)
 		return;
-	SetEvent(provider->stop_event);
-	/* a listing or probe stuck on a stalled share is interrupted; again and again, as the worker may not have
-	 * entered the call yet when the first cancel comes (R-THR-3) */
-	while (WaitForSingleObject(provider->thread, 100) == WAIT_TIMEOUT)
-		CancelSynchronousIo(provider->thread);
+	/* a listing or probe stuck on a stalled share is interrupted where the platform can (R-THR-3, R-LNX-7) */
+	pl_stop_set(provider->stop);
+	pl_thread_join(provider->thread, provider->location);
 	free_provider(provider);
-}
-
-bool pl_folder_is_directory(const char *path)
-{
-	wchar_t *path_w = path ? win32_path(path) : NULL;
-	if (!path_w)
-		return false;
-	DWORD attributes = GetFileAttributesW(path_w);
-	bfree(path_w);
-	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }

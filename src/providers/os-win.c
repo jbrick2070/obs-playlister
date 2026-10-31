@@ -100,6 +100,11 @@ void pl_wake_set(struct pl_wake *wake)
 	SetEvent(wake->event);
 }
 
+void *pl_wake_win32_event(struct pl_wake *wake)
+{
+	return wake->event;
+}
+
 enum pl_wait_result pl_wait(struct pl_stop *stop, struct pl_wake *wake, uint32_t timeout_ms)
 {
 	HANDLE handles[2] = {stop->event, wake ? wake->event : NULL};
@@ -163,7 +168,7 @@ void pl_thread_join(struct pl_thread *thread, const char *what)
 int64_t pl_utc_now_ms(void)
 {
 	FILETIME now;
-	GetSystemTimeAsFileTime(&now);
+	GetSystemTimePreciseAsFileTime(&now);
 	ULARGE_INTEGER value = {.LowPart = now.dwLowDateTime, .HighPart = now.dwHighDateTime};
 	return ((int64_t)value.QuadPart - FILETIME_UNIX_EPOCH) / 10000;
 }

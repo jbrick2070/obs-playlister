@@ -53,6 +53,9 @@ struct pl_wake;
 struct pl_wake *pl_wake_create(void);
 void pl_wake_destroy(struct pl_wake *wake);
 void pl_wake_set(struct pl_wake *wake);
+#ifdef _WIN32
+void *pl_wake_win32_event(struct pl_wake *wake);
+#endif
 
 enum pl_wait_result {
 	PL_WAIT_STOP,

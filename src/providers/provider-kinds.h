@@ -24,7 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 /* The two provider kinds behind provider.h, which calls them by row kind. Each function means what its pl_provider_*
  * counterpart in provider.h says. */
 
-/* A watched folder (provider-folder-win.c) */
+/* A watched folder (provider-folder.c, with folder-os-*.c) */
 struct pl_folder_provider;
 struct pl_folder_provider *pl_folder_provider_create(const char *location, const char *row_uuid, uint64_t instance_id,
 						     const struct pl_container_options *options, pl_publish_fn publish,

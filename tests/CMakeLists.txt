@@ -85,7 +85,8 @@ set(_providers "${CMAKE_SOURCE_DIR}/src/providers")
 set(
   _provider_sources
   "${_providers}/provider.c"
-  "${_providers}/provider-folder-win.c"
+  "${_providers}/provider-folder.c"
+  "${_providers}/folder-os-win.c"
   "${_providers}/provider-list.c"
   "${_providers}/publication.c"
   "${_providers}/fetch-winhttp.c"

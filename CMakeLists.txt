@@ -94,7 +94,9 @@ target_sources(
     src/providers/provider-list.c
     src/providers/provider.h
     src/providers/provider.c
-    src/providers/provider-folder-win.c
+    src/providers/provider-folder.c
+    src/providers/folder-os.h
+    src/providers/folder-os-win.c
     src/providers/publication.h
     src/providers/publication.c
 )
