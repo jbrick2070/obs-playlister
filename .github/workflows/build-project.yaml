@@ -266,7 +266,7 @@ jobs:
         shell: bash
     steps:
       - name: Install Dependencies 📦
-        run: pacman -Syu --noconfirm --needed --disable-sandbox base-devel cmake ninja git obs-studio
+        run: pacman -Syu --noconfirm --needed --disable-sandbox base-devel cmake ninja git obs-studio simde
 
       - uses: actions/checkout@v4
         with:
