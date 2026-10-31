@@ -55,6 +55,11 @@ void pl_wake_destroy(struct pl_wake *wake);
 void pl_wake_set(struct pl_wake *wake);
 #ifdef _WIN32
 void *pl_wake_win32_event(struct pl_wake *wake);
+#else
+/* The descriptors behind the signals, readable while set, for waits that also poll other descriptors (inotify,
+ * libcurl). Reading the wake's takes it; the stop's is never read. */
+int pl_stop_fd(struct pl_stop *stop);
+int pl_wake_fd(struct pl_wake *wake);
 #endif
 
 enum pl_wait_result {

@@ -872,7 +872,12 @@ static void cat_last_list(struct dstr *out, int64_t unix_ms)
 	time_t seconds = (time_t)(unix_ms / 1000);
 	struct tm local;
 	char when[32] = "";
-	if (localtime_s(&local, &seconds) == 0)
+#ifdef _WIN32
+	bool converted = localtime_s(&local, &seconds) == 0;
+#else
+	bool converted = localtime_r(&seconds, &local) != NULL;
+#endif
+	if (converted)
 		strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &local);
 	struct dstr text = {0};
 	dstr_copy(&text, T_ROW_STATUS_LAST_LIST);

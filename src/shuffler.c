@@ -252,7 +252,7 @@ static void shuffler_remove_at(struct shuffler *s, size_t index)
 static void shuffler_remove_one(struct shuffler *s, const struct media_file_data *item)
 {
 	size_t index = da_find(s->shuffled_files, &item, 0);
-	assert(index >= 0 && index != DARRAY_INVALID); /* item must exist */
+	assert(index != DARRAY_INVALID); /* item must exist */
 	shuffler_remove_at(s, index);
 }
 

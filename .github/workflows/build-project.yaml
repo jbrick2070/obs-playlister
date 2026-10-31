@@ -179,8 +179,7 @@ jobs:
 
   ubuntu-build:
     name: Build for Ubuntu 🐧
-    # obs-playlister is Windows-only (REQUIREMENTS D-5); remove this line to re-enable
-    if: false
+    # Linux is a target again (REQUIREMENTS D-13, R-LNX-9)
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -221,6 +220,9 @@ jobs:
           target: x86_64
           config: ${{ needs.check-event.outputs.config }}
 
+      - name: Run Tests 🧪
+        run: ctest --test-dir build_x86_64 --output-on-failure --no-tests=error
+
       - name: Package Plugin 📀
         uses: ./.github/actions/package-plugin
         with:
@@ -252,6 +254,34 @@ jobs:
         with:
           path: ${{ github.workspace }}/.ccache
           key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}
+
+  arch-build:
+    name: Build for Arch Linux 🐧
+    # against Arch's own obs-studio package, as an Arch user builds it (R-LNX-1, R-LNX-9)
+    runs-on: ubuntu-24.04
+    needs: check-event
+    container: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install Dependencies 📦
+        run: pacman -Syu --noconfirm --needed --disable-sandbox base-devel cmake ninja git obs-studio
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build Plugin 🧱
+        run: |
+          : Build Plugin 🧱
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          cmake -S . -B build_arch -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          cmake --build build_arch --parallel
+
+      - name: Run Tests 🧪
+        run: ctest --test-dir build_arch --output-on-failure --no-tests=error
 
   windows-build:
     name: Build for Windows 🪟

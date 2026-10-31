@@ -16,8 +16,13 @@ add_library(${CMAKE_PROJECT_NAME} MODULE)
 
 find_package(libobs REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
-# remote lists are fetched with WinHTTP, part of Windows: no new DLLs ship (R-REM-5)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp)
+if(WIN32)
+  # remote lists are fetched with WinHTTP, part of Windows: no new DLLs ship (R-REM-5)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp)
+else()
+  find_package(Threads REQUIRED)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Threads::Threads)
+endif()
 
 if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
@@ -85,21 +90,37 @@ target_sources(
     src/core/url.h
     src/core/url.c
     src/providers/fetch.h
-    src/providers/fetch-winhttp.c
     src/providers/fold-key.h
-    src/providers/fold-key-win.c
     src/providers/os.h
-    src/providers/os-win.c
     src/providers/provider-kinds.h
     src/providers/provider-list.c
     src/providers/provider.h
     src/providers/provider.c
     src/providers/provider-folder.c
     src/providers/folder-os.h
-    src/providers/folder-os-win.c
     src/providers/publication.h
     src/providers/publication.c
 )
+# operating-system calls, one file per platform (R-LNX-2); Linux fetching and folders arrive in PLAN steps 3 and 4
+if(WIN32)
+  target_sources(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE
+      src/providers/fetch-winhttp.c
+      src/providers/fold-key-win.c
+      src/providers/folder-os-win.c
+      src/providers/os-win.c
+  )
+else()
+  target_sources(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE
+      src/providers/fetch-none.c
+      src/providers/fold-key-linux.c
+      src/providers/folder-os-linux.c
+      src/providers/os-posix.c
+  )
+endif()
 # sources in src/obs/ include the shared headers by their path under src/ (core/..., shuffler.h, playlist.h)
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE src)
 

@@ -55,8 +55,10 @@ obs_playlister_add_test(test-modes test-modes.c "${_core}/modes.c" "${_core}/sor
 obs_playlister_add_test(test-keys test-keys.c "${_core}/keys.c" "${_core}/sort.c" "${_core}/natural.c")
 # What a row does with a new snapshot while an item plays: delete, eviction and renames (R-DIR-8)
 obs_playlister_add_test(test-merge test-merge.c "${_core}/merge.c" "${_core}/entry-list.c")
-# R-KEY-1 key folding at the Win32 boundary
-obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-win.c")
+# R-KEY-1 key folding at the Win32 boundary (Linux keys are the text unchanged, R-LNX-5)
+if(WIN32)
+  obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-win.c")
+endif()
 # The folder provider's write-complete gate and watch modes against a fake folder (R-DIR-3, R-DIR-4)
 obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")
 obs_playlister_add_test(test-row-kind test-row-kind.c "${_core}/row-kind.c" "${_core}/filter.c" "${_core}/url.c")
@@ -80,41 +82,45 @@ obs_playlister_add_test(test-parse-pls test-parse-pls.c "${_core}/parse-pls.c" $
 foreach(_test IN ITEMS test-parse-m3u test-parse-pls)
   target_compile_definitions(${_test} PRIVATE "FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/playlists\"")
 endforeach()
-set(_providers "${CMAKE_SOURCE_DIR}/src/providers")
-# Every provider source: provider.c starts either kind, so both tests build both
-set(
-  _provider_sources
-  "${_providers}/provider.c"
-  "${_providers}/provider-folder.c"
-  "${_providers}/folder-os-win.c"
-  "${_providers}/provider-list.c"
-  "${_providers}/publication.c"
-  "${_providers}/fetch-winhttp.c"
-  "${_providers}/fold-key-win.c"
-  "${_providers}/os-win.c"
-  "${_core}/entry-list.c"
-  "${_core}/filter.c"
-  "${_core}/folder-state.c"
-  "${_core}/keys.c"
-  "${_core}/merge.c"
-  "${_core}/modes.c"
-  "${_core}/natural.c"
-  "${_core}/sort.c"
-  "${_core}/list-parse.c"
-  "${_core}/parse-m3u.c"
-  "${_core}/parse-pls.c"
-  "${_core}/url.c"
-)
-obs_playlister_add_test(test-provider-folder test-provider-folder.c ${_provider_sources})
-# The list provider through a stand-in fetcher and on real playlist files (R-REM-1, R-REM-4, R-LIST-1, D-12)
-obs_playlister_add_test(test-provider-list test-provider-list.c ${_provider_sources})
-foreach(_test IN ITEMS test-provider-folder test-provider-list)
-  # the providers log through obs_log and fetch through WinHTTP
-  target_link_libraries(${_test} PRIVATE plugin-support winhttp)
-endforeach()
-# One HTTP GET against a server inside the test on 127.0.0.1 (R-REM-5)
-obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-winhttp.c" "${_providers}/os-win.c")
-target_link_libraries(test-fetch PRIVATE winhttp ws2_32)
+# The provider tests drive real folders, files and a loopback server through Win32; their Linux builds come with the
+# Linux folder layer and fetcher (PLAN steps 3 and 4)
+if(WIN32)
+  set(_providers "${CMAKE_SOURCE_DIR}/src/providers")
+  # Every provider source: provider.c starts either kind, so both tests build both
+  set(
+    _provider_sources
+    "${_providers}/provider.c"
+    "${_providers}/provider-folder.c"
+    "${_providers}/folder-os-win.c"
+    "${_providers}/provider-list.c"
+    "${_providers}/publication.c"
+    "${_providers}/fetch-winhttp.c"
+    "${_providers}/fold-key-win.c"
+    "${_providers}/os-win.c"
+    "${_core}/entry-list.c"
+    "${_core}/filter.c"
+    "${_core}/folder-state.c"
+    "${_core}/keys.c"
+    "${_core}/merge.c"
+    "${_core}/modes.c"
+    "${_core}/natural.c"
+    "${_core}/sort.c"
+    "${_core}/list-parse.c"
+    "${_core}/parse-m3u.c"
+    "${_core}/parse-pls.c"
+    "${_core}/url.c"
+  )
+  obs_playlister_add_test(test-provider-folder test-provider-folder.c ${_provider_sources})
+  # The list provider through a stand-in fetcher and on real playlist files (R-REM-1, R-REM-4, R-LIST-1, D-12)
+  obs_playlister_add_test(test-provider-list test-provider-list.c ${_provider_sources})
+  foreach(_test IN ITEMS test-provider-folder test-provider-list)
+    # the providers log through obs_log and fetch through WinHTTP
+    target_link_libraries(${_test} PRIVATE plugin-support winhttp)
+  endforeach()
+  # One HTTP GET against a server inside the test on 127.0.0.1 (R-REM-5)
+  obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-winhttp.c" "${_providers}/os-win.c")
+  target_link_libraries(test-fetch PRIVATE winhttp ws2_32)
+endif()
 
 # Every locale key used in src/ is in en-US.ini (R-TST-1); the second test proves the check fails on a missing key
 add_test(
