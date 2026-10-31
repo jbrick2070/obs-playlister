@@ -27,7 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <windows.h>
+#include "test-common.h"
 
 static void print_state(const struct shuffler *shuffler)
 {
@@ -497,10 +497,7 @@ static void test_random_operations_keep_invariant(void)
 
 int main(void)
 {
-	/* a failed assert prints to stderr and exits non-zero instead of opening a dialog */
-	_set_error_mode(_OUT_TO_STDERR);
-	_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-	SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+	pl_test_no_crash_dialogs();
 
 	test_shuffler();
 	printf("upstream shuffler self-tests: passed\n");

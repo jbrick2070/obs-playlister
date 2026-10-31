@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string.h>
 #include <util/bmem.h>
 #include <util/darray.h>
+#include <util/dstr.h>
 
 #include "sort.h"
 
@@ -52,7 +53,7 @@ static const char *trim_start(const char *start, const char *end)
 static uint32_t numbered(const char *name, size_t length, const char *prefix)
 {
 	size_t prefix_length = strlen(prefix);
-	if (length <= prefix_length || length > prefix_length + 9 || _strnicmp(name, prefix, prefix_length) != 0)
+	if (length <= prefix_length || length > prefix_length + 9 || astrcmpi_n(name, prefix, prefix_length) != 0)
 		return 0;
 	uint32_t number = 0;
 	for (size_t i = prefix_length; i < length; i++) {
@@ -66,7 +67,7 @@ static uint32_t numbered(const char *name, size_t length, const char *prefix)
 static bool looks_numbered(const char *name, size_t length, const char *prefix)
 {
 	size_t prefix_length = strlen(prefix);
-	return length > prefix_length && _strnicmp(name, prefix, prefix_length) == 0 && name[prefix_length] >= '0' &&
+	return length > prefix_length && astrcmpi_n(name, prefix, prefix_length) == 0 && name[prefix_length] >= '0' &&
 	       name[prefix_length] <= '9';
 }
 
@@ -108,7 +109,7 @@ void pl_parse_pls(struct pl_list_result *result, const char *data, size_t size, 
 			}
 			const char *name = trim_start(line + 1, close);
 			const char *name_end = trim_end(name, close);
-			in_playlist = name_end - name == 8 && _strnicmp(name, "playlist", 8) == 0;
+			in_playlist = name_end - name == 8 && astrcmpi_n(name, "playlist", 8) == 0;
 			continue;
 		}
 		if (!in_playlist)

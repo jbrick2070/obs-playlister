@@ -90,6 +90,7 @@ set(
   "${_providers}/publication.c"
   "${_providers}/fetch-winhttp.c"
   "${_providers}/fold-key-win.c"
+  "${_providers}/os-win.c"
   "${_core}/entry-list.c"
   "${_core}/filter.c"
   "${_core}/folder-state.c"
@@ -111,7 +112,7 @@ foreach(_test IN ITEMS test-provider-folder test-provider-list)
   target_link_libraries(${_test} PRIVATE plugin-support winhttp)
 endforeach()
 # One HTTP GET against a server inside the test on 127.0.0.1 (R-REM-5)
-obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-winhttp.c")
+obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-winhttp.c" "${_providers}/os-win.c")
 target_link_libraries(test-fetch PRIVATE winhttp ws2_32)
 
 # Every locale key used in src/ is in en-US.ini (R-TST-1); the second test proves the check fails on a missing key

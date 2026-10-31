@@ -16,7 +16,7 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include "fold-key-win.h"
+#include "fold-key.h"
 
 #include <string.h>
 #include <util/bmem.h>

@@ -218,7 +218,7 @@ static bool is_url_base(const char *base)
 static bool scheme_is(const char *text, const char *scheme)
 {
 	size_t length = pl_url_scheme_length(text);
-	return length && length == strlen(scheme) && _strnicmp(text, scheme, length) == 0;
+	return length && length == strlen(scheme) && astrcmpi_n(text, scheme, length) == 0;
 }
 
 /* The schemes a remote list may name: network streams only. Anything else is refused, because the child hands a

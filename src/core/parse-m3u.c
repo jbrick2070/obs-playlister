@@ -21,12 +21,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <stdbool.h>
 #include <string.h>
 #include <util/bmem.h>
+#include <util/dstr.h>
 
 /* Whether the line is the tag, alone or followed by ":" */
 static bool is_tag(const char *line, size_t length, const char *tag)
 {
 	size_t tag_length = strlen(tag);
-	if (length < tag_length || _strnicmp(line, tag, tag_length) != 0)
+	if (length < tag_length || astrcmpi_n(line, tag, tag_length) != 0)
 		return false;
 	return length == tag_length || line[tag_length] == ':';
 }

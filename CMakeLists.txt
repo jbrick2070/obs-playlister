@@ -86,8 +86,10 @@ target_sources(
     src/core/url.c
     src/providers/fetch.h
     src/providers/fetch-winhttp.c
-    src/providers/fold-key-win.h
+    src/providers/fold-key.h
     src/providers/fold-key-win.c
+    src/providers/os.h
+    src/providers/os-win.c
     src/providers/provider-kinds.h
     src/providers/provider-list.c
     src/providers/provider.h

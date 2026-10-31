@@ -35,7 +35,7 @@ bool pl_path_is_unc(const char *path)
 		return false;
 	/* \\?\ and \\.\ prefix local paths too; only \\?\UNC\ is a share */
 	if ((path[2] == '?' || path[2] == '.') && separator(path[3]))
-		return _strnicmp(path + 4, "UNC", 3) == 0 && separator(path[7]);
+		return astrcmpi_n(path + 4, "UNC", 3) == 0 && separator(path[7]);
 	return path[2] != '\0' && !separator(path[2]);
 }
 

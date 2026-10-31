@@ -24,9 +24,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <stdlib.h>
 #include <string.h>
 #include <util/bmem.h>
-#include <windows.h>
+#include "test-common.h"
 
-#include "providers/fold-key-win.h"
+#include "providers/fold-key.h"
 
 static void expect_fold(const char *text, const char *expected)
 {
@@ -40,10 +40,7 @@ static void expect_fold(const char *text, const char *expected)
 
 int main(void)
 {
-	/* a failed assert prints to stderr and exits non-zero instead of opening a dialog */
-	_set_error_mode(_OUT_TO_STDERR);
-	_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-	SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+	pl_test_no_crash_dialogs();
 
 	long allocations = bnum_allocs();
 	expect_fold("clip.mp4", "CLIP.MP4");

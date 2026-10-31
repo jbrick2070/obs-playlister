@@ -23,9 +23,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "provider-kinds.h"
 
-#include <windows.h>
-#include <winhttp.h>
-
 #include <util/bmem.h>
 #include <util/dstr.h>
 #include <util/platform.h>
@@ -37,13 +34,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/parse-m3u.h"
 #include "core/parse-pls.h"
 #include "core/url.h"
-#include "fold-key-win.h"
+#include "fold-key.h"
+#include "os.h"
 #include "publication.h"
 
-#define WORKER_STACK_SIZE (256 * 1024) /* R-THR-2 */
-#define LIST_CAP (16 * 1024 * 1024)    /* R-REM-5: list bodies only */
-#define SNIFF_BYTES (64 * 1024)        /* R-LIST-1 step 4 */
-#define FILETIME_UNIX_EPOCH 116444736000000000LL
+#define LIST_CAP (16 * 1024 * 1024) /* R-REM-5: list bodies only */
+#define SNIFF_BYTES (64 * 1024)     /* R-LIST-1 step 4 */
 
 static const struct pl_list_fetch_api winhttp_api = {pl_fetch_open, pl_fetch_get_info, pl_fetch_read, pl_fetch_close};
 static const struct pl_list_fetch_api *fetch_api = &winhttp_api;
@@ -72,9 +68,9 @@ struct pl_list_provider {
 	bool remote;    /* an http(s) URL; else a local playlist file */
 	bool classify;  /* a remote row: the first response decides what it is (R-LIST-1 steps 3 and 4) */
 	char agent[64]; /* the User-Agent, "obs-playlister/<version>" (R-REM-5) */
-	HANDLE thread;
-	HANDLE stop_event; /* manual reset */
-	HANDLE wake_event; /* auto reset: a request is waiting */
+	struct pl_thread *thread;
+	struct pl_stop *stop;
+	struct pl_wake *wake; /* a request is waiting */
 
 	/* requests, under request_mutex */
 	pthread_mutex_t request_mutex;
@@ -112,17 +108,9 @@ static int64_t mono_now(void)
 	return (int64_t)(os_gettime_ns() / 1000000);
 }
 
-static int64_t utc_now_ms(void)
-{
-	FILETIME now;
-	GetSystemTimeAsFileTime(&now);
-	ULARGE_INTEGER value = {.LowPart = now.dwLowDateTime, .HighPart = now.dwHighDateTime};
-	return ((int64_t)value.QuadPart - FILETIME_UNIX_EPOCH) / 10000;
-}
-
 static bool stopping(struct pl_list_provider *p)
 {
-	return WaitForSingleObject(p->stop_event, 0) == WAIT_OBJECT_0;
+	return pl_stop_is_set(p->stop);
 }
 
 static bool has_extension(const char *location, const char *extension)
@@ -170,7 +158,7 @@ static void take_list(struct pl_list_provider *p, struct pl_list_result *result)
 	p->shape = shape;
 	bfree(p->error);
 	p->error = NULL;
-	p->last_ok_unix_ms = utc_now_ms();
+	p->last_ok_unix_ms = pl_utc_now_ms();
 }
 
 static void parse(struct pl_list_result *result, enum list_format format, const char *data, size_t size,
@@ -190,85 +178,59 @@ static enum list_format format_of(const char *location)
 
 /* ---- a local playlist file (D-12 b) ---- */
 
+static void read_error(struct pl_list_provider *p, enum pl_file_result result, unsigned long os_error)
+{
+	struct dstr message = {0};
+	if (result == PL_FILE_BAD_PATH) {
+		dstr_copy(&message, "the playlist path cannot be read as text");
+	} else if (result == PL_FILE_ACCESS_DENIED) {
+		dstr_copy(&message, PL_ACCESS_DENIED_TEXT);
+	} else {
+		dstr_copy(&message, "cannot read the playlist file (");
+		pl_os_error_cat(&message, os_error);
+		dstr_cat(&message, ")");
+	}
+	set_error(p, &message);
+}
+
 static void read_local(struct pl_list_provider *p)
 {
-	wchar_t *path = NULL;
-	if (!os_utf8_to_wcs_ptr(p->location, 0, &path) || !path) {
-		set_error_text(p, "the playlist path cannot be read as text");
+	struct pl_file_info info;
+	unsigned long os_error;
+	enum pl_file_result result = pl_file_get_info(p->location, &info, &os_error);
+	if (result == PL_FILE_NOT_FOUND) {
+		set_error_text(p, "playlist file not found");
 		return;
 	}
-	WIN32_FILE_ATTRIBUTE_DATA attributes;
-	if (!GetFileAttributesExW(path, GetFileExInfoStandard, &attributes)) {
-		DWORD error = GetLastError();
-		bfree(path);
-		struct dstr message = {0};
-		if (error == ERROR_ACCESS_DENIED)
-			dstr_copy(&message, "access denied (permissions or security software)");
-		else if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
-			dstr_copy(&message, "playlist file not found");
-		else
-			dstr_printf(&message, "cannot read the playlist file (Win32 error %lu)", (unsigned long)error);
-		set_error(p, &message);
+	if (result != PL_FILE_OK) {
+		read_error(p, result, os_error);
 		return;
 	}
-	uint64_t size = ((uint64_t)attributes.nFileSizeHigh << 32) | attributes.nFileSizeLow;
-	int64_t write = ((int64_t)attributes.ftLastWriteTime.dwHighDateTime << 32) |
-			attributes.ftLastWriteTime.dwLowDateTime;
 	/* unchanged since it was last read well: nothing to do, and a past error is over */
-	if (p->have_stamp && p->has_list && size == p->stamp_size && write == p->stamp_write &&
-	    (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+	if (p->have_stamp && p->has_list && info.size == p->stamp_size && info.write_stamp == p->stamp_write &&
+	    !info.directory) {
 		bfree(p->error);
 		p->error = NULL;
-		bfree(path);
 		return;
 	}
-	if (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-		bfree(path);
+	if (info.directory) {
 		set_error_text(p, "not a playlist file (a folder)");
 		return;
 	}
-	if (size > LIST_CAP) {
-		bfree(path);
+	if (info.size > LIST_CAP) {
 		set_error_text(p, "playlist file is over 16 MB");
 		return;
 	}
 
-	HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-				  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	bfree(path);
-	if (file == INVALID_HANDLE_VALUE) {
-		DWORD error = GetLastError();
-		struct dstr message = {0};
-		if (error == ERROR_ACCESS_DENIED)
-			dstr_copy(&message, "access denied (permissions or security software)");
-		else if (error == ERROR_SHARING_VIOLATION)
-			dstr_copy(&message, "the playlist file is in use; trying again");
-		else
-			dstr_printf(&message, "cannot read the playlist file (Win32 error %lu)", (unsigned long)error);
-		set_error(p, &message);
+	char *data;
+	size_t got;
+	result = pl_file_read(p->location, info.size, &data, &got, &os_error);
+	if (result == PL_FILE_IN_USE) {
+		set_error_text(p, "the playlist file is in use; trying again");
 		return;
 	}
-	char *data = bmalloc((size_t)size + 1);
-	size_t got = 0;
-	bool ok = true;
-	while (got < size) {
-		DWORD chunk = 0;
-		DWORD want = (DWORD)(size - got > (1 << 20) ? (1 << 20) : size - got);
-		if (!ReadFile(file, data + got, want, &chunk, NULL)) {
-			ok = false;
-			break;
-		}
-		if (!chunk)
-			break;
-		got += chunk;
-	}
-	DWORD error = GetLastError();
-	CloseHandle(file);
-	if (!ok) {
-		bfree(data);
-		struct dstr message = {0};
-		dstr_printf(&message, "cannot read the playlist file (Win32 error %lu)", (unsigned long)error);
-		set_error(p, &message);
+	if (result != PL_FILE_OK) {
+		read_error(p, result, os_error);
 		return;
 	}
 
@@ -281,14 +243,14 @@ static void read_local(struct pl_list_provider *p)
 	}
 	p->empty_seen = false;
 
-	struct pl_list_result result;
-	parse(&result, format_of(p->location), data, got, p->location);
+	struct pl_list_result list;
+	parse(&list, format_of(p->location), data, got, p->location);
 	bfree(data);
-	take_list(p, &result);
+	take_list(p, &list);
 	/* a file that changed size during the read is read again next time */
-	p->have_stamp = got == size;
-	p->stamp_size = size;
-	p->stamp_write = write;
+	p->have_stamp = got == info.size;
+	p->stamp_size = info.size;
+	p->stamp_write = info.write_stamp;
 }
 
 /* ---- a remote row ---- */
@@ -316,16 +278,16 @@ static void fetch_error(struct pl_list_provider *p, enum pl_fetch_result result,
 		dstr_copy(&message, "the list is over 16 MB");
 		break;
 	case PL_FETCH_NETWORK_ERROR:
-		if (info->error == ERROR_WINHTTP_NAME_NOT_RESOLVED)
+		if (info->failure == PL_FETCH_FAILURE_NAME_NOT_FOUND)
 			dstr_copy(&message, "the server name could not be found");
-		else if (info->error == ERROR_WINHTTP_CANNOT_CONNECT)
+		else if (info->failure == PL_FETCH_FAILURE_CANNOT_CONNECT)
 			dstr_copy(&message, "the server could not be reached");
-		else if (info->error == ERROR_WINHTTP_INVALID_URL || info->error == ERROR_WINHTTP_UNRECOGNIZED_SCHEME)
+		else if (info->failure == PL_FETCH_FAILURE_BAD_URL)
 			dstr_copy(&message, "not a valid http(s) address");
-		else if (info->error == ERROR_ACCESS_DENIED)
-			dstr_copy(&message, "access denied (permissions or security software)");
+		else if (info->failure == PL_FETCH_FAILURE_ACCESS_DENIED)
+			dstr_copy(&message, PL_ACCESS_DENIED_TEXT);
 		else
-			dstr_printf(&message, "network error (WinHTTP error %u)", info->error);
+			dstr_printf(&message, "network error (" PL_FETCH_LIBRARY " error %u)", info->error);
 		break;
 	default:
 		dstr_copy(&message, "network error");
@@ -363,14 +325,14 @@ static enum response_kind kind_of_type(const char *type)
 static bool starts_with_ci(const char *text, size_t length, const char *prefix)
 {
 	size_t prefix_length = strlen(prefix);
-	return length >= prefix_length && _strnicmp(text, prefix, prefix_length) == 0;
+	return length >= prefix_length && astrcmpi_n(text, prefix, prefix_length) == 0;
 }
 
 static bool contains_ci(const char *text, size_t length, const char *needle)
 {
 	size_t needle_length = strlen(needle);
 	for (size_t i = 0; i + needle_length <= length; i++) {
-		if (_strnicmp(text + i, needle, needle_length) == 0)
+		if (astrcmpi_n(text + i, needle, needle_length) == 0)
 			return true;
 	}
 	return false;
@@ -403,7 +365,7 @@ static void fetch_options(struct pl_list_provider *p, struct pl_fetch_options *o
 {
 	pl_fetch_default_options(options);
 	options->user_agent = p->agent;
-	options->stop_event = p->stop_event;
+	options->stop = p->stop;
 }
 
 /* A parsed list taken as the row's new good list. A stream is played from the row's own URL, which a signed redirect
@@ -720,7 +682,7 @@ static void take_requests(struct pl_list_provider *p, bool *release, bool *refre
 
 /* ---- the worker ---- */
 
-static DWORD WINAPI worker_main(void *data)
+static void worker_main(void *data)
 {
 	struct pl_list_provider *p = data;
 	os_set_thread_name("obs-playlister: list");
@@ -743,28 +705,22 @@ static DWORD WINAPI worker_main(void *data)
 		update_publication(p, release);
 
 		interval = interval_ms(p);
-		DWORD timeout = INFINITE;
+		uint32_t timeout = PL_WAIT_FOREVER;
 		if (interval) {
 			int64_t wait_ms = p->last_attempt_ms + interval - mono_now();
-			timeout = wait_ms <= 0 ? 0 : wait_ms > 3600000 ? 3600000 : (DWORD)wait_ms;
+			timeout = wait_ms <= 0 ? 0 : wait_ms > 3600000 ? 3600000 : (uint32_t)wait_ms;
 		}
-		HANDLE handles[2] = {p->stop_event, p->wake_event};
-		if (WaitForMultipleObjects(2, handles, FALSE, timeout) == WAIT_OBJECT_0)
+		if (pl_wait(p->stop, p->wake, timeout) == PL_WAIT_STOP)
 			break;
 	}
-	return 0;
 }
 
 /* ---- the interface ---- */
 
 static void free_provider(struct pl_list_provider *p)
 {
-	if (p->thread)
-		CloseHandle(p->thread);
-	if (p->stop_event)
-		CloseHandle(p->stop_event);
-	if (p->wake_event)
-		CloseHandle(p->wake_event);
+	pl_stop_destroy(p->stop);
+	pl_wake_destroy(p->wake);
 	pthread_mutex_destroy(&p->request_mutex);
 	bfree(p->requested_filter);
 	bfree(p->filter_text);
@@ -795,16 +751,19 @@ struct pl_list_provider *pl_list_provider_create(enum pl_row_kind kind, const ch
 	copy_options(&p->options, &p->filter_text, options);
 	pl_filter_parse(&p->filter, p->filter_text);
 
-	p->stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-	p->wake_event = CreateEventW(NULL, FALSE, FALSE, NULL);
-	if (pthread_mutex_init(&p->request_mutex, NULL) != 0 || !p->stop_event || !p->wake_event) {
+	p->stop = pl_stop_create();
+	p->wake = pl_wake_create();
+	if (pthread_mutex_init(&p->request_mutex, NULL) != 0 || !p->stop || !p->wake) {
 		free_provider(p);
 		return NULL;
 	}
-	p->thread = CreateThread(NULL, WORKER_STACK_SIZE, worker_main, p, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+	unsigned long error = 0;
+	p->thread = pl_thread_start(worker_main, p, &error);
 	if (!p->thread) {
-		obs_log(LOG_ERROR, "list %s: the worker thread could not be started (Win32 error %lu)", p->location,
-			(unsigned long)GetLastError());
+		struct dstr code = {0};
+		pl_os_error_cat(&code, error);
+		obs_log(LOG_ERROR, "list %s: the worker thread could not be started (%s)", p->location, code.array);
+		dstr_free(&code);
 		free_provider(p);
 		return NULL;
 	}
@@ -816,7 +775,7 @@ void pl_list_provider_refresh_now(struct pl_list_provider *provider)
 	pthread_mutex_lock(&provider->request_mutex);
 	provider->refresh_requested = true;
 	pthread_mutex_unlock(&provider->request_mutex);
-	SetEvent(provider->wake_event);
+	pl_wake_set(provider->wake);
 }
 
 void pl_list_provider_set_options(struct pl_list_provider *provider, const struct pl_container_options *options)
@@ -825,7 +784,7 @@ void pl_list_provider_set_options(struct pl_list_provider *provider, const struc
 	copy_options(&provider->requested, &provider->requested_filter, options);
 	provider->options_changed = true;
 	pthread_mutex_unlock(&provider->request_mutex);
-	SetEvent(provider->wake_event);
+	pl_wake_set(provider->wake);
 }
 
 void pl_list_provider_release_held(struct pl_list_provider *provider)
@@ -833,7 +792,7 @@ void pl_list_provider_release_held(struct pl_list_provider *provider)
 	pthread_mutex_lock(&provider->request_mutex);
 	provider->release_requested = true;
 	pthread_mutex_unlock(&provider->request_mutex);
-	SetEvent(provider->wake_event);
+	pl_wake_set(provider->wake);
 }
 
 size_t pl_list_provider_held_changes(struct pl_list_provider *provider)
@@ -845,11 +804,9 @@ void pl_list_provider_destroy(struct pl_list_provider *provider)
 {
 	if (!provider)
 		return;
-	/* a fetch in progress returns at once on the stop event (R-REM-5); a local read stuck on a stalled share is
-	 * interrupted, again and again, as the worker may not have entered the call yet when the first cancel comes
-	 * (R-THR-3) */
-	SetEvent(provider->stop_event);
-	while (WaitForSingleObject(provider->thread, 100) == WAIT_TIMEOUT)
-		CancelSynchronousIo(provider->thread);
+	/* a fetch in progress returns at once on the stop (R-REM-5); a local read stuck on a stalled share is
+	 * interrupted where the platform can (R-THR-3, R-LNX-7) */
+	pl_stop_set(provider->stop);
+	pl_thread_join(provider->thread, provider->location);
 	free_provider(provider);
 }

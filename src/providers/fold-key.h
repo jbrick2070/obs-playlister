@@ -18,9 +18,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
-/* R-KEY-1 key folding at the Win32 boundary: the UTF-8 text upper-cased in UTF-16 with the invariant locale
- * (LCMapStringEx, LOCALE_NAME_INVARIANT, LCMAP_UPPERCASE), as NTFS compares names, and returned as UTF-8 (bmem,
- * freed with bfree). Backslashes become '/'. NULL for NULL. A byte that is not valid UTF-8 becomes U+FFFD, so
- * such names still get distinct keys; characters beyond the BMP pass through unchanged. If the mapping fails the
- * text comes back unfolded. */
+/* R-KEY-1 key folding, one implementation per platform; the result is bmem, freed with bfree, and NULL for NULL.
+ * Windows (fold-key-win.c): the UTF-8 text upper-cased in UTF-16 with the invariant locale (LCMapStringEx,
+ * LOCALE_NAME_INVARIANT, LCMAP_UPPERCASE), as NTFS compares names, and returned as UTF-8. Backslashes become '/'. A
+ * byte that is not valid UTF-8 becomes U+FFFD, so such names still get distinct keys; characters beyond the BMP pass
+ * through unchanged. If the mapping fails the text comes back unfolded. Linux: a copy of the text, unchanged, as its
+ * file systems are case-sensitive and a backslash is a legal name character (R-LNX-5). */
 char *pl_fold_key(const char *text);

@@ -38,12 +38,29 @@ enum pl_fetch_result {
 	PL_FETCH_HTTP_STATUS,        /* a status outside 200-299; pl_fetch_info has it */
 	PL_FETCH_TRUNCATED,          /* the connection failed during the body, or it ended short of Content-Length */
 	PL_FETCH_TOO_LARGE,          /* the decompressed body went over the cap */
-	PL_FETCH_NETWORK_ERROR, /* anything else, including a URL WinHTTP cannot read; pl_fetch_info has the code */
+	PL_FETCH_NETWORK_ERROR, /* anything else, including a URL the backend cannot read; pl_fetch_info has the code */
 };
+
+#ifdef _WIN32
+#define PL_FETCH_LIBRARY "WinHTTP"
+#else
+#define PL_FETCH_LIBRARY "libcurl"
+#endif
+
+/* A network error sorted for the row status; each backend sorts its own codes */
+enum pl_fetch_failure {
+	PL_FETCH_FAILURE_OTHER,
+	PL_FETCH_FAILURE_NAME_NOT_FOUND,
+	PL_FETCH_FAILURE_CANNOT_CONNECT,
+	PL_FETCH_FAILURE_BAD_URL,
+	PL_FETCH_FAILURE_ACCESS_DENIED,
+};
+
+struct pl_stop;
 
 struct pl_fetch_options {
 	const char *user_agent; /* "obs-playlister/<version>" */
-	void *stop_event;       /* a Win32 event handle the provider sets to stop; NULL for none */
+	struct pl_stop *stop;   /* the provider sets it to stop (os.h); NULL for none */
 	uint32_t deadline_ms;   /* across redirects and body reads; 60000 */
 	uint32_t connect_ms;    /* resolve, connect and send each; 10000 */
 	uint32_t receive_ms;    /* 30000 */
@@ -61,7 +78,8 @@ struct pl_fetch_info {
 	bool encoded;    /* a Content-Encoding header came with the response */
 	char *final_url; /* the URL after redirects (the base for relative entries); NULL when no response came */
 	uint32_t redirects;
-	uint32_t error; /* the Win32 or WinHTTP error code behind a failure; 0 when none */
+	uint32_t error; /* the PL_FETCH_LIBRARY or operating-system error code behind a failure; 0 when none */
+	enum pl_fetch_failure failure; /* that code sorted; OTHER when none */
 };
 
 struct pl_fetch;

@@ -32,6 +32,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/platform.h>
 
 #include "providers/fetch.h"
+#include "providers/os.h"
 
 /* ---- the server ---- */
 
@@ -427,7 +428,7 @@ static void test_sizes(void)
 }
 
 struct stopper {
-	HANDLE event;
+	struct pl_stop *stop;
 	DWORD delay_ms;
 };
 
@@ -435,7 +436,7 @@ static DWORD WINAPI set_later(void *param)
 {
 	struct stopper *stopper = param;
 	Sleep(stopper->delay_ms);
-	SetEvent(stopper->event);
+	pl_stop_set(stopper->stop);
 	return 0;
 }
 
@@ -461,10 +462,10 @@ static void test_stops(void)
 	close_and_check(fetch);
 	assert(seconds_since(start) < 8.0);
 
-	/* the stop event while waiting for headers, then while reading the body */
+	/* the stop while waiting for headers, then while reading the body */
 	options.deadline_ms = 20000;
-	struct stopper stopper = {CreateEventW(NULL, TRUE, FALSE, NULL), 300};
-	options.stop_event = stopper.event;
+	struct stopper stopper = {pl_stop_create(), 300};
+	options.stop = stopper.stop;
 	HANDLE thread = CreateThread(NULL, 0, set_later, &stopper, 0, NULL);
 	start = os_gettime_ns();
 	fetch = open_expect("/hang-headers", &options, PL_FETCH_CANCELLED);
@@ -474,7 +475,7 @@ static void test_stops(void)
 	WaitForSingleObject(thread, INFINITE);
 	CloseHandle(thread);
 
-	ResetEvent(stopper.event);
+	pl_stop_reset(stopper.stop);
 	fetch = open_expect("/hang-body", &options, PL_FETCH_OK);
 	thread = CreateThread(NULL, 0, set_later, &stopper, 0, NULL);
 	start = os_gettime_ns();
@@ -485,10 +486,10 @@ static void test_stops(void)
 	close_and_check(fetch);
 	WaitForSingleObject(thread, INFINITE);
 	CloseHandle(thread);
-	CloseHandle(stopper.event);
+	pl_stop_destroy(stopper.stop);
 
 	/* a direct media URL: closed after its headers, at once, without reading the body */
-	options.stop_event = NULL;
+	options.stop = NULL;
 	fetch = open_expect("/media", &options, PL_FETCH_OK);
 	assert(strcmp(pl_fetch_get_info(fetch)->content_type, "video/mp4") == 0);
 	start = os_gettime_ns();

@@ -24,7 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <stdio.h>
 #include <string.h>
 #include <util/threading.h>
-#include <windows.h>
+#include "test-common.h"
 
 #include "core/load-tracker.h"
 
@@ -167,10 +167,7 @@ static void test_request_after_begin_load_withdraws_it(void)
 
 int main(void)
 {
-	/* a failed assert prints to stderr and exits non-zero instead of opening a dialog */
-	_set_error_mode(_OUT_TO_STDERR);
-	_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-	SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+	pl_test_no_crash_dialogs();
 
 	test_end_of_current_load_advances_once();
 	test_end_before_any_load_is_ignored();

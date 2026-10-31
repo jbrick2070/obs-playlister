@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * the deadline. The status callback only records what completed and signals; it never calls WinHTTP. */
 
 #include "fetch.h"
+#include "os.h"
 
 #include <string.h>
 #include <util/bmem.h>
@@ -136,10 +137,29 @@ static bool tls_error(DWORD error)
 	}
 }
 
+/* A WinHTTP or Win32 code sorted for the row status */
+static enum pl_fetch_failure failure_kind(DWORD error)
+{
+	switch (error) {
+	case ERROR_WINHTTP_NAME_NOT_RESOLVED:
+		return PL_FETCH_FAILURE_NAME_NOT_FOUND;
+	case ERROR_WINHTTP_CANNOT_CONNECT:
+		return PL_FETCH_FAILURE_CANNOT_CONNECT;
+	case ERROR_WINHTTP_INVALID_URL:
+	case ERROR_WINHTTP_UNRECOGNIZED_SCHEME:
+		return PL_FETCH_FAILURE_BAD_URL;
+	case ERROR_ACCESS_DENIED:
+		return PL_FETCH_FAILURE_ACCESS_DENIED;
+	default:
+		return PL_FETCH_FAILURE_OTHER;
+	}
+}
+
 /* What a WinHTTP failure means; in_body when it came while reading the body */
 static enum pl_fetch_result failure(struct pl_fetch *fetch, DWORD error, bool in_body)
 {
 	fetch->info.error = error;
+	fetch->info.failure = failure_kind(error);
 	if (error == ERROR_WINHTTP_TIMEOUT)
 		return PL_FETCH_TIMEOUT;
 	if (error == ERROR_WINHTTP_OPERATION_CANCELLED)
@@ -400,7 +420,7 @@ struct pl_fetch *pl_fetch_open(const char *url, const struct pl_fetch_options *o
 	struct pl_fetch *fetch = bzalloc(sizeof(*fetch));
 	fetch->completed = CreateEventW(NULL, FALSE, FALSE, NULL);
 	fetch->all_closed = CreateEventW(NULL, TRUE, FALSE, NULL);
-	fetch->stop_event = options->stop_event;
+	fetch->stop_event = options->stop ? pl_stop_win32_event(options->stop) : NULL;
 	fetch->max_redirects = options->max_redirects;
 	fetch->deadline_ns = os_gettime_ns() + (uint64_t)options->deadline_ms * 1000000;
 

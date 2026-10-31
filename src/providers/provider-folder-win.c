@@ -37,7 +37,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/folder-state.h"
 #include "core/keys.h"
 #include "core/merge.h"
-#include "fold-key-win.h"
+#include "fold-key.h"
 #include "publication.h"
 
 #define WORKER_STACK_SIZE (256 * 1024)  /* R-THR-2 */

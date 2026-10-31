@@ -28,7 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/row-kind.h"
 #include "core/sort.h"
 #include "core/source-size.h"
-#include "providers/fold-key-win.h"
+#include "providers/fold-key.h"
 
 /* the audio queue's planes go straight into struct obs_source_audio */
 _Static_assert(PL_AUDIO_MAX_PLANES == MAX_AV_PLANES, "the audio queue must have as many planes as libobs");

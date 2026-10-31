@@ -35,6 +35,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <windows.h>
 
 #include "core/filter.h"
+#include "providers/os.h"
 #include "providers/provider-kinds.h"
 
 #define WAIT_MS 15000
@@ -101,7 +102,7 @@ static struct pl_fetch *stub_open(const char *url, const struct pl_fetch_options
 	struct pl_fetch *fetch = bzalloc(sizeof(*fetch));
 	os_atomic_inc_long(&fetches_open);
 	assert(strncmp(options->user_agent, "obs-playlister/", 15) == 0);
-	assert(options->deadline_ms == 60000 && options->max_redirects == 5 && options->stop_event);
+	assert(options->deadline_ms == 60000 && options->max_redirects == 5 && options->stop);
 
 	pthread_mutex_lock(&routes_mutex);
 	struct route *route = NULL;
@@ -116,9 +117,9 @@ static struct pl_fetch *stub_open(const char *url, const struct pl_fetch_options
 	pthread_mutex_unlock(&routes_mutex);
 
 	if (hang) {
-		/* as WinHTTP does: the stop event ends the wait at once */
-		DWORD signaled = WaitForSingleObject(options->stop_event, 30000);
-		assert(signaled == WAIT_OBJECT_0);
+		/* as WinHTTP does: the stop ends the wait at once */
+		enum pl_wait_result signaled = pl_wait(options->stop, NULL, 30000);
+		assert(signaled == PL_WAIT_STOP);
 		*result = PL_FETCH_CANCELLED;
 		return fetch;
 	}
@@ -126,6 +127,7 @@ static struct pl_fetch *stub_open(const char *url, const struct pl_fetch_options
 		Sleep(delay);
 	if (!route) {
 		fetch->info.error = 12007; /* ERROR_WINHTTP_NAME_NOT_RESOLVED */
+		fetch->info.failure = PL_FETCH_FAILURE_NAME_NOT_FOUND;
 		*result = PL_FETCH_NETWORK_ERROR;
 		return fetch;
 	}

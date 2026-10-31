@@ -26,7 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "shuffler.c"
 
 #include <stdio.h>
-#include <windows.h>
+#include "test-common.h"
 
 static int failures = 0;
 
@@ -40,8 +40,7 @@ static void expect(bool ok, const char *what)
 
 int main(void)
 {
-	/* a crash exits non-zero instead of opening a dialog */
-	SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+	pl_test_no_crash_dialogs();
 
 	DARRAY(struct media_file_data) items;
 	da_init(items);

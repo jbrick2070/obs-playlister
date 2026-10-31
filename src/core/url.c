@@ -56,7 +56,7 @@ size_t pl_url_scheme_length(const char *text)
 static bool scheme_is(const char *text, const char *scheme)
 {
 	size_t length = pl_url_scheme_length(text);
-	return length == strlen(scheme) && _strnicmp(text, scheme, length) == 0;
+	return length == strlen(scheme) && astrcmpi_n(text, scheme, length) == 0;
 }
 
 bool pl_url_is_http(const char *text)
@@ -316,7 +316,7 @@ char *pl_url_file_to_path(const char *text)
 		const char *host = rest + 2;
 		size_t host_len = strcspn(host, "/?#");
 		const char *path = host + host_len;
-		if (host_len == 0 || (host_len == 9 && _strnicmp(host, "localhost", 9) == 0)) {
+		if (host_len == 0 || (host_len == 9 && astrcmpi_n(host, "localhost", 9) == 0)) {
 			/* file:///C:/x or file://localhost/C:/x; file:////server/share/x keeps its share */
 			if (*path == '/' && path[1] != '/')
 				path++;

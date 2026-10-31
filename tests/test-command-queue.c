@@ -25,7 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string.h>
 #include <util/bmem.h>
 #include <util/platform.h>
-#include <windows.h>
+#include "test-common.h"
 
 #include "core/command-queue.h"
 
@@ -85,7 +85,7 @@ struct consumer {
 	int executed;
 	bool saw_quit;
 	bool woke;
-	DWORD work_ms;
+	uint32_t work_ms;
 };
 
 static void *wake_consumer(void *data)
@@ -126,7 +126,7 @@ static void *busy_consumer(void *data)
 		while (pl_command_queue_pop(consumer->queue, &command)) {
 			bool quit = command.type == PL_COMMAND_QUIT;
 			if (!quit) {
-				Sleep(consumer->work_ms);
+				os_sleep_ms(consumer->work_ms);
 				consumer->executed++;
 			}
 			pl_command_free(&command);
@@ -228,10 +228,7 @@ static void test_has_pending(void)
 
 int main(void)
 {
-	/* a failed assert prints to stderr and exits non-zero instead of opening a dialog */
-	_set_error_mode(_OUT_TO_STDERR);
-	_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-	SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+	pl_test_no_crash_dialogs();
 
 	test_order();
 	test_wake();
