@@ -62,8 +62,7 @@ tests/obs/run-harness.sh
 HARNESS_LOG_COPY=/tmp/harness-log.txt TIMEOUT_SECONDS=600 tests/obs/run-harness.sh
 ```
 
-The CI job `ubuntu-obs-harness` runs it under Xvfb on every push (check V25: it does not fail the run until it has
-passed once). Expected keys are folded per platform (`K()` in the script).
+The CI job `ubuntu-obs-harness` runs it under Xvfb on every push; it passed there first on run 41258893885 (check V25). Expected keys are folded per platform (`K()` in the script).
 
 | Date | OBS | Build | Result |
 |------|-----|-------|--------|
@@ -88,6 +87,8 @@ passed once). Expected keys are folded per platform (`K()` in the script).
 | 2026-10-28 | 33.0.0 portable | 0.4.1 step 4 (R-BEH-7) | 123 passed, 0 failed, no memory leaks. New: a hidden source keeps the size it had (1920x1080); a stopped still keeps its own size (320x180, smaller than the canvas, so not the canvas fallback); save writes the size the source reports (320x180); in a scene that is not live a source that never played (state none) reports the canvas size (1920x1080), one with a saved size reports it (640x360) and one with no rows 0x0. Mutation check: with only the child's size reported, as before 0.4.1, 5 checks fail (0x0 for each) |
 | 2026-10-31 | 33.0.0 portable | Linux port, the version line (R-LIST-6) | 124 passed, 0 failed, no memory leaks. New: Properties names the running version ("Playlister 0.4.0" before the bump) and no setting holds it. Earlier Linux port steps 1, 2 and 5 left the harness at 123 passed, and the Phase 2 and Phase 3a acceptance at 38 and 41 |
 | 2026-11-01 | 32.2.0 (Ubuntu 24.04, OBS PPA), RunPod CPU pod, Xvfb and Mesa software OpenGL | Linux port step 6, 6a83b2a with run-harness.sh | 124 passed, 0 failed, no memory leaks: the first run inside OBS on Linux (`tests/obs/run-harness.sh`; ctest 24 of 24 on the same machine) |
+| 2026-11-01 | 32.2.0 (Ubuntu 24.04, OBS PPA), GitHub Actions runner, Xvfb and Mesa software OpenGL | Linux port step 6, 4fa0ec0 (CI run 41258893885) | 124 passed, 0 failed (check V25 passed: the harness runs in OBS in CI; the job now fails the run on a failure) |
+| 2026-11-01 | 33.0.0 portable | 0.5.0 (version bump) | 124 passed, 0 failed, no memory leaks; the load line reads "plugin loaded successfully (version 0.5.0)" and Properties ends with "Playlister 0.5.0" |
 
 ## Phase 2 acceptance (automated, needs OBS)
 
@@ -165,7 +166,7 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 `release/RelWithDebInfo/obs-playlister`, so the folder holds exactly
 `obs-playlister.dll`, `obs-playlister.pdb`, `data\manifest.json` and
 `data\locale\en-US.ini`. From Phase 2 on these run on the current build (the waiver in PLAN section 7), so the
-version expected in 1.1 and 1.2 is that build's (0.4.0 now).
+version expected in 1.1 and 1.2 is that build's (0.5.0 now).
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
@@ -304,6 +305,8 @@ folder of two or three short videos of different lengths.
 - The version was bumped to 0.4.0 (operator decision, 2026-10-28) after the Phase 3a acceptance script passed, with
   Phase 3a items 3.8, 3.16, 3.17 and 3.9's public feed not yet run. Until they are, live HLS and radio streams, real
   feeds, HTTPS and certificate errors, and the Browse dialog's Playlists group are unverified in OBS.
+- The version was bumped to 0.5.0 (operator decision, 2026-11-01) after the Linux runtime harness passed in OBS 32.2
+  on Ubuntu 24.04, with the Linux manual items L.1 to L.11 and all earlier manual items still pending.
 - Linux (R-LNX-7): a worker stuck in a call on a hung network share cannot be interrupted, so closing a source then
   waits for it; the plugin logs that it is waiting after 5 s.
 - Linux: the runtime harness passed in OBS 32.2 on Ubuntu 24.04 (software rendering, 2026-11-01); the manual items L.1 to L.11

@@ -10,6 +10,7 @@ pkgdesc="A playlist source for OBS Studio with watched folders, M3U/PLS playlist
 arch=('x86_64')
 url="https://github.com/jbrick2070/obs-playlister"
 license=('GPL-2.0-or-later')
+# Arch ships OBS 33; the plugin itself also runs on OBS 32.2 (README, R-LNX-1)
 depends=('obs-studio>=33' 'curl')
 makedepends=('cmake' 'ninja' 'simde')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/jbrick2070/obs-playlister/archive/refs/tags/$pkgver.tar.gz")

@@ -21,9 +21,8 @@ from scratch, and folders play in Playlister itself (the script could also
 fill a VLC Video Source or an Image Slideshow). Playlister is its
 own source type and installs next to Media Playlist Source without either one
 replacing the other; existing Media Playlist Source sources are left as they
-are. It also plays playlist files and lists on a web server (0.4.0);
-podcast feeds come next; see [PLAN.md](PLAN.md) and
-[REQUIREMENTS.md](REQUIREMENTS.md).
+are. It also plays playlist files and lists on a web server (0.4.0), and runs on
+Linux (0.5.0); see [PLAN.md](PLAN.md) and [REQUIREMENTS.md](REQUIREMENTS.md).
 
 **Bonus: no Python runtime needed.** The Directory Sorter script runs in OBS's
 Python scripting, which needs a matching Python installed and set in
@@ -32,13 +31,17 @@ is nothing else to install or configure.
 
 ## Status
 
-Linux (the next version, 0.5.0): Playlister now builds on Ubuntu 24.04 and Arch
-Linux, and every automated test passes there, including watched folders,
-playlist files and web lists. Inside OBS, the 124 runtime checks the Windows
-build passes also pass on Ubuntu 24.04 with OBS 32.2 (run on a server with
-software rendering); the dialogs have not been looked at on Linux yet. Reports
-from Linux users are very welcome (open an issue). macOS is planned
-after Linux.
+Version 0.5.0 (Linux): Playlister now builds on Ubuntu 24.04 and Arch Linux and
+has run inside OBS on Ubuntu 24.04. Every automated test passes on both,
+including watched folders, playlist files and web lists, and inside OBS the 124
+runtime checks the Windows build passes also pass on Ubuntu 24.04 with OBS 32.2
+(run on a server with software rendering); the dialogs have not been looked at
+on Linux yet. Reports
+from Linux users are very welcome (open an issue). Also new: Properties ends
+with the version you are running, and a Playlister in a scene that is not
+showing (another scene, the Studio Mode preview) keeps a sensible size instead
+of shrinking to a dot. Planned next: speed controls and control from a Stream
+Deck, then macOS; podcast feeds after that.
 Version 0.4.0 (Phase 3a): a row can be a playlist file (.m3u, .m3u8, .pls) or
 a web address. A playlist file is read again when it changes; a web address
 is a list on a server, checked again every few minutes ("Check web lists
@@ -96,7 +99,7 @@ for user-mode code were turned on.
 
 ### Linux
 
-- **Arch Linux** (once 0.5.0 is released): build the package from
+- **Arch Linux:** build the package from
   [packaging/arch/PKGBUILD](packaging/arch/PKGBUILD) against Arch's own
   `obs-studio` package:
 

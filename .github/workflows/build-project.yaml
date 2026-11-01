@@ -257,12 +257,10 @@ jobs:
 
   ubuntu-obs-harness:
     name: Runtime harness in OBS on Ubuntu 🎬
-    # PLAN Linux port step 6: playlister-harness.lua inside OBS 33 (the OBS Project's PPA) under Xvfb with Mesa's
-    # software OpenGL. Whether OBS runs there at all is check V25, so a failure does not fail the run until it has
-    # passed once.
+    # PLAN Linux port step 6: playlister-harness.lua inside the OBS Project's PPA build (32.2 on 2026-11-01) under Xvfb
+    # with Mesa's software OpenGL. Check V25 passed on run 41258893885 (124 of 124), so a failure fails the run.
     runs-on: ubuntu-24.04
     needs: check-event
-    continue-on-error: true
     timeout-minutes: 30
     defaults:
       run:
