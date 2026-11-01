@@ -411,6 +411,37 @@ Not in this port: macOS (the split in steps 1-2 makes it a later addition of `*-
 
 Size: about as large as Phase 3a. Steps 1 and 2 are the risky ones for Windows users, which is why they come first, change nothing a user can see, and are proven by the existing harness.
 
+### Translations, 0.5.1 (approved 2026-11-01; REQUIREMENTS section 11a, D-14)
+
+Why: the widest language coverage for the UI (operator, 2026-11-01). Ten languages: Simplified Chinese, Spanish,
+Brazilian Portuguese, Russian, Japanese, German, French, Korean, Traditional Chinese and Turkish. Each step ends with the
+full `ctest` on Windows (and Linux in CI), the runtime harness, the Sonnet QA (R-STD-9; started as soon as the step's
+code is written), one commit and one push.
+
+1. The text hook (R-I18N-1, R-I18N-2). `core/text.h` and `core/text.c`: `pl_text(key, english)` returns the text the
+   plugin set for the key or else the English given; `pl_text_set_lookup(fn)` is called once by `plugin-main.c` with a
+   function around `obs_module_text`, and never by the tests; `pl_text_fill(text, args, count)` replaces `%1`..`%9`
+   with the values given and leaves a placeholder without a value empty. Every user-visible message in `providers/`
+   (`provider-list.c`, `provider-folder.c`, `folder-os-linux.c`'s network-folder note, `PL_ACCESS_DENIED_TEXT`, the
+   cloud-only count) and the three English strings left in `playlister-source.c` ("Play Selected File", the Current
+   File help, the speed warning's key) go through it, with keys in `en-US.ini`. The English text does not change, so
+   the harness and the acceptance scripts pass unchanged. `check-locale-keys.cmake` also finds `pl_text("Key", ...)`.
+   ctest `test-text`: lookup and fallback, placeholders (missing, repeated, out of order, `%10` not taken for `%1`).
+2. The translation check (R-I18N-4): `tests/check-locale-files.cmake`, run with `cmake -P`: every `*.ini` beside
+   `en-US.ini` has exactly its keys, the same placeholders per key, valid UTF-8 without BOM; a negative case proves it
+   fails on a missing key and on a lost placeholder.
+3. The ten files (R-I18N-3). Claude drafts each from `en-US.ini`, keeping "Playlister", OBS's own terms as OBS's
+   translations use them (Properties, Studio Mode, Media Source), and placeholders. Gemini (agy, Gemini 4 Argon High,
+   read-only) then reviews each draft against the English and lists errors and awkward wording; Claude takes what holds
+   and records what it did not take. Each file starts with a comment: an AI-drafted translation, reviewed by a second
+   model, corrections welcome. README says the same and how to send corrections.
+4. Checks and release: in OBS, set the language to German and to Japanese (Settings > General > Language, restart) and
+   read Properties and the status block (TESTING.md item, and a harness check that the version line is translated when
+   a locale other than English is loaded, if the harness can set OBS's language); README; version 0.5.1 on the
+   operator's word.
+
+Not in this step: translating log lines, the installer's own pages, or README.
+
 ### Phase 4 -- VJ modes (boundary only)
 
 Nothing is built. The only commitment is R-VJ-2: everything that touches the child source lives in `player.c` and its thread (Phase 2 steps 1.2 and 6), and providers never know how entries are shown.
