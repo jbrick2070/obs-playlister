@@ -61,6 +61,33 @@ static SOCKET listener = INVALID_SOCKET;
 static uint16_t port;
 static os_event_t *release_hangs; /* manual reset: hanging connections give up */
 static volatile long connections;
+/* the request each open connection is serving, so a connection left open can be named */
+#define MAX_LIVE 64
+static pthread_mutex_t live_mutex = PTHREAD_MUTEX_INITIALIZER;
+static char live_paths[MAX_LIVE][64];
+
+static int live_add(void)
+{
+	pthread_mutex_lock(&live_mutex);
+	int slot = -1;
+	for (int i = 0; i < MAX_LIVE && slot < 0; i++) {
+		if (!live_paths[i][0]) {
+			snprintf(live_paths[i], sizeof(live_paths[i]), "(no request yet)");
+			slot = i;
+		}
+	}
+	pthread_mutex_unlock(&live_mutex);
+	return slot;
+}
+
+static void live_set(int slot, const char *text)
+{
+	if (slot < 0)
+		return;
+	pthread_mutex_lock(&live_mutex);
+	snprintf(live_paths[slot], sizeof(live_paths[slot]), "%s", text);
+	pthread_mutex_unlock(&live_mutex);
+}
 static char *gzip_body;
 static size_t gzip_size;
 
@@ -91,6 +118,7 @@ static void hang(void)
 static void *serve(void *param)
 {
 	SOCKET s = (SOCKET)(uintptr_t)param;
+	int slot = live_add();
 	char request[8192];
 	size_t got = 0;
 	while (got < sizeof(request) - 1) {
@@ -106,6 +134,7 @@ static void *serve(void *param)
 
 	char path[1024] = "";
 	sscanf(request, "GET %1023s", path);
+	live_set(slot, *path ? path : "(no request line)");
 	struct dstr reply = {0};
 
 	if (strcmp(path, "/ok") == 0 || strcmp(path, "/redirect/0") == 0) {
@@ -166,6 +195,7 @@ static void *serve(void *param)
 	dstr_free(&reply);
 	shutdown(s, SD_SEND);
 	closesocket(s);
+	live_set(slot, "");
 	os_atomic_dec_long(&connections);
 	return NULL;
 }
@@ -224,6 +254,14 @@ static void stop_server(pthread_t thread)
 	pthread_join(thread, NULL);
 	for (int i = 0; i < 200 && os_atomic_load_long(&connections); i++)
 		os_sleep_ms(25);
+	if (os_atomic_load_long(&connections)) {
+		pthread_mutex_lock(&live_mutex);
+		for (int i = 0; i < MAX_LIVE; i++) {
+			if (live_paths[i][0])
+				fprintf(stderr, "connection still open: %s\n", live_paths[i]);
+		}
+		pthread_mutex_unlock(&live_mutex);
+	}
 	assert(os_atomic_load_long(&connections) == 0);
 	os_event_destroy(release_hangs);
 #ifdef _WIN32
