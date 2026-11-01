@@ -67,7 +67,7 @@ struct pl_folder_listing_sink {
 enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *stop,
 				      const struct pl_folder_listing_sink *sink);
 
-/* ---- the write-complete gate's disk access (R-DIR-4); the context is unused ---- */
+/* ---- the write-complete gate's disk access (R-DIR-4); the context is the pl_folder_os ---- */
 
 enum pl_probe_result pl_folder_os_probe(void *context, const char *location);
 bool pl_folder_os_sample(void *context, const char *location, uint64_t *size, int64_t *write_ms,

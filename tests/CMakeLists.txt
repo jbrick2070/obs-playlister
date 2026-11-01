@@ -84,41 +84,61 @@ obs_playlister_add_test(test-parse-pls test-parse-pls.c "${_core}/parse-pls.c" $
 foreach(_test IN ITEMS test-parse-m3u test-parse-pls)
   target_compile_definitions(${_test} PRIVATE "FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/playlists\"")
 endforeach()
-# The provider tests drive real folders, files and a loopback server through Win32; their Linux builds come with the
-# Linux folder layer and fetcher (PLAN steps 3 and 4)
+set(_providers "${CMAKE_SOURCE_DIR}/src/providers")
+# Every provider source: provider.c starts either kind, so both tests build both
+set(
+  _provider_sources
+  "${_providers}/provider.c"
+  "${_providers}/provider-folder.c"
+  "${_providers}/provider-list.c"
+  "${_providers}/publication.c"
+  "${_core}/entry-list.c"
+  "${_core}/filter.c"
+  "${_core}/folder-state.c"
+  "${_core}/keys.c"
+  "${_core}/merge.c"
+  "${_core}/modes.c"
+  "${_core}/natural.c"
+  "${_core}/sort.c"
+  "${_core}/list-parse.c"
+  "${_core}/parse-m3u.c"
+  "${_core}/parse-pls.c"
+  "${_core}/url.c"
+)
 if(WIN32)
-  set(_providers "${CMAKE_SOURCE_DIR}/src/providers")
-  # Every provider source: provider.c starts either kind, so both tests build both
-  set(
+  list(
+    APPEND
     _provider_sources
-    "${_providers}/provider.c"
-    "${_providers}/provider-folder.c"
     "${_providers}/folder-os-win.c"
-    "${_providers}/provider-list.c"
-    "${_providers}/publication.c"
     "${_providers}/fetch-winhttp.c"
     "${_providers}/fold-key-win.c"
     "${_providers}/os-win.c"
-    "${_core}/entry-list.c"
-    "${_core}/filter.c"
-    "${_core}/folder-state.c"
-    "${_core}/keys.c"
-    "${_core}/merge.c"
-    "${_core}/modes.c"
-    "${_core}/natural.c"
-    "${_core}/sort.c"
-    "${_core}/list-parse.c"
-    "${_core}/parse-m3u.c"
-    "${_core}/parse-pls.c"
-    "${_core}/url.c"
   )
-  obs_playlister_add_test(test-provider-folder test-provider-folder.c ${_provider_sources})
+else()
+  list(
+    APPEND
+    _provider_sources
+    "${_providers}/folder-os-linux.c"
+    "${_providers}/fetch-none.c"
+    "${_providers}/fold-key-linux.c"
+    "${_providers}/os-posix.c"
+  )
+endif()
+# The folder provider on real folders and files (R-DIR-1..11, R-LNX-3, R-LNX-4)
+obs_playlister_add_test(test-provider-folder test-provider-folder.c ${_provider_sources})
+# the providers log through obs_log
+target_link_libraries(test-provider-folder PRIVATE plugin-support)
+if(WIN32)
+  target_link_libraries(test-provider-folder PRIVATE winhttp)
+else()
+  target_link_libraries(test-provider-folder PRIVATE Threads::Threads)
+endif()
+# The list provider and the fetcher drive Win32 directly; their Linux builds come with the libcurl fetcher (PLAN
+# step 4)
+if(WIN32)
   # The list provider through a stand-in fetcher and on real playlist files (R-REM-1, R-REM-4, R-LIST-1, D-12)
   obs_playlister_add_test(test-provider-list test-provider-list.c ${_provider_sources})
-  foreach(_test IN ITEMS test-provider-folder test-provider-list)
-    # the providers log through obs_log and fetch through WinHTTP
-    target_link_libraries(${_test} PRIVATE plugin-support winhttp)
-  endforeach()
+  target_link_libraries(test-provider-list PRIVATE plugin-support winhttp)
   # One HTTP GET against a server inside the test on 127.0.0.1 (R-REM-5)
   obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-winhttp.c" "${_providers}/os-win.c")
   target_link_libraries(test-fetch PRIVATE winhttp ws2_32)
