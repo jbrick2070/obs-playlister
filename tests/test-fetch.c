@@ -110,9 +110,12 @@ static void send_text(SOCKET s, const char *text)
 	send_all(s, text, strlen(text));
 }
 
+/* Waits up to 30 s for stop_server. Polled, because on Linux libobs wakes only one waiter of a signalled event, and
+ * several connections may hang at once */
 static void hang(void)
 {
-	os_event_timedwait(release_hangs, 30000);
+	for (int i = 0; i < 300 && os_event_try(release_hangs) != 0; i++)
+		os_sleep_ms(100);
 }
 
 static void *serve(void *param)
