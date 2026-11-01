@@ -128,7 +128,7 @@ changes made there by other machines.
 Playlister follows the language OBS runs in (Settings > General > Language;
 OBS needs a restart to change it). Besides English it speaks Simplified
 Chinese, Spanish, Brazilian Portuguese, Russian, Japanese, German, French,
-Korean, Traditional Chinese and Turkish. Where OBS itself already translates
+Korean, Traditional Chinese, Turkish and Dutch. Where OBS itself already translates
 a string, Playlister starts from OBS's own translation. The rest was drafted
 by an AI model (Claude), and every file was reviewed by a second one (Gemini),
 whose corrections were taken; no native speaker has checked it yet. If something reads wrong in your language, please open an

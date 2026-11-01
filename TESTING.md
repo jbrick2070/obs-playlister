@@ -306,6 +306,7 @@ block, and the version line. Run it once in a Latin-script and once in a CJK lan
 | T.1 | `locale-check.lua` with `-Language de-DE` | every check passes | Pass (2026-10-31, OBS 33.0.0 portable, 5 of 5) |
 | T.2 | `locale-check.lua` with `-Language ja-JP` | every check passes | Pass (2026-10-31, OBS 33.0.0 portable, 5 of 5) |
 | T.3 | By eye, OBS set to a language you read: Properties, the Browse dialog's filter names, a row's status line | the text is in that language, fits its controls and reads naturally | Pending |
+| T.4 | `locale-check.lua` with `-Language nl-NL` (Dutch, added 2026-11-01) | every check passes | Pass (2026-11-01, OBS 33.0.1 portable, 5 of 5) |
 
 ## Known residual risks
 

@@ -413,8 +413,9 @@ Size: about as large as Phase 3a. Steps 1 and 2 are the risky ones for Windows u
 
 ### Translations, 0.5.1 (approved 2026-11-01; REQUIREMENTS section 11a, D-14)
 
-Why: the widest language coverage for the UI (operator, 2026-11-01). Ten languages: Simplified Chinese, Spanish,
-Brazilian Portuguese, Russian, Japanese, German, French, Korean, Traditional Chinese and Turkish. Each step ends with the
+Why: the widest language coverage for the UI (operator, 2026-11-01). Eleven languages: Simplified Chinese, Spanish,
+Brazilian Portuguese, Russian, Japanese, German, French, Korean, Traditional Chinese, Turkish and Dutch (Dutch added by
+the operator on 2026-11-01, before the demo reel v2). Each step ends with the
 full `ctest` on Windows (and Linux in CI), the runtime harness, the Sonnet QA (R-STD-9; started as soon as the step's
 code is written), one commit and one push.
 
@@ -439,7 +440,10 @@ code is written), one commit and one push.
    (22 to 25 per file); Claude drafted the rest; Gemini's review gave 152 corrections across the ten files and all were
    taken, including some to OBS's own strings, so where they differ Gemini's wording wins. A Sonnet 5.5 review then
    fixed four small slips (two copied from OBS's files). Each file has a three-line header; README has a Languages
-   section.
+   section. Dutch (`nl-NL`), the eleventh, added the same way on 2026-11-01 (operator, before the demo reel v2): 22
+   strings start from OBS's Dutch (its "Netwerk Caching" written as one word, a stray space dropped); loanwords Dutch
+   VJs use (playlist, download) kept; Gemini's review gave six points, five taken, and the OneDrive label follows
+   Microsoft's Dutch Windows wording ("Altijd op dit apparaat houden") instead of Gemini's.
 4. Checks and release: in OBS, set the language to German and to Japanese (Settings > General > Language, restart) and
    read Properties and the status block (TESTING.md item, and a harness check that the version line is translated when
    a locale other than English is loaded, if the harness can set OBS's language); README; version 0.5.1 on the
