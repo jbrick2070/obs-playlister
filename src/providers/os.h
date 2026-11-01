@@ -28,10 +28,15 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <util/dstr.h>
 
+/* The access-denied wording per platform, and its locale key (R-I18N-1) */
 #ifdef _WIN32
 #define PL_ACCESS_DENIED_TEXT "access denied (permissions or security software)" /* R-PLAT-10 */
+#define PL_ACCESS_DENIED_KEY "RowError.AccessDenied"
+#define PL_ACCESS_DENIED_FILES_KEY "RowError.AccessDeniedToFiles"
 #else
 #define PL_ACCESS_DENIED_TEXT "access denied (permissions)" /* R-LNX-4 */
+#define PL_ACCESS_DENIED_KEY "RowError.AccessDeniedPermissions"
+#define PL_ACCESS_DENIED_FILES_KEY "RowError.AccessDeniedToFilesPermissions"
 #endif
 
 /* ---- signals and waits ---- */

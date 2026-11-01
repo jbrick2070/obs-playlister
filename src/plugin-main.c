@@ -20,6 +20,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <plugin-support.h>
 
+#include "core/text.h"
+
 #ifdef TEST_SHUFFLER
 #include "shuffler.h"
 #endif
@@ -28,6 +30,14 @@ OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
 extern struct obs_source_info media_playlist_source_info;
+
+/* R-I18N-1: shared code's messages in OBS's language. obs_module_text gives back the key itself when the locale has
+ * no text for it, which here means "none", so the English in the code is used. */
+static const char *locale_text(const char *key)
+{
+	const char *text = obs_module_text(key);
+	return text == key ? NULL : text;
+}
 
 /* Shown by the OBS 33 Plugin Manager when data/manifest.json gives no display name. Keep both strings in sync
  * with buildspec.json (displayName) and cmake/common/manifest.json.in (description). */
@@ -44,6 +54,7 @@ const char *obs_module_description(void)
 bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
+	pl_text_set_lookup(locale_text);
 	obs_register_source(&media_playlist_source_info);
 #ifdef TEST_SHUFFLER
 	test_shuffler();
@@ -53,5 +64,6 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
+	pl_text_set_lookup(NULL);
 	obs_log(LOG_INFO, "plugin unloaded");
 }

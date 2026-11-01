@@ -23,6 +23,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "provider-kinds.h"
 
+#include <stdio.h>
+
 #include <util/bmem.h>
 #include <util/dstr.h>
 #include <util/platform.h>
@@ -31,6 +33,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 
 #include "core/filter.h"
+#include "core/text.h"
 #include "core/parse-m3u.h"
 #include "core/parse-pls.h"
 #include "core/url.h"
@@ -182,13 +185,17 @@ static void read_error(struct pl_list_provider *p, enum pl_file_result result, u
 {
 	struct dstr message = {0};
 	if (result == PL_FILE_BAD_PATH) {
-		dstr_copy(&message, "the playlist path cannot be read as text");
+		dstr_copy(&message,
+			  pl_text("RowError.PlaylistPathNotText", "the playlist path cannot be read as text"));
 	} else if (result == PL_FILE_ACCESS_DENIED) {
-		dstr_copy(&message, PL_ACCESS_DENIED_TEXT);
+		dstr_copy(&message, pl_text(PL_ACCESS_DENIED_KEY, PL_ACCESS_DENIED_TEXT));
 	} else {
-		dstr_copy(&message, "cannot read the playlist file (");
-		pl_os_error_cat(&message, os_error);
-		dstr_cat(&message, ")");
+		struct dstr code = {0};
+		pl_os_error_cat(&code, os_error);
+		const char *values[] = {code.array};
+		pl_text_cat(&message, pl_text("RowError.CannotReadPlaylist", "cannot read the playlist file (%1)"),
+			    values, 1);
+		dstr_free(&code);
 	}
 	set_error(p, &message);
 }
@@ -199,7 +206,7 @@ static void read_local(struct pl_list_provider *p)
 	unsigned long os_error;
 	enum pl_file_result result = pl_file_get_info(p->location, &info, &os_error);
 	if (result == PL_FILE_NOT_FOUND) {
-		set_error_text(p, "playlist file not found");
+		set_error_text(p, pl_text("RowError.PlaylistNotFound", "playlist file not found"));
 		return;
 	}
 	if (result != PL_FILE_OK) {
@@ -214,11 +221,11 @@ static void read_local(struct pl_list_provider *p)
 		return;
 	}
 	if (info.directory) {
-		set_error_text(p, "not a playlist file (a folder)");
+		set_error_text(p, pl_text("RowError.PlaylistIsFolder", "not a playlist file (a folder)"));
 		return;
 	}
 	if (info.size > LIST_CAP) {
-		set_error_text(p, "playlist file is over 16 MB");
+		set_error_text(p, pl_text("RowError.PlaylistTooLarge", "playlist file is over 16 MB"));
 		return;
 	}
 
@@ -226,7 +233,7 @@ static void read_local(struct pl_list_provider *p)
 	size_t got;
 	result = pl_file_read(p->location, info.size, &data, &got, &os_error);
 	if (result == PL_FILE_IN_USE) {
-		set_error_text(p, "the playlist file is in use; trying again");
+		set_error_text(p, pl_text("RowError.PlaylistInUse", "the playlist file is in use; trying again"));
 		return;
 	}
 	if (result != PL_FILE_OK) {
@@ -258,39 +265,48 @@ static void read_local(struct pl_list_provider *p)
 static void fetch_error(struct pl_list_provider *p, enum pl_fetch_result result, const struct pl_fetch_info *info)
 {
 	struct dstr message = {0};
+	char number[16];
 	switch (result) {
 	case PL_FETCH_TIMEOUT:
-		dstr_copy(&message, "timed out");
+		dstr_copy(&message, pl_text("RowError.TimedOut", "timed out"));
 		break;
 	case PL_FETCH_TLS_ERROR:
-		dstr_printf(&message, "secure connection failed (certificate or TLS error %u)", info->error);
+		snprintf(number, sizeof(number), "%u", info->error);
+		pl_text_cat(&message,
+			    pl_text("RowError.TlsError", "secure connection failed (certificate or TLS error %1)"),
+			    (const char *[]){number}, 1);
 		break;
 	case PL_FETCH_TOO_MANY_REDIRECTS:
-		dstr_copy(&message, "too many redirects");
+		dstr_copy(&message, pl_text("RowError.TooManyRedirects", "too many redirects"));
 		break;
 	case PL_FETCH_HTTP_STATUS:
-		dstr_printf(&message, "the server answered HTTP %u", info->status);
+		snprintf(number, sizeof(number), "%u", info->status);
+		pl_text_cat(&message, pl_text("RowError.HttpStatus", "the server answered HTTP %1"),
+			    (const char *[]){number}, 1);
 		break;
 	case PL_FETCH_TRUNCATED:
-		dstr_copy(&message, "the download was cut short");
+		dstr_copy(&message, pl_text("RowError.CutShort", "the download was cut short"));
 		break;
 	case PL_FETCH_TOO_LARGE:
-		dstr_copy(&message, "the list is over 16 MB");
+		dstr_copy(&message, pl_text("RowError.ListTooLarge", "the list is over 16 MB"));
 		break;
 	case PL_FETCH_NETWORK_ERROR:
 		if (info->failure == PL_FETCH_FAILURE_NAME_NOT_FOUND)
-			dstr_copy(&message, "the server name could not be found");
+			dstr_copy(&message, pl_text("RowError.NameNotFound", "the server name could not be found"));
 		else if (info->failure == PL_FETCH_FAILURE_CANNOT_CONNECT)
-			dstr_copy(&message, "the server could not be reached");
+			dstr_copy(&message, pl_text("RowError.ServerUnreachable", "the server could not be reached"));
 		else if (info->failure == PL_FETCH_FAILURE_BAD_URL)
-			dstr_copy(&message, "not a valid http(s) address");
+			dstr_copy(&message, pl_text("RowError.NotWebAddress", "not a valid http(s) address"));
 		else if (info->failure == PL_FETCH_FAILURE_ACCESS_DENIED)
-			dstr_copy(&message, PL_ACCESS_DENIED_TEXT);
-		else
-			dstr_printf(&message, "network error (" PL_FETCH_LIBRARY " error %u)", info->error);
+			dstr_copy(&message, pl_text(PL_ACCESS_DENIED_KEY, PL_ACCESS_DENIED_TEXT));
+		else {
+			snprintf(number, sizeof(number), "%u", info->error);
+			pl_text_cat(&message, pl_text("RowError.NetworkErrorCode", "network error (%1 error %2)"),
+				    (const char *[]){PL_FETCH_LIBRARY, number}, 2);
+		}
 		break;
 	default:
-		dstr_copy(&message, "network error");
+		dstr_copy(&message, pl_text("RowError.NetworkError", "network error"));
 		break;
 	}
 	set_error(p, &message);
@@ -405,9 +421,9 @@ static void fetch_list(struct pl_list_provider *p, const char *url, enum list_fo
 		result = fetch_api->read(fetch, LIST_CAP, false, &body, &size);
 
 	if (media) {
-		set_error_text(p, "the address now answers with media, not a list");
+		set_error_text(p, pl_text("RowError.NowMedia", "the address now answers with media, not a list"));
 	} else if (web_page) {
-		set_error_text(p, "the server sent a web page instead of the list");
+		set_error_text(p, pl_text("RowError.WebPageNotList", "the server sent a web page instead of the list"));
 	} else if (result != PL_FETCH_OK) {
 		if (result != PL_FETCH_CANCELLED)
 			fetch_error(p, result, info);
@@ -490,13 +506,15 @@ static void classify_remote(struct pl_list_provider *p)
 			bfree(final_url);
 		}
 	} else if (kind == RESPONSE_FEED) {
-		set_error_text(p, "a podcast feed: feeds come in a later version");
+		set_error_text(p, pl_text("RowError.FeedLater", "a podcast feed: feeds come in a later version"));
 	} else if (kind == RESPONSE_INDEX) {
-		set_error_text(p, "a web page: folder listings on web servers come in a later version");
+		set_error_text(p, pl_text("RowError.WebPageLater",
+					  "a web page: folder listings on web servers come in a later version"));
 	} else {
 		struct dstr message = {0};
-		dstr_printf(&message, "not a playlist or media (content type %s)",
-			    info->content_type ? info->content_type : "none");
+		const char *type = info->content_type ? info->content_type : pl_text("RowError.NoContentType", "none");
+		pl_text_cat(&message, pl_text("RowError.NotListOrMedia", "not a playlist or media (content type %1)"),
+			    (const char *[]){type}, 1);
 		set_error(p, &message);
 	}
 	bfree(body);
@@ -594,12 +612,19 @@ static void fill_status(struct pl_list_provider *p, const struct pl_entry *entri
 			level = PL_STATUS_WARNING;
 		if (message->len)
 			dstr_cat(message, "; ");
-		if (p->parsed.unusable_lines)
-			dstr_catf(message, "%zu lines could not be used", p->parsed.unusable_lines);
+		char number[24];
+		if (p->parsed.unusable_lines) {
+			snprintf(number, sizeof(number), "%zu", p->parsed.unusable_lines);
+			pl_text_cat(message, pl_text("RowNote.UnusableLines", "%1 lines could not be used"),
+				    (const char *[]){number}, 1);
+		}
 		if (p->parsed.unusable_lines && p->parsed.nested_playlists)
 			dstr_cat(message, "; ");
-		if (p->parsed.nested_playlists)
-			dstr_catf(message, "%zu playlists inside the list skipped", p->parsed.nested_playlists);
+		if (p->parsed.nested_playlists) {
+			snprintf(number, sizeof(number), "%zu", p->parsed.nested_playlists);
+			pl_text_cat(message, pl_text("RowNote.NestedPlaylists", "%1 playlists inside the list skipped"),
+				    (const char *[]){number}, 1);
+		}
 	}
 	/* R-DIR-10: with no dates, date order is list order, and "newest" means last in the list */
 	bool dated = false;
@@ -612,7 +637,8 @@ static void fill_status(struct pl_list_provider *p, const struct pl_entry *entri
 			level = PL_STATUS_WARNING;
 		if (message->len)
 			dstr_cat(message, "; ");
-		dstr_cat(message, newest ? "no dates: newest means last in the list" : "no dates; list order");
+		dstr_cat(message, newest ? pl_text("RowNote.NoDatesNewest", "no dates: newest means last in the list")
+					 : pl_text("RowNote.NoDates", "no dates; list order"));
 	}
 	status->level = level;
 	status->message = message->array;

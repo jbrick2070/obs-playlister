@@ -23,6 +23,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "provider-kinds.h"
 
+#include <stdio.h>
+
 #include <util/bmem.h>
 #include <util/darray.h>
 #include <util/dstr.h>
@@ -32,6 +34,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 
 #include "core/filter.h"
+#include "core/text.h"
 #include "core/keys.h"
 #include "core/merge.h"
 #include "fold-key.h"
@@ -524,31 +527,38 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 		level = PL_STATUS_ERROR;
 		switch (p->missing) {
 		case MISSING_DENIED:
-			dstr_copy(message, PL_ACCESS_DENIED_TEXT);
+			dstr_copy(message, pl_text(PL_ACCESS_DENIED_KEY, PL_ACCESS_DENIED_TEXT));
 			break;
 		case MISSING_LOST:
-			dstr_copy(message, "the folder went away (deleted, share offline or drive removed)");
+			dstr_copy(message, pl_text("RowError.FolderGone",
+						   "the folder went away (deleted, share offline or drive removed)"));
 			break;
 		default:
-			dstr_copy(message, "folder not found, or not a folder");
+			dstr_copy(message, pl_text("RowError.FolderNotFound", "folder not found, or not a folder"));
 			break;
 		}
 		status->stale = p->listed;
 	}
+	char number[24];
 	size_t denied = pl_gate_denied_count(&p->gate);
 	if (denied) {
 		level = PL_STATUS_ERROR;
 		if (message->len)
 			dstr_cat(message, "; ");
-		dstr_catf(message, PL_ACCESS_DENIED_TEXT " to %zu files", denied);
+		snprintf(number, sizeof(number), "%zu", denied);
+		pl_text_cat(message, pl_text(PL_ACCESS_DENIED_FILES_KEY, PL_ACCESS_DENIED_TEXT " to %1 files"),
+			    (const char *[]){number}, 1);
 	}
 	if (p->cloud_count) {
 		if (level == PL_STATUS_OK)
 			level = PL_STATUS_WARNING;
 		if (message->len)
 			dstr_cat(message, "; ");
-		dstr_catf(message, "%zu cloud-only files not downloaded; mark the folder Always keep on this device",
-			  p->cloud_count);
+		snprintf(number, sizeof(number), "%zu", p->cloud_count);
+		pl_text_cat(message,
+			    pl_text("RowWarning.CloudOnly",
+				    "%1 cloud-only files not downloaded; mark the folder Always keep on this device"),
+			    (const char *[]){number}, 1);
 	}
 	status->level = level;
 	status->message = message->array;

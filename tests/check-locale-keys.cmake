@@ -2,8 +2,10 @@
 # Copyright (C) 2026 Jeffrey A. Brick
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Fails when a locale key used in src/ through obs_module_text("...") or T_("...") is missing from the locale file
-# (REQUIREMENTS R-TST-1, R-UP-57). Run with:
+# Fails when a locale key used in src/ through obs_module_text("..."), T_("...") or pl_text("...", ...) is missing
+# from the locale file (REQUIREMENTS R-TST-1, R-UP-57, R-I18N-4). Keys passed through a macro (PL_ACCESS_DENIED_KEY
+# and PL_ACCESS_DENIED_FILES_KEY in src/providers/os.h) are not seen here; their four keys are in en-US.ini by hand.
+# Run with:
 #   cmake -DSOURCE_DIR=<repo> [-DLOCALE_FILE=<ini>] [-DEXTRA_SOURCE=<file>] -P check-locale-keys.cmake
 # EXTRA_SOURCE adds one more file to scan; the negative ctest uses it to prove that a missing key fails.
 
@@ -34,9 +36,9 @@ endforeach()
 set(_missing "")
 foreach(_source IN LISTS _sources)
   file(READ "${_source}" _text)
-  string(REGEX MATCHALL "(obs_module_text|T_)\\([ \t]*\"[^\"]+\"[ \t]*\\)" _uses "${_text}")
+  string(REGEX MATCHALL "(obs_module_text|T_|pl_text)\\([ \t]*\"[^\"]+\"[ \t]*[,)]" _uses "${_text}")
   foreach(_use IN LISTS _uses)
-    string(REGEX REPLACE "^(obs_module_text|T_)\\([ \t]*\"([^\"]+)\"[ \t]*\\)$" "\\2" _key "${_use}")
+    string(REGEX REPLACE "^(obs_module_text|T_|pl_text)\\([ \t]*\"([^\"]+)\"[ \t]*[,)]$" "\\2" _key "${_use}")
     if(NOT _key IN_LIST _keys)
       list(APPEND _missing "${_key} (${_source})")
     endif()

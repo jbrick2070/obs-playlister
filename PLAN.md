@@ -426,10 +426,10 @@ code is written), one commit and one push.
    cloud-only count) and the three English strings left in `playlister-source.c` ("Play Selected File", the Current
    File help, the speed warning's key) go through it, with keys in `en-US.ini`. The English text does not change, so
    the harness and the acceptance scripts pass unchanged. `check-locale-keys.cmake` also finds `pl_text("Key", ...)`.
-   ctest `test-text`: lookup and fallback, placeholders (missing, repeated, out of order, `%10` not taken for `%1`).
+   ctest `test-text`: lookup and fallback, placeholders (missing, repeated, out of order, `%10` not taken for `%1`). As built: `pl_text` treats a key OBS gives back unchanged (`obs_module_text` returns the key itself when the locale lacks it) as missing; 36 keys added to `en-US.ini` (121 in all); the access-denied texts keep one key per platform wording (R-PLAT-10, R-LNX-4) through macros in `os.h`, which the key scan cannot see and which are in `en-US.ini` by hand; `%10` reads as `%1` followed by "0". The harness (124) and the Phase 3a acceptance (41) pass unchanged, so every English message is as before.
 2. The translation check (R-I18N-4): `tests/check-locale-files.cmake`, run with `cmake -P`: every `*.ini` beside
    `en-US.ini` has exactly its keys, the same placeholders per key, valid UTF-8 without BOM; a negative case proves it
-   fails on a missing key and on a lost placeholder.
+   fails on a missing key and on a lost placeholder. As built: OBS's own parsing rules (`#` comments, `key = "text"`, `\"` inside the text); a repeated key, a quote that is not escaped and a file not named like `de-DE.ini` also fail; exact UTF-8 ranges (no overlong forms, surrogates or code points past U+10FFFF); `REQUIRED_LOCALES` names the files that must exist (set in step 3). A clean fixture with awkward characters must pass, and eight negative cases must each be caught; the file with a BOM and an invalid byte is written at test time, so none is stored (R-STD-1).
 3. The ten files (R-I18N-3). Claude drafts each from `en-US.ini`, keeping "Playlister", OBS's own terms as OBS's
    translations use them (Properties, Studio Mode, Media Source), and placeholders. Gemini (agy, Gemini 4 Argon High,
    read-only) then reviews each draft against the English and lists errors and awkward wording; Claude takes what holds

@@ -69,6 +69,8 @@ obs_playlister_add_test(test-startup test-startup.c "${_core}/startup.c")
 obs_playlister_add_test(test-source-size test-source-size.c "${_core}/source-size.c")
 # Playlists (R-REM-1): URL and path resolution, M3U and PLS against fixtures
 obs_playlister_add_test(test-url test-url.c "${_core}/url.c")
+# User-visible text by locale key, with English when no locale is loaded, and placeholders (R-I18N-1, R-I18N-2)
+obs_playlister_add_test(test-text test-text.c "${_core}/text.c")
 set(
   _list_parse
   "${_core}/list-parse.c"
@@ -103,6 +105,7 @@ set(
   "${_core}/list-parse.c"
   "${_core}/parse-m3u.c"
   "${_core}/parse-pls.c"
+  "${_core}/text.c"
   "${_core}/url.c"
 )
 if(WIN32)
@@ -164,3 +167,43 @@ set_tests_properties(
   check-locale-keys-fails-on-missing-key
   PROPERTIES PASS_REGULAR_EXPRESSION "LocaleKeyThatIsNotInTheLocaleFile \\(.*locale-missing-key\\.c\\)"
 )
+
+# Every translation matches en-US.ini: the same keys and placeholders, UTF-8 without BOM (R-I18N-4). A clean set with
+# awkward characters must pass, and each kind of fault must be caught (check-locale-files-bad.cmake)
+add_test(
+  NAME check-locale-files
+  COMMAND
+    "${CMAKE_COMMAND}" "-DLOCALE_DIR=${CMAKE_SOURCE_DIR}/data/locale" -P
+    "${CMAKE_CURRENT_SOURCE_DIR}/check-locale-files.cmake"
+)
+add_test(
+  NAME check-locale-files-passes-a-good-file
+  COMMAND
+    "${CMAKE_COMMAND}" "-DLOCALE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/locale-good" -P
+    "${CMAKE_CURRENT_SOURCE_DIR}/check-locale-files.cmake"
+)
+foreach(
+  _case
+  IN
+  ITEMS
+    "missing-key|de-DE\.ini: missing key Gone"
+    "extra-key|de-DE\.ini: extra key Extra"
+    "repeated-key|de-DE\.ini: key Extra appears more than once"
+    "placeholder|de-DE\.ini: Greeting has placeholders"
+    "stray-quote|de-DE\.ini: Plain has a quote that is not escaped"
+    "bom|fr-FR\.ini: starts with a BOM"
+    "invalid-utf8|fr-FR\.ini: not valid UTF-8"
+    "file-name|german\.ini: not named like de-DE\.ini"
+)
+  string(REPLACE "|" ";" _parts "${_case}")
+  list(GET _parts 0 _name)
+  list(GET _parts 1 _expected)
+  add_test(
+    NAME check-locale-files-catches-${_name}
+    COMMAND
+      "${CMAKE_COMMAND}" "-DFIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/locale-bad"
+      "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/locale-bad-${_name}" -P
+      "${CMAKE_CURRENT_SOURCE_DIR}/check-locale-files-bad.cmake"
+  )
+  set_tests_properties(check-locale-files-catches-${_name} PROPERTIES PASS_REGULAR_EXPRESSION "${_expected}")
+endforeach()

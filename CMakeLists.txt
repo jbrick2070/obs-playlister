@@ -89,6 +89,8 @@ target_sources(
     src/core/source-size.c
     src/core/startup.h
     src/core/startup.c
+    src/core/text.h
+    src/core/text.c
     src/core/url.h
     src/core/url.c
     src/providers/fetch.h

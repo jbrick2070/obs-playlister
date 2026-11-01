@@ -240,6 +240,8 @@ struct obs_source_info media_playlist_source_info = {
 #define T_APPLY_WAITING_TOOLTIP T_("ApplyWaitingChanges.Tooltip")
 #define T_ROW_STATUS T_("RowStatus")
 #define T_PLUGIN_VERSION T_("PluginVersion")
+#define T_PLAY_SELECTED_FILE T_("PlaySelectedFile")
+#define T_CURRENT_FILE_NAME_HELP T_("CurrentFileName.Help")
 #define T_ROW_KIND_FILE T_("RowKind.File")
 #define T_ROW_KIND_URL T_("RowKind.Url")
 #define T_ROW_KIND_FOLDER T_("RowKind.Folder")
@@ -2854,9 +2856,7 @@ static obs_properties_t *mps_properties(void *data)
 	add_folder_options(props, mps);
 
 	p = obs_properties_add_text(props, S_CURRENT_FILE_NAME, T_CURRENT_FILE_NAME, OBS_TEXT_INFO);
-	obs_property_set_long_description(p, "Due to OBS limitations, this will only update if any settings"
-					     " are changed, the selected file is played, or the Properties "
-					     "window is reopened. It will not update when the video ends.");
+	obs_property_set_long_description(p, T_CURRENT_FILE_NAME_HELP);
 	obs_properties_add_button2(props, S_REFRESH_FILENAME, T_REFRESH_FILENAME, refresh_filename_clicked, mps);
 	//update_current_filename_property(mps, p);
 
@@ -2870,7 +2870,7 @@ static obs_properties_t *mps_properties(void *data)
 		pthread_mutex_unlock(&mps->mutex);
 	}
 
-	obs_properties_add_button2(props, "play_selected", "Play Selected File", play_selected_clicked, mps);
+	obs_properties_add_button2(props, "play_selected", T_PLAY_SELECTED_FILE, play_selected_clicked, mps);
 
 	p = obs_properties_add_int_slider(props, S_SPEED, T_SPEED, 1, 200, 1);
 	obs_property_int_set_suffix(p, "%");
