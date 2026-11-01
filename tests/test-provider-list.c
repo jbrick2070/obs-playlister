@@ -20,19 +20,28 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * through a stand-in fetcher (resolution against the final URL, refresh on the interval, one fetch in flight with
  * requests coalesced, the last good list kept with an error, the interval changed in place), remote rows classified
  * by their first response (R-LIST-1), direct media and HLS rows that are never fetched again, the D-12 a filter,
- * the lock, the "no dates" note, and destroy during a fetch that hangs. Each wait has a generous limit, so a slow
- * machine only makes it slower. */
+ * the lock, the "no dates" note, and destroy during a fetch that hangs. Local lists follow the platform's path rules
+ * (R-LNX-10). Each wait has a generous limit, so a slow machine only makes it slower. */
 
 #undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <util/bmem.h>
 #include <util/darray.h>
 #include <util/dstr.h>
 #include <util/platform.h>
 #include <util/threading.h>
+#ifdef _WIN32
 #include <windows.h>
+#define SEP "\\"
+#else
+#include <unistd.h>
+#define SEP "/"
+#endif
+
+#include "test-common.h"
 
 #include "core/filter.h"
 #include "providers/os.h"
@@ -50,7 +59,7 @@ struct route {
 	const char *final_url; /* NULL: the URL itself */
 	const char *body;
 	bool hang;         /* open waits for the stop event */
-	DWORD delay_ms;    /* open takes this long */
+	uint32_t delay_ms; /* open takes this long */
 	long opens, reads; /* counted */
 };
 
@@ -113,7 +122,7 @@ static struct pl_fetch *stub_open(const char *url, const struct pl_fetch_options
 	if (route)
 		route->opens++;
 	bool hang = route && route->hang;
-	DWORD delay = route ? route->delay_ms : 0;
+	uint32_t delay = route ? route->delay_ms : 0;
 	pthread_mutex_unlock(&routes_mutex);
 
 	if (hang) {
@@ -124,7 +133,7 @@ static struct pl_fetch *stub_open(const char *url, const struct pl_fetch_options
 		return fetch;
 	}
 	if (delay)
-		Sleep(delay);
+		os_sleep_ms(delay);
 	if (!route) {
 		fetch->info.error = 12007; /* ERROR_WINHTTP_NAME_NOT_RESOLVED */
 		fetch->info.failure = PL_FETCH_FAILURE_NAME_NOT_FOUND;
@@ -177,7 +186,7 @@ static const struct pl_list_fetch_api stub_api = {stub_open, stub_info, stub_rea
 
 struct inbox {
 	pthread_mutex_t mutex;
-	HANDLE event;
+	os_event_t *event; /* auto reset */
 	DARRAY(struct pl_snapshot *) snapshots;
 	uint64_t last_generation;
 	bool in_order;
@@ -192,14 +201,14 @@ static void on_publish(void *owner, struct pl_snapshot *snapshot)
 	inbox->last_generation = snapshot->generation;
 	da_push_back(inbox->snapshots, &snapshot);
 	pthread_mutex_unlock(&inbox->mutex);
-	SetEvent(inbox->event);
+	os_event_signal(inbox->event);
 }
 
 static void inbox_init(struct inbox *inbox)
 {
 	memset(inbox, 0, sizeof(*inbox));
 	pthread_mutex_init(&inbox->mutex, NULL);
-	inbox->event = CreateEventW(NULL, FALSE, FALSE, NULL);
+	os_event_init(&inbox->event, OS_EVENT_TYPE_AUTO);
 	inbox->in_order = true;
 }
 
@@ -209,7 +218,7 @@ static void inbox_free(struct inbox *inbox)
 	for (size_t i = 0; i < inbox->snapshots.num; i++)
 		pl_snapshot_free(inbox->snapshots.array[i]);
 	da_free(inbox->snapshots);
-	CloseHandle(inbox->event);
+	os_event_destroy(inbox->event);
 	pthread_mutex_destroy(&inbox->mutex);
 }
 
@@ -252,7 +261,7 @@ static const struct pl_snapshot *wait_for(struct inbox *inbox, size_t since, sna
 			assert(false);
 		}
 		pthread_mutex_unlock(&inbox->mutex);
-		WaitForSingleObject(inbox->event, 100);
+		os_event_timedwait(inbox->event, 100);
 	}
 }
 
@@ -314,12 +323,33 @@ static struct pl_provider *start(enum pl_row_kind kind, const char *location,
 
 /* ---- local playlist files ---- */
 
-static char folder[MAX_PATH];
+#define FOLDER_SIZE 512
+static char folder[FOLDER_SIZE];
+
+/* A new folder in the temp directory, named for this run */
+static void make_folder(const char *name)
+{
+#ifdef _WIN32
+	char temp[MAX_PATH];
+	GetTempPathA(sizeof(temp), temp);
+	snprintf(folder, sizeof(folder), "%splaylister-%s-%lu", temp, name, (unsigned long)GetCurrentProcessId());
+#else
+	const char *temp = getenv("TMPDIR");
+	if (!temp || !*temp)
+		temp = "/tmp";
+	/* without a trailing "/", as the path rules would collapse a doubled one and the expected paths would differ */
+	size_t length = strlen(temp);
+	while (length > 1 && temp[length - 1] == '/')
+		length--;
+	snprintf(folder, sizeof(folder), "%.*s/playlister-%s-%ld", (int)length, temp, name, (long)getpid());
+#endif
+	os_mkdir(folder);
+}
 
 static void write_file(const char *name, const char *text)
 {
-	char path[MAX_PATH * 2];
-	snprintf(path, sizeof(path), "%s\\%s", folder, name);
+	char path[FOLDER_SIZE * 2];
+	snprintf(path, sizeof(path), "%s" SEP "%s", folder, name);
 	FILE *file = os_fopen(path, "wb");
 	assert(file);
 	fwrite(text, 1, strlen(text), file);
@@ -329,16 +359,13 @@ static void write_file(const char *name, const char *text)
 static char *path_of(const char *name)
 {
 	struct dstr path = {0};
-	dstr_printf(&path, "%s\\%s", folder, name);
+	dstr_printf(&path, "%s" SEP "%s", folder, name);
 	return path.array;
 }
 
 static void test_local(void)
 {
-	char temp[MAX_PATH];
-	GetTempPathA(sizeof(temp), temp);
-	snprintf(folder, sizeof(folder), "%splaylister-list-%lu", temp, (unsigned long)GetCurrentProcessId());
-	CreateDirectoryA(folder, NULL);
+	make_folder("list");
 
 	/* a filtered extension goes, an extensionless entry and a stream stay (D-12 a); a nested list is counted */
 	write_file("list.m3u", "#EXTM3U\n#EXTINF:1,One\na.mp4\nnotes.txt\nradio\nlive.m3u8\ninner.m3u\n");
@@ -350,26 +377,30 @@ static void test_local(void)
 	struct pl_provider *provider = start(PL_ROW_PLAYLIST, list, &options, &inbox);
 
 	struct dstr expected = {0};
-	dstr_printf(&expected, "%s\\a.mp4|%s\\radio|%s\\live.m3u8", folder, folder, folder);
+	dstr_printf(&expected, "%s" SEP "a.mp4|%s" SEP "radio|%s" SEP "live.m3u8", folder, folder, folder);
 	const struct pl_snapshot *first = wait_for(&inbox, 0, shows, expected.array, "the local list");
 	assert(first->initial_scan_complete && first->level == PL_STATUS_WARNING);
 	assert(says(first, "1 playlists inside the list skipped"));
 	assert(strcmp(first->entries[first->visible[0]].title, "One") == 0);
-	/* keys of local entries are folded as folder keys are (R-KEY-1) */
+	/* keys of local entries are folded as folder keys are (R-KEY-1, R-LNX-5) */
 	char *key = first->entries[first->visible[0]].key;
+#ifdef _WIN32
 	assert(strstr(key, "/A.MP4") && !strchr(key, '\\'));
+#else
+	assert(strstr(key, "/a.mp4"));
+#endif
 
 	/* the file changes: read again on the folder check interval (D-12 b) */
 	/* each marker is taken before its change, as the worker may publish before the next line runs */
-	Sleep(50);
+	os_sleep_ms(50);
 	size_t since = inbox_count(&inbox);
 	write_file("list.m3u", "a.mp4\nb.mp3\n");
-	dstr_printf(&expected, "%s\\a.mp4|%s\\b.mp3", folder, folder);
+	dstr_printf(&expected, "%s" SEP "a.mp4|%s" SEP "b.mp3", folder, folder);
 	wait_for(&inbox, since, shows, expected.array, "the edited local list");
 
 	/* the file goes away: the last good list is kept and the row says why (R-BEH-3) */
 	since = inbox_count(&inbox);
-	DeleteFileA(list);
+	os_unlink(list);
 	const struct pl_snapshot *gone =
 		wait_for(&inbox, since, is_error_stale, "playlist file not found", "a missing playlist file");
 	assert(gone->count == 2 && gone->last_ok_unix_ms > 0);
@@ -377,7 +408,7 @@ static void test_local(void)
 	/* and comes back */
 	since = inbox_count(&inbox);
 	write_file("list.m3u", "c.mkv\n");
-	dstr_printf(&expected, "%s\\c.mkv", folder);
+	dstr_printf(&expected, "%s" SEP "c.mkv", folder);
 	const struct pl_snapshot *back = wait_for(&inbox, since, shows, expected.array, "the restored local list");
 	assert(back->level == PL_STATUS_OK && !back->stale);
 	pl_provider_destroy(provider);
@@ -390,21 +421,21 @@ static void test_local(void)
 	options.folder_check_enabled = false;
 	inbox_init(&inbox);
 	provider = start(PL_ROW_PLAYLIST, pls, &options, &inbox);
-	dstr_printf(&expected, "%s\\one.mp3|%s\\two.mp3", folder, folder);
+	dstr_printf(&expected, "%s" SEP "one.mp3|%s" SEP "two.mp3", folder, folder);
 	const struct pl_snapshot *dated = wait_for(&inbox, 0, shows, expected.array, "the PLS file");
 	assert(dated->level == PL_STATUS_OK && says(dated, "no dates; list order"));
 	options.mode = PL_MODE_NEWEST_ONLY;
 	since = inbox_count(&inbox);
 	pl_provider_set_options(provider, &options);
-	dstr_printf(&expected, "%s\\two.mp3", folder);
+	dstr_printf(&expected, "%s" SEP "two.mp3", folder);
 	const struct pl_snapshot *newest = wait_for(&inbox, since, shows, expected.array, "newest only on a PLS");
 	assert(newest->level == PL_STATUS_WARNING && says(newest, "newest means last in the list"));
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
 
-	DeleteFileA(list);
-	DeleteFileA(pls);
-	RemoveDirectoryA(folder);
+	os_unlink(list);
+	os_unlink(pls);
+	os_rmdir(folder);
 	bfree(list);
 	bfree(pls);
 	dstr_free(&expected);
@@ -450,13 +481,13 @@ static void test_remote_list(void)
 	pl_provider_set_options(provider, &options);
 	uint64_t limit = os_gettime_ns() + (uint64_t)WAIT_MS * 1000000;
 	while (count_of(&route->opens) < opens + 2 && os_gettime_ns() < limit)
-		Sleep(50);
+		os_sleep_ms(50);
 	assert(count_of(&route->opens) >= opens + 2);
 	options.remote_refresh_s = 3600;
 	pl_provider_set_options(provider, &options);
 
 	/* one fetch in flight: requests that come meanwhile are one more fetch (R-REM-4) */
-	Sleep(1500); /* a fetch the 1 s interval started has finished */
+	os_sleep_ms(1500); /* a fetch the 1 s interval started has finished */
 	pthread_mutex_lock(&routes_mutex);
 	route->delay_ms = 2000; /* long enough that every request below comes while it runs */
 	pthread_mutex_unlock(&routes_mutex);
@@ -465,13 +496,13 @@ static void test_remote_list(void)
 	/* the requests below must come while that fetch is under way */
 	limit = os_gettime_ns() + (uint64_t)WAIT_MS * 1000000;
 	while (count_of(&route->opens) == opens && os_gettime_ns() < limit)
-		Sleep(5);
+		os_sleep_ms(5);
 	for (int i = 0; i < 10; i++)
 		pl_provider_refresh_now(provider);
 	limit = os_gettime_ns() + (uint64_t)WAIT_MS * 1000000;
 	while (count_of(&route->opens) < opens + 2 && os_gettime_ns() < limit)
-		Sleep(20);
-	Sleep(3000); /* the second fetch ends, and a third would have begun */
+		os_sleep_ms(20);
+	os_sleep_ms(3000); /* the second fetch ends, and a third would have begun */
 	long fetched = count_of(&route->opens) - opens;
 	assert(fetched == 2);
 	pthread_mutex_lock(&routes_mutex);
@@ -481,13 +512,13 @@ static void test_remote_list(void)
 	/* the lock (R-DIR-11) applies to lists as to folders */
 	options.lock_list_at_start = true;
 	pl_provider_set_options(provider, &options);
-	Sleep(200);
+	os_sleep_ms(200);
 	set_route(route, PL_FETCH_OK, 200, "ep9.mp3\n");
 	since = inbox_count(&inbox);
 	pl_provider_refresh_now(provider);
 	limit = os_gettime_ns() + (uint64_t)WAIT_MS * 1000000;
 	while (pl_provider_held_changes(provider) == 0 && os_gettime_ns() < limit)
-		Sleep(50);
+		os_sleep_ms(50);
 	assert(pl_provider_held_changes(provider) == 4); /* three gone, one new */
 	pl_provider_release_held(provider);
 	wait_for(&inbox, since, shows, "https://cdn.example.com/v2/ep9.mp3", "the released list");
@@ -514,7 +545,7 @@ static void test_classification(void)
 	struct pl_provider *provider = start(PL_ROW_REMOTE, media, &options, &inbox);
 	const struct pl_snapshot *direct = wait_for(&inbox, 0, single_entry, media, "a direct media row");
 	assert(direct->entries[0].kind == PL_ENTRY_MEDIA && direct->level == PL_STATUS_OK);
-	Sleep(2500); /* more than two refresh intervals */
+	os_sleep_ms(2500); /* more than two refresh intervals */
 	assert(count_of(&route->opens) == 1 && count_of(&route->reads) == 0);
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
@@ -538,7 +569,7 @@ static void test_classification(void)
 	provider = start(PL_ROW_REMOTE, hls, &options, &inbox);
 	const struct pl_snapshot *stream = wait_for(&inbox, 0, single_entry, hls, "an HLS row");
 	assert(stream->entries[0].kind == PL_ENTRY_STREAM);
-	Sleep(2500);
+	os_sleep_ms(2500);
 	assert(count_of(&route->opens) == 1);
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
@@ -628,7 +659,7 @@ static void test_review_cases(void)
 	pl_provider_refresh_now(provider);
 	uint64_t limit = os_gettime_ns() + (uint64_t)WAIT_MS * 1000000;
 	while (pl_provider_held_changes(provider) == 0 && os_gettime_ns() < limit)
-		Sleep(50);
+		os_sleep_ms(50);
 	assert(pl_provider_held_changes(provider) == 1);
 
 	/* a list address that now answers with media: an error, the body never read, the list kept */
@@ -644,10 +675,7 @@ static void test_review_cases(void)
 	inbox_free(&inbox);
 
 	/* a local HLS file is one stream, and read again when edited into a list (D-12 b) */
-	char temp[MAX_PATH];
-	GetTempPathA(sizeof(temp), temp);
-	snprintf(folder, sizeof(folder), "%splaylister-review-%lu", temp, (unsigned long)GetCurrentProcessId());
-	CreateDirectoryA(folder, NULL);
+	make_folder("review");
 	write_file("live.m3u8", "#EXTM3U\n#EXT-X-TARGETDURATION:4\nseg.ts\n");
 	char *live = path_of("live.m3u8");
 	default_options(&options);
@@ -655,10 +683,10 @@ static void test_review_cases(void)
 	provider = start(PL_ROW_PLAYLIST, live, &options, &inbox);
 	const struct pl_snapshot *stream = wait_for(&inbox, 0, shows, live, "a local HLS file");
 	assert(stream->entries[0].kind == PL_ENTRY_STREAM);
-	Sleep(50);
+	os_sleep_ms(50);
 	write_file("live.m3u8", "x.mp4\n");
 	struct dstr expected = {0};
-	dstr_printf(&expected, "%s\\x.mp4", folder);
+	dstr_printf(&expected, "%s" SEP "x.mp4", folder);
 	wait_for(&inbox, 0, shows, expected.array, "the local HLS file edited into a list");
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
@@ -672,7 +700,7 @@ static void test_review_cases(void)
 	provider = start(PL_ROW_PLAYLIST, saved, &options, &inbox);
 	size_t two = 2, none = 0;
 	wait_for(&inbox, 0, count_is, &two, "the saved list");
-	Sleep(50);
+	os_sleep_ms(50);
 	since = inbox_count(&inbox);
 	write_file("saved.m3u", "");
 	uint64_t emptied = os_gettime_ns();
@@ -683,9 +711,9 @@ static void test_review_cases(void)
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
 
-	DeleteFileA(live);
-	DeleteFileA(saved);
-	RemoveDirectoryA(folder);
+	os_unlink(live);
+	os_unlink(saved);
+	os_rmdir(folder);
 	bfree(live);
 	bfree(saved);
 	dstr_free(&expected);
@@ -704,7 +732,7 @@ static void test_destroy_while_fetching(void)
 	struct pl_provider *provider = start(PL_ROW_PLAYLIST, url, &options, &inbox);
 	uint64_t limit = os_gettime_ns() + (uint64_t)WAIT_MS * 1000000;
 	while (count_of(&route->opens) == 0 && os_gettime_ns() < limit)
-		Sleep(20);
+		os_sleep_ms(20);
 	assert(count_of(&route->opens) == 1);
 	uint64_t begun = os_gettime_ns();
 	pl_provider_destroy(provider);
@@ -716,6 +744,7 @@ static void test_destroy_while_fetching(void)
 
 int main(void)
 {
+	pl_test_no_crash_dialogs();
 	long allocations = bnum_allocs();
 	pthread_mutex_init(&routes_mutex, NULL);
 	pl_list_provider_use_fetch_api(&stub_api);

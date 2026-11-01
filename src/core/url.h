@@ -50,3 +50,16 @@ char *pl_url_file_to_path(const char *text);
  * to base_path's folder. Separators become "\", repeated ones collapse, "." and ".." are resolved (never above the
  * root). A \\?\ or \\.\ reference is returned as it is. */
 char *pl_path_resolve(const char *base_path, const char *reference);
+
+/* R-LNX-10: a local playlist on Linux follows POSIX path rules. Whether path is a POSIX absolute path ("/x", not the
+ * "//server" of a Windows share); the list parsers pick the rules by their base path with it. */
+bool pl_path_is_posix(const char *path);
+
+/* A file: URL as a POSIX path (file:///home/a%20b.mp3 -> /home/a b.mp3, file://localhost/x -> /x, file:/x -> /x);
+ * NULL when text is not a file: URL, names another host, or has no absolute path */
+char *pl_url_file_to_posix_path(const char *text);
+
+/* POSIX path rules for an entry of a local playlist at base_path (an absolute path): an absolute reference (/x)
+ * stands alone, anything else is relative to base_path's folder. Repeated "/" collapse, "." and ".." are resolved
+ * (never above "/"), and a backslash is an ordinary character. */
+char *pl_posix_path_resolve(const char *base_path, const char *reference);

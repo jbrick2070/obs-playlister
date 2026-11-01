@@ -443,3 +443,80 @@ char *pl_path_resolve(const char *base_path, const char *reference)
 	dstr_free(&joined);
 	return resolved;
 }
+
+/* ---- POSIX paths (R-LNX-10) ---- */
+
+bool pl_path_is_posix(const char *path)
+{
+	return path && path[0] == '/' && path[1] != '/';
+}
+
+char *pl_url_file_to_posix_path(const char *text)
+{
+	if (!scheme_is(text, "file"))
+		return NULL;
+	const char *rest = text + 5;
+	const char *query = rest + strcspn(rest, "?#");
+	const char *path = rest;
+	if (rest[0] == '/' && rest[1] == '/') {
+		/* file:///x or file://localhost/x; a file on another host is not a path here */
+		const char *host = rest + 2;
+		size_t host_len = strcspn(host, "/?#");
+		if (host_len != 0 && !(host_len == 9 && astrcmpi_n(host, "localhost", 9) == 0))
+			return NULL;
+		path = host + host_len;
+	}
+	if (*path != '/')
+		return NULL;
+	struct dstr encoded = {0};
+	dstr_ncopy(&encoded, path, (size_t)(query - path));
+	char *decoded = encoded.array ? pl_url_percent_decode(encoded.array) : NULL;
+	dstr_free(&encoded);
+	return decoded;
+}
+
+char *pl_posix_path_resolve(const char *base_path, const char *reference)
+{
+	struct dstr joined = {0};
+	if (reference[0] == '/') {
+		dstr_copy(&joined, reference);
+	} else {
+		size_t folder = 0;
+		for (size_t i = 0; base_path[i]; i++) {
+			if (base_path[i] == '/')
+				folder = i + 1;
+		}
+		dstr_ncopy(&joined, base_path, folder);
+		dstr_cat(&joined, reference);
+	}
+
+	/* "/" collapsed, "." and ".." resolved, never above the root */
+	struct dstr out = {0};
+	dstr_copy(&out, "/");
+	const char *c = joined.array ? joined.array : "";
+	while (*c) {
+		while (*c == '/')
+			c++;
+		size_t length = strcspn(c, "/");
+		if (!length)
+			break;
+		if (length == 1 && c[0] == '.') {
+			/* nothing */
+		} else if (length == 2 && c[0] == '.' && c[1] == '.') {
+			if (out.len > 1) {
+				size_t keep = out.len - 1;
+				while (keep > 1 && out.array[keep - 1] != '/')
+					keep--;
+				dstr_resize(&out, keep);
+			}
+		} else {
+			dstr_ncat(&out, c, length);
+			dstr_cat(&out, "/");
+		}
+		c += length;
+	}
+	if (out.len > 1)
+		dstr_resize(&out, out.len - 1);
+	dstr_free(&joined);
+	return out.array;
+}

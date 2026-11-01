@@ -273,16 +273,19 @@ static char *resolve(const char *base, const char *reference)
 		return encode_unsafe(resolved);
 	}
 
+	/* a list on Linux follows POSIX path rules, one on Windows Windows rules, told apart by its own path (R-LNX-10) */
+	bool posix = pl_path_is_posix(base);
 	if (pl_url_scheme_length(reference)) {
 		if (!scheme_is(reference, "file"))
 			return bstrdup(reference);
 		/* through the path rules too, so a file: URL and a plain path to one file get one key */
-		char *path = pl_url_file_to_path(reference);
-		char *resolved = path ? pl_path_resolve(base, path) : NULL;
+		char *path = posix ? pl_url_file_to_posix_path(reference) : pl_url_file_to_path(reference);
+		char *resolved = path ? (posix ? pl_posix_path_resolve(base, path) : pl_path_resolve(base, path))
+				      : NULL;
 		bfree(path);
 		return resolved;
 	}
-	return pl_path_resolve(base, reference);
+	return posix ? pl_posix_path_resolve(base, reference) : pl_path_resolve(base, reference);
 }
 
 /* .m3u8 is left out: inside a list it names an HLS stream (every IPTV list is made of them), which the child plays

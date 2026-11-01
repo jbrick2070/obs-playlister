@@ -16,30 +16,51 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-/* R-REM-5 against an HTTP server inside this test on 127.0.0.1: no network, no admin rights, no PowerShell. HTTPS,
- * names that do not resolve and real servers are TESTING.md items (tests/manual/serve-fixtures.ps1). */
+/* R-REM-5 and R-LNX-6 against an HTTP server inside this test on 127.0.0.1: no network, no admin rights, no
+ * PowerShell. The same cases run against WinHTTP on Windows and libcurl on Linux. HTTPS, names that do not resolve
+ * and real servers are TESTING.md items (tests/manual/serve-fixtures.ps1). */
 
 #undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <winhttp.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 #include <util/bmem.h>
 #include <util/dstr.h>
 #include <util/platform.h>
+#include <util/threading.h>
+
+#include "test-common.h"
 
 #include "providers/fetch.h"
 #include "providers/os.h"
 
 /* ---- the server ---- */
 
+#ifndef _WIN32
+typedef int SOCKET;
+#define INVALID_SOCKET (-1)
+#define SD_SEND SHUT_WR
+#define closesocket close
+#define SEND_FLAGS MSG_NOSIGNAL /* a client that closed early must not end the test with SIGPIPE */
+#else
+#define SEND_FLAGS 0
+#endif
+
 static SOCKET listener = INVALID_SOCKET;
 static uint16_t port;
-static HANDLE release_hangs; /* manual-reset: hanging connections give up */
-static volatile LONG connections;
+static os_event_t *release_hangs; /* manual reset: hanging connections give up */
+static volatile long connections;
 static char *gzip_body;
 static size_t gzip_size;
 
@@ -49,7 +70,7 @@ static size_t gzip_size;
 static void send_all(SOCKET s, const char *data, size_t size)
 {
 	while (size) {
-		int sent = send(s, data, size > 65536 ? 65536 : (int)size, 0);
+		int sent = (int)send(s, data, size > 65536 ? 65536 : (int)size, SEND_FLAGS);
 		if (sent <= 0)
 			return;
 		data += sent;
@@ -64,16 +85,16 @@ static void send_text(SOCKET s, const char *text)
 
 static void hang(void)
 {
-	WaitForSingleObject(release_hangs, 30000);
+	os_event_timedwait(release_hangs, 30000);
 }
 
-static DWORD WINAPI serve(void *param)
+static void *serve(void *param)
 {
 	SOCKET s = (SOCKET)(uintptr_t)param;
 	char request[8192];
 	size_t got = 0;
 	while (got < sizeof(request) - 1) {
-		int n = recv(s, request + got, (int)(sizeof(request) - 1 - got), 0);
+		int n = (int)recv(s, request + got, (int)(sizeof(request) - 1 - got), 0);
 		if (n <= 0)
 			break;
 		got += (size_t)n;
@@ -102,7 +123,7 @@ static DWORD WINAPI serve(void *param)
 		send_text(s, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nhello");
 	} else if (strncmp(path, "/redirect/", 10) == 0) {
 		int n = atoi(path + 10);
-		/* this server answers one request per connection and says so; without it WinHTTP may send the next
+		/* this server answers one request per connection and says so; without it a client may send the next
 		 * request on a connection the server has already closed */
 		dstr_printf(
 			&reply,
@@ -145,38 +166,40 @@ static DWORD WINAPI serve(void *param)
 	dstr_free(&reply);
 	shutdown(s, SD_SEND);
 	closesocket(s);
-	InterlockedDecrement(&connections);
-	return 0;
+	os_atomic_dec_long(&connections);
+	return NULL;
 }
 
-static DWORD WINAPI accept_loop(void *param)
+static void *accept_loop(void *param)
 {
 	(void)param;
 	for (;;) {
 		SOCKET s = accept(listener, NULL, NULL);
 		if (s == INVALID_SOCKET)
-			return 0;
-		InterlockedIncrement(&connections);
-		HANDLE thread = CreateThread(NULL, 0, serve, (void *)(uintptr_t)s, 0, NULL);
-		if (thread)
-			CloseHandle(thread);
+			return NULL;
+		os_atomic_inc_long(&connections);
+		pthread_t thread;
+		if (pthread_create(&thread, NULL, serve, (void *)(uintptr_t)s) == 0)
+			pthread_detach(thread);
 		else
-			InterlockedDecrement(&connections);
+			os_atomic_dec_long(&connections);
 	}
 }
 
 static uint16_t bound_port(SOCKET s)
 {
 	struct sockaddr_in address;
-	int length = sizeof(address);
+	socklen_t length = sizeof(address);
 	getsockname(s, (struct sockaddr *)&address, &length);
 	return ntohs(address.sin_port);
 }
 
-static HANDLE start_server(void)
+static pthread_t start_server(void)
 {
+#ifdef _WIN32
 	WSADATA wsa;
 	assert(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
+#endif
 	listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	struct sockaddr_in address = {0};
 	address.sin_family = AF_INET;
@@ -184,21 +207,28 @@ static HANDLE start_server(void)
 	assert(bind(listener, (struct sockaddr *)&address, sizeof(address)) == 0);
 	assert(listen(listener, 16) == 0);
 	port = bound_port(listener);
-	release_hangs = CreateEventW(NULL, TRUE, FALSE, NULL);
-	return CreateThread(NULL, 0, accept_loop, NULL, 0, NULL);
+	assert(os_event_init(&release_hangs, OS_EVENT_TYPE_MANUAL) == 0);
+	pthread_t thread;
+	assert(pthread_create(&thread, NULL, accept_loop, NULL) == 0);
+	return thread;
 }
 
-static void stop_server(HANDLE thread)
+static void stop_server(pthread_t thread)
 {
-	SetEvent(release_hangs);
+	os_event_signal(release_hangs);
+#ifndef _WIN32
+	/* close alone does not wake a thread blocked in accept on Linux */
+	shutdown(listener, SHUT_RDWR);
+#endif
 	closesocket(listener);
-	WaitForSingleObject(thread, 10000);
-	CloseHandle(thread);
-	for (int i = 0; i < 200 && InterlockedCompareExchange(&connections, 0, 0); i++)
-		Sleep(25);
-	assert(connections == 0);
-	CloseHandle(release_hangs);
+	pthread_join(thread, NULL);
+	for (int i = 0; i < 200 && os_atomic_load_long(&connections); i++)
+		os_sleep_ms(25);
+	assert(os_atomic_load_long(&connections) == 0);
+	os_event_destroy(release_hangs);
+#ifdef _WIN32
 	WSACleanup();
+#endif
 }
 
 /* ---- a gzip body of 'a' * GZIP_PLAIN_SIZE: one literal and 100 copies of 258 bytes, fixed Huffman codes ---- */
@@ -287,12 +317,12 @@ static void options_for_test(struct pl_fetch_options *options)
 	options->deadline_ms = 5000;
 }
 
-/* No WinHTTP callback may run once pl_fetch_close has returned */
+/* No WinHTTP or libcurl callback may run once pl_fetch_close has returned */
 static void close_and_check(struct pl_fetch *fetch)
 {
 	pl_fetch_close(fetch);
 	int64_t after = pl_fetch_callback_count();
-	Sleep(150);
+	os_sleep_ms(150);
 	assert(pl_fetch_callback_count() == after);
 }
 
@@ -421,23 +451,23 @@ static void test_sizes(void)
 	struct pl_fetch_options options;
 	options_for_test(&options);
 	struct pl_fetch *fetch = open_expect("/gzip", &options, PL_FETCH_OK);
-	/* WinHTTP removes Content-Encoding and Content-Length once it decompresses, so the compressed length can
-	 * never make a decompressed body look truncated */
+	/* WinHTTP removes Content-Encoding and Content-Length once it decompresses, and the libcurl backend reports the
+	 * same, so the compressed length can never make a decompressed body look truncated */
 	assert(!pl_fetch_get_info(fetch)->encoded && !pl_fetch_get_info(fetch)->has_length);
 	close_and_check(fetch);
 }
 
 struct stopper {
 	struct pl_stop *stop;
-	DWORD delay_ms;
+	uint32_t delay_ms;
 };
 
-static DWORD WINAPI set_later(void *param)
+static void *set_later(void *param)
 {
 	struct stopper *stopper = param;
-	Sleep(stopper->delay_ms);
+	os_sleep_ms(stopper->delay_ms);
 	pl_stop_set(stopper->stop);
-	return 0;
+	return NULL;
 }
 
 static double seconds_since(uint64_t start)
@@ -466,26 +496,25 @@ static void test_stops(void)
 	options.deadline_ms = 20000;
 	struct stopper stopper = {pl_stop_create(), 300};
 	options.stop = stopper.stop;
-	HANDLE thread = CreateThread(NULL, 0, set_later, &stopper, 0, NULL);
+	pthread_t thread;
+	assert(pthread_create(&thread, NULL, set_later, &stopper) == 0);
 	start = os_gettime_ns();
 	fetch = open_expect("/hang-headers", &options, PL_FETCH_CANCELLED);
 	assert(seconds_since(start) < 8.0);
 	close_and_check(fetch);
 	assert(seconds_since(start) < 8.0);
-	WaitForSingleObject(thread, INFINITE);
-	CloseHandle(thread);
+	pthread_join(thread, NULL);
 
 	pl_stop_reset(stopper.stop);
 	fetch = open_expect("/hang-body", &options, PL_FETCH_OK);
-	thread = CreateThread(NULL, 0, set_later, &stopper, 0, NULL);
+	assert(pthread_create(&thread, NULL, set_later, &stopper) == 0);
 	start = os_gettime_ns();
 	char *body;
 	size_t size;
 	assert(pl_fetch_read(fetch, 4096, false, &body, &size) == PL_FETCH_CANCELLED && !body);
 	assert(seconds_since(start) < 8.0);
 	close_and_check(fetch);
-	WaitForSingleObject(thread, INFINITE);
-	CloseHandle(thread);
+	pthread_join(thread, NULL);
 	pl_stop_destroy(stopper.stop);
 
 	/* a direct media URL: closed after its headers, at once, without reading the body */
@@ -504,7 +533,7 @@ static void test_failures(void)
 	enum pl_fetch_result result;
 
 	struct pl_fetch *fetch = pl_fetch_open("ftp://127.0.0.1/x", &options, &result);
-	assert(result == PL_FETCH_NETWORK_ERROR && pl_fetch_get_info(fetch)->error == ERROR_WINHTTP_INVALID_URL);
+	assert(result == PL_FETCH_NETWORK_ERROR && pl_fetch_get_info(fetch)->failure == PL_FETCH_FAILURE_BAD_URL);
 	close_and_check(fetch);
 
 	fetch = pl_fetch_open("not a url", &options, &result);
@@ -530,9 +559,16 @@ static void test_failures(void)
 
 int main(void)
 {
+	pl_test_no_crash_dialogs();
+#ifndef _WIN32
+	/* the server is on 127.0.0.1, which libcurl would send through a proxy the environment names */
+	const char *proxies[] = {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"};
+	for (size_t i = 0; i < sizeof(proxies) / sizeof(proxies[0]); i++)
+		unsetenv(proxies[i]);
+#endif
 	long allocations = bnum_allocs();
 	build_gzip();
-	HANDLE server = start_server();
+	pthread_t server = start_server();
 
 	test_ok();
 	test_redirects();

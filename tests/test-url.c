@@ -203,6 +203,42 @@ static void test_path(void)
 	path(share, "x.mp3", "\\\\srv\\sh\\lists\\x.mp3");
 }
 
+/* R-LNX-10: POSIX rules, for a list whose own path is a POSIX one; the text rules run on every platform */
+static void posix_file_url(const char *text, const char *expected)
+{
+	expect_text("posix file url", text, pl_url_file_to_posix_path(text), expected);
+}
+
+static void posix_path(const char *base, const char *reference, const char *expected)
+{
+	expect_text("posix path", reference, pl_posix_path_resolve(base, reference), expected);
+}
+
+static void test_posix(void)
+{
+	assert(pl_path_is_posix("/home/me/a.m3u") && !pl_path_is_posix("//server/share/a.m3u") &&
+	       !pl_path_is_posix("C:\\a.m3u") && !pl_path_is_posix("a.m3u") && !pl_path_is_posix(NULL));
+
+	posix_file_url("file:///home/me/a%20b.mp3", "/home/me/a b.mp3");
+	posix_file_url("FILE://localhost/srv/x.mp3", "/srv/x.mp3");
+	posix_file_url("file:/srv/x.mp3", "/srv/x.mp3");
+	posix_file_url("file:///srv/a.mp3?query#frag", "/srv/a.mp3");
+	posix_file_url("file://server/share/x.mp3", NULL); /* another host */
+	posix_file_url("file://", NULL);
+	posix_file_url("http://example.com/a.mp3", NULL);
+
+	const char *base = "/home/me/lists/a.m3u";
+	posix_path(base, "b.mp3", "/home/me/lists/b.mp3");
+	posix_path(base, "sub/c.mp3", "/home/me/lists/sub/c.mp3");
+	posix_path(base, "./././w.mp3", "/home/me/lists/w.mp3");
+	posix_path(base, "a///b.mp3", "/home/me/lists/a/b.mp3");
+	posix_path(base, "../x.mp3", "/home/me/x.mp3");
+	posix_path(base, "../../../../../x.mp3", "/x.mp3"); /* never above the root */
+	posix_path(base, "/srv/y.mp3", "/srv/y.mp3");
+	posix_path(base, "back\\slash.mp3", "/home/me/lists/back\\slash.mp3"); /* an ordinary character */
+	posix_path("/a.m3u", "b.mp3", "/b.mp3");
+}
+
 int main(void)
 {
 	long allocations = bnum_allocs();
@@ -212,6 +248,7 @@ int main(void)
 	test_decode();
 	test_file_url();
 	test_path();
+	test_posix();
 	assert(bnum_allocs() == allocations);
 	printf("test-url: all passed\n");
 	return 0;

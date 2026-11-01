@@ -20,8 +20,10 @@ if(WIN32)
   # remote lists are fetched with WinHTTP, part of Windows: no new DLLs ship (R-REM-5)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp)
 else()
+  # remote lists are fetched with the system libcurl, which OBS itself links on Linux (R-LNX-6)
+  find_package(CURL REQUIRED)
   find_package(Threads REQUIRED)
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Threads::Threads)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE CURL::libcurl Threads::Threads)
 endif()
 
 if(ENABLE_FRONTEND_API)
@@ -101,7 +103,7 @@ target_sources(
     src/providers/publication.h
     src/providers/publication.c
 )
-# operating-system calls, one file per platform (R-LNX-2); Linux fetching and folders arrive in PLAN steps 3 and 4
+# operating-system calls, one file per platform (R-LNX-2)
 if(WIN32)
   target_sources(
     ${CMAKE_PROJECT_NAME}
@@ -115,7 +117,7 @@ else()
   target_sources(
     ${CMAKE_PROJECT_NAME}
     PRIVATE
-      src/providers/fetch-none.c
+      src/providers/fetch-curl.c
       src/providers/fold-key-linux.c
       src/providers/folder-os-linux.c
       src/providers/os-posix.c

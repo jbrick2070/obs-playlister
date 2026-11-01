@@ -119,30 +119,34 @@ else()
     APPEND
     _provider_sources
     "${_providers}/folder-os-linux.c"
-    "${_providers}/fetch-none.c"
+    "${_providers}/fetch-curl.c"
     "${_providers}/fold-key-linux.c"
     "${_providers}/os-posix.c"
   )
 endif()
 # The folder provider on real folders and files (R-DIR-1..11, R-LNX-3, R-LNX-4)
 obs_playlister_add_test(test-provider-folder test-provider-folder.c ${_provider_sources})
-# the providers log through obs_log
-target_link_libraries(test-provider-folder PRIVATE plugin-support)
+# The list provider through a stand-in fetcher and on real playlist files (R-REM-1, R-REM-4, R-LIST-1, D-12, R-LNX-10)
+obs_playlister_add_test(test-provider-list test-provider-list.c ${_provider_sources})
+# One HTTP GET against a server inside the test on 127.0.0.1, through the platform's fetcher (R-REM-5, R-LNX-6)
 if(WIN32)
-  target_link_libraries(test-provider-folder PRIVATE winhttp)
-else()
-  target_link_libraries(test-provider-folder PRIVATE Threads::Threads)
-endif()
-# The list provider and the fetcher drive Win32 directly; their Linux builds come with the libcurl fetcher (PLAN
-# step 4)
-if(WIN32)
-  # The list provider through a stand-in fetcher and on real playlist files (R-REM-1, R-REM-4, R-LIST-1, D-12)
-  obs_playlister_add_test(test-provider-list test-provider-list.c ${_provider_sources})
-  target_link_libraries(test-provider-list PRIVATE plugin-support winhttp)
-  # One HTTP GET against a server inside the test on 127.0.0.1 (R-REM-5)
   obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-winhttp.c" "${_providers}/os-win.c")
   target_link_libraries(test-fetch PRIVATE winhttp ws2_32)
+else()
+  obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-curl.c" "${_providers}/os-posix.c")
+  target_link_libraries(test-fetch PRIVATE CURL::libcurl Threads::Threads)
 endif()
+# the providers log through obs_log
+foreach(_test IN ITEMS test-provider-folder test-provider-list test-fetch)
+  target_link_libraries(${_test} PRIVATE plugin-support)
+endforeach()
+foreach(_test IN ITEMS test-provider-folder test-provider-list)
+  if(WIN32)
+    target_link_libraries(${_test} PRIVATE winhttp)
+  else()
+    target_link_libraries(${_test} PRIVATE CURL::libcurl Threads::Threads)
+  endif()
+endforeach()
 
 # Every locale key used in src/ is in en-US.ini (R-TST-1); the second test proves the check fails on a missing key
 add_test(

@@ -41,6 +41,7 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
   sudo apt-get install ${apt_args} \
     build-essential \
     libgles2-mesa-dev \
+    libcurl4-openssl-dev \
     libsimde-dev \
     obs-studio
 
