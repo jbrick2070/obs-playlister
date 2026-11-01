@@ -20,6 +20,7 @@
 !PLAN.md
 !TESTING.md
 !/tests
+!/packaging
 
 # Exclude lock files
 *.lock.json

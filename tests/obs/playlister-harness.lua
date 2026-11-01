@@ -582,6 +582,16 @@ step("play selected", 500, 15000, function() return dur() == D[1] and st() == PL
 	check_status("the status block lists each file row, the stale notice gone once a choice played",
 		"1: file\n2: file\n3: file", 0)
 	check("no setting holds the status block", not status_in_settings())
+	-- R-LIST-6: Properties names the running version on a line of its own, never a setting
+	local props = obs.obs_source_properties(src)
+	local version_line = obs.obs_properties_get(props, "plugin_version")
+	local version = version_line and obs.obs_property_description(version_line) or ""
+	obs.obs_properties_destroy(props)
+	local settings = obs.obs_source_get_settings(src)
+	local version_in_settings = obs.obs_data_has_user_value(settings, "plugin_version")
+	obs.obs_data_release(settings)
+	check("Properties names the running version", version:match("^Playlister %d+%.%d+%.%d+") ~= nil and
+		not version_in_settings, version)
 	remove_source()
 end)
 

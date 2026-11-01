@@ -1,0 +1,34 @@
+# Playlister for OBS Studio on Arch Linux (REQUIREMENTS R-LNX-9). Build and install with:
+#   makepkg -si
+# from this folder. It builds the release tagged pkgver from GitHub against Arch's own obs-studio package.
+# Not published to the AUR from this repository; an Arch user is welcome to take it there.
+
+pkgname=obs-playlister
+pkgver=0.5.0
+pkgrel=1
+pkgdesc="A playlist source for OBS Studio with watched folders, M3U/PLS playlists and web addresses"
+arch=('x86_64')
+url="https://github.com/jbrick2070/obs-playlister"
+license=('GPL-2.0-or-later')
+depends=('obs-studio>=33' 'curl')
+makedepends=('cmake' 'ninja' 'simde')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/jbrick2070/obs-playlister/archive/refs/tags/$pkgver.tar.gz")
+# set to the release tarball's checksum when the release is published (PLAN step 7)
+sha256sums=('SKIP')
+
+build() {
+	cmake -S "$pkgname-$pkgver" -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DCMAKE_COMPILE_WARNING_AS_ERROR=OFF
+	cmake --build build
+}
+
+check() {
+	ctest --test-dir build --output-on-failure --no-tests=error
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}

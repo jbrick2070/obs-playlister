@@ -32,6 +32,11 @@ is nothing else to install or configure.
 
 ## Status
 
+Linux (the next version, 0.5.0): Playlister now builds on Ubuntu 24.04 and Arch
+Linux, and every automated test passes there, including watched folders,
+playlist files and web lists. It has not yet been checked inside OBS on Linux;
+reports from Linux users are very welcome (open an issue). macOS is planned
+after Linux.
 Version 0.4.0 (Phase 3a): a row can be a playlist file (.m3u, .m3u8, .pls) or
 a web address. A playlist file is read again when it changes; a web address
 is a list on a server, checked again every few minutes ("Check web lists
@@ -67,8 +72,11 @@ and built for OBS 33.
 
 ## Install
 
-Requires OBS Studio 33.0.0 or later on Windows x64. Older OBS versions do not
-load this layout.
+Requires OBS Studio 33.0.0 or later, on Windows x64 or Linux x86_64. Older OBS
+versions do not load this layout. Once installed, add a source of type
+**Playlister** in OBS.
+
+### Windows
 
 - **Zip:** unzip so that you get
   `C:\ProgramData\obs-studio\plugins\obs-playlister\obs-playlister.dll` and
@@ -84,7 +92,31 @@ The DLL is unsigned. It loads with Windows' default settings, but it would be
 refused if Smart App Control or a Windows Defender Application Control policy
 for user-mode code were turned on.
 
-In OBS, add a source of type **Playlister**.
+### Linux
+
+- **Arch Linux** (once 0.5.0 is released): build the package from
+  [packaging/arch/PKGBUILD](packaging/arch/PKGBUILD) against Arch's own
+  `obs-studio` package:
+
+  ```
+  git clone --branch 0.5.0 https://github.com/jbrick2070/obs-playlister.git
+  cd obs-playlister/packaging/arch
+  makepkg -si
+  ```
+
+  It installs `/usr/lib/obs-plugins/obs-playlister.so` and
+  `/usr/share/obs/obs-plugins/obs-playlister/`. Without makepkg, the same build
+  is `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+  -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib
+  -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF`, then `cmake --build build` and
+  `sudo cmake --install build` (needs `cmake`, `ninja`, `simde` and `curl`).
+- **Ubuntu 24.04:** install the `.deb` from the release page (built against
+  the OBS Project's PPA, `ppa:obsproject/obs-studio`).
+- The Flatpak OBS is not supported.
+
+On Linux, a watched folder on a network drive (NFS, SMB, CIFS) or a FUSE file
+system is checked on the folder check interval, as Linux does not report
+changes made there by other machines.
 
 ## Limitations
 
@@ -137,6 +169,16 @@ The first configure downloads the OBS 33.0.0 source and the matching obs-deps
 into `.deps/` and builds libobs once. Manual OBS checks are listed in
 [TESTING.md](TESTING.md).
 
+On Linux the build uses the installed OBS (its development files) instead:
+`obs-studio`, `cmake`, `ninja`, `simde` and libcurl's development files
+(`libcurl4-openssl-dev` on Ubuntu). From the repository root:
+
+```
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF
+cmake --build build
+ctest --test-dir build --output-on-failure --no-tests=error
+```
+
 ## License and credits
 
 GPL-2.0-or-later (see [LICENSE](LICENSE)).
@@ -145,7 +187,10 @@ GPL-2.0-or-later (see [LICENSE](LICENSE)).
   his notices; his original project is at
   https://github.com/CodeYan01/media-playlist-source.
 - The shuffler is based on VLC's playlist randomizer.
-- obs-playlister changes: Copyright (C) 2026 Jeffrey A. Brick.
+- obs-playlister changes: Copyright (C) 2026 Jeffrey A. Brick. Much of this
+  code was written with an AI coding assistant (Claude, by Anthropic); every
+  change is reviewed and tested before release, and the commits that used it
+  say so.
 - The folder watching (Phase 2, in 0.3.0) is written from scratch. It takes
   over the job of the Directory Sorter for OBS script by Ian Rodriguez
   (https://github.com/CodeYan01/directory_sorter_for_obs) but uses none of its

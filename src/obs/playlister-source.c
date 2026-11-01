@@ -180,6 +180,7 @@ struct obs_source_info media_playlist_source_info = {
 #define S_FOLDER_OPTIONS "folder_options"       /* the Properties group (R-LIST-3), no setting */
 #define S_APPLY_WAITING "apply_waiting_changes" /* the Properties button (R-DIR-11), no setting */
 #define S_ROW_STATUS "row_status"               /* the status block (R-LIST-5), an info text; no setting */
+#define S_PLUGIN_VERSION "plugin_version"       /* the version line (R-LIST-6), an info text; no setting */
 #define ROW_KIND_FOLDER "folder"
 #define SCHEMA_VERSION 1
 #define S_ID "uuid"
@@ -238,6 +239,7 @@ struct obs_source_info media_playlist_source_info = {
 #define T_APPLY_WAITING T_("ApplyWaitingChanges")
 #define T_APPLY_WAITING_TOOLTIP T_("ApplyWaitingChanges.Tooltip")
 #define T_ROW_STATUS T_("RowStatus")
+#define T_PLUGIN_VERSION T_("PluginVersion")
 #define T_ROW_KIND_FILE T_("RowKind.File")
 #define T_ROW_KIND_URL T_("RowKind.Url")
 #define T_ROW_KIND_FOLDER T_("RowKind.Folder")
@@ -2874,6 +2876,13 @@ static obs_properties_t *mps_properties(void *data)
 	obs_property_int_set_suffix(p, "%");
 	p = obs_properties_add_text(props, "", T_SPEED_WARNING, OBS_TEXT_INFO);
 	obs_property_text_set_info_type(p, OBS_TEXT_INFO_WARNING);
+
+	/* R-LIST-6: which version is running, at a glance; a label, never a setting */
+	struct dstr version = {0};
+	dstr_copy(&version, T_PLUGIN_VERSION);
+	dstr_replace(&version, "%1", PLUGIN_VERSION);
+	obs_properties_add_text(props, S_PLUGIN_VERSION, version.array, OBS_TEXT_INFO);
+	dstr_free(&version);
 
 	return props;
 }

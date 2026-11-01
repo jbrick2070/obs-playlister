@@ -73,6 +73,7 @@ when every check passed.
 | 2026-10-28 | 33.0.0 portable | Phase 3a step 5 (part 1), ecc1439 | 117 passed, 0 failed, no memory leaks, twice. Every run on 2026-10-27/28 before this failed with media time stuck at 40 ms: Studio Mode was on in this portable OBS (it is shared with other projects' tests), so the harness sources sat in a preview scene that never played. With Studio Mode on the same build failed 11 checks; with it off, nothing failed. The runner now turns Studio Mode off for its run and restores user.ini |
 | 2026-10-28 | 33.0.0 portable | 0.4.0 (version bump) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.4.0)` |
 | 2026-10-28 | 33.0.0 portable | 0.4.1 step 4 (R-BEH-7) | 123 passed, 0 failed, no memory leaks. New: a hidden source keeps the size it had (1920x1080); a stopped still keeps its own size (320x180, smaller than the canvas, so not the canvas fallback); save writes the size the source reports (320x180); in a scene that is not live a source that never played (state none) reports the canvas size (1920x1080), one with a saved size reports it (640x360) and one with no rows 0x0. Mutation check: with only the child's size reported, as before 0.4.1, 5 checks fail (0x0 for each) |
+| 2026-10-31 | 33.0.0 portable | Linux port, the version line (R-LIST-6) | 124 passed, 0 failed, no memory leaks. New: Properties names the running version ("Playlister 0.4.0" before the bump) and no setting holds it. Earlier Linux port steps 1, 2 and 5 left the harness at 123 passed, and the Phase 2 and Phase 3a acceptance at 38 and 41 |
 
 ## Phase 2 acceptance (automated, needs OBS)
 
@@ -247,6 +248,32 @@ An error row reads "web address - empty; <the error>": the row is listed and hol
 | 2026-10-28 | 33.0.0 portable | Phase 3a step 5 (part 1), ecc1439 | 40 passed (41 checks after the QA pass; see the next row), 0 failed, no memory leaks, three runs in a row; the servers stopped and the root removed after each. Mutation checks: with a media response read as a list, the 3.7 address does not play and the plugin's request reads 16 MB (3 checks fail); with the last good list dropped on an error, 3.3 and the 429 after a good fetch lose the list and playback stops (4 checks fail) |
 | 2026-10-28 | 33.0.0 portable | Phase 3a step 5 (part 1), ecc1439, after the QA fixes | 41 passed, 0 failed, no memory leaks, three runs in a row; the plugin's request to the media address ended after 64-128 KB were read for it, the player made 3 requests of its own; timed out after 32.7-34.5 s |
 
+## Linux (version 0.5.0)
+
+Linux builds and runs `ctest` on every push in CI: Ubuntu 24.04 (against the OBS Project's PPA) and Arch Linux (in an
+`archlinux` container, against Arch's `obs-studio` package). There, `test-provider-folder` drives real folders with
+inotify and the read-lease probe, `test-fetch` runs every fetch case against libcurl and a server inside the test,
+`test-provider-list` reads local playlists with the POSIX path rules (R-LNX-10), and `test-url` checks both path
+rule sets. Nothing below has run inside OBS on Linux yet (PLAN step 6); until it has, Linux is built and unit-tested,
+not verified in OBS.
+
+Setup: an Arch Linux or Ubuntu 24.04 machine with OBS 33, the plugin built and installed as README.md says, and a
+folder of two or three short videos of different lengths.
+
+| # | Check | Expected | Result |
+|---|-------|----------|--------|
+| L.1 | OBS starts with the plugin installed (Arch: `makepkg -si`; Ubuntu: the `.deb`) | the log has `[obs-playlister] plugin loaded`; Tools > Plugin Manager lists Playlister (record whether it is flagged Legacy, V22) | Pending |
+| L.2 | Add a Playlister with the video folder as a row | the folder's videos play in order; the row's status line reads "1: folder - N files" | Pending |
+| L.3 | Copy a large video into the folder while the source plays | it joins once the copy has finished; the playing video is not restarted | Pending |
+| L.4 | Rename a video in the folder; delete another | the renamed one keeps its place; the deleted one leaves; playback goes on | Pending |
+| L.5 | A hidden file (`.name.mp4`) and a hidden folder with subfolders on | both are left out | Pending |
+| L.6 | Move the watched folder away, then back | the row keeps its list; its status gives the reason and "showing the last list, from <time>"; it recovers within the check interval | Pending |
+| L.7 | A local .m3u with relative names and a `file:///` line | the entries resolve next to the list; the `file:` line plays the file it names | Pending |
+| L.8 | An http(s) .m3u on a real server, and a direct video URL | the list loads (HTTPS included); the video plays | Pending |
+| L.9 | A folder on a network share (NFS or SMB) | the row status (and the log line of the mode change) say it is a network file system; new files show up within the check interval | Pending |
+| L.10 | Hardware decoding on and off; the Properties dialog and the Browse dialog | both play; the dialogs look and work as on Windows | Pending |
+| L.11 | Open Properties of any Playlister (Linux, and on Windows with the next build) | the last line reads "Playlister 0.5.0" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
+
 ## Known residual risks
 
 - Startup is judged by media time or audio only (R-BEH-5, step 6 spike). A live stream that delivers video but whose
@@ -264,3 +291,6 @@ An error row reads "web address - empty; <the error>": the row is listed and hol
 - The version was bumped to 0.4.0 (operator decision, 2026-10-28) after the Phase 3a acceptance script passed, with
   Phase 3a items 3.8, 3.16, 3.17 and 3.9's public feed not yet run. Until they are, live HLS and radio streams, real
   feeds, HTTPS and certificate errors, and the Browse dialog's Playlists group are unverified in OBS.
+- Linux (R-LNX-7): a worker stuck in a call on a hung network share cannot be interrupted, so closing a source then
+  waits for it; the plugin logs that it is waiting after 5 s.
+- Linux has been built and unit-tested in CI only; the items L.1 to L.11 above have not run.
