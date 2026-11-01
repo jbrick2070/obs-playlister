@@ -52,6 +52,19 @@ when every check passed.
 .\tests\obs\run-harness.ps1 -ObsRoot <portable OBS 33 folder> -Files <a.mp4>, <b.mp4>, <c.mp4>
 ```
 
+On Linux, `tests/obs/run-harness.sh` does the same with the installed OBS, after `sudo cmake --install build`
+(Linux port step 6). It makes its own three videos with ffmpeg (30 s, 45 s, 20 s), runs OBS with a configuration of its
+own (`XDG_CONFIG_HOME` in a temporary folder, so the user's OBS settings are never touched), starts Xvfb when there is
+no display and asks Mesa for software OpenGL, and stops OBS with SIGINT once the script is done:
+
+```
+tests/obs/run-harness.sh
+HARNESS_LOG_COPY=/tmp/harness-log.txt TIMEOUT_SECONDS=600 tests/obs/run-harness.sh
+```
+
+The CI job `ubuntu-obs-harness` runs it under Xvfb on every push (check V25: it does not fail the run until it has
+passed once). Expected keys are folded per platform (`K()` in the script).
+
 | Date | OBS | Build | Result |
 |------|-----|-------|--------|
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 1.2 | 23 passed, 0 failed, no memory leaks |
@@ -74,6 +87,7 @@ when every check passed.
 | 2026-10-28 | 33.0.0 portable | 0.4.0 (version bump) | 117 passed, 0 failed, no memory leaks; the load line reads `plugin loaded successfully (version 0.4.0)` |
 | 2026-10-28 | 33.0.0 portable | 0.4.1 step 4 (R-BEH-7) | 123 passed, 0 failed, no memory leaks. New: a hidden source keeps the size it had (1920x1080); a stopped still keeps its own size (320x180, smaller than the canvas, so not the canvas fallback); save writes the size the source reports (320x180); in a scene that is not live a source that never played (state none) reports the canvas size (1920x1080), one with a saved size reports it (640x360) and one with no rows 0x0. Mutation check: with only the child's size reported, as before 0.4.1, 5 checks fail (0x0 for each) |
 | 2026-10-31 | 33.0.0 portable | Linux port, the version line (R-LIST-6) | 124 passed, 0 failed, no memory leaks. New: Properties names the running version ("Playlister 0.4.0" before the bump) and no setting holds it. Earlier Linux port steps 1, 2 and 5 left the harness at 123 passed, and the Phase 2 and Phase 3a acceptance at 38 and 41 |
+| 2026-11-01 | 32.2.0 (Ubuntu 24.04, OBS PPA), RunPod CPU pod, Xvfb and Mesa software OpenGL | Linux port step 6, 6a83b2a with run-harness.sh | 124 passed, 0 failed, no memory leaks: the first run inside OBS on Linux (`tests/obs/run-harness.sh`; ctest 24 of 24 on the same machine) |
 
 ## Phase 2 acceptance (automated, needs OBS)
 
@@ -250,12 +264,11 @@ An error row reads "web address - empty; <the error>": the row is listed and hol
 
 ## Linux (version 0.5.0)
 
-Linux builds and runs `ctest` on every push in CI: Ubuntu 24.04 (against the OBS Project's PPA) and Arch Linux (in an
+Linux builds and runs `ctest` on every push in CI (and the runtime harness passed in OBS 32.2 on Ubuntu 24.04, 2026-11-01; see the harness table): Ubuntu 24.04 (against the OBS Project's PPA) and Arch Linux (in an
 `archlinux` container, against Arch's `obs-studio` package). There, `test-provider-folder` drives real folders with
 inotify and the read-lease probe, `test-fetch` runs every fetch case against libcurl and a server inside the test,
 `test-provider-list` reads local playlists with the POSIX path rules (R-LNX-10), and `test-url` checks both path
-rule sets. Nothing below has run inside OBS on Linux yet (PLAN step 6); until it has, Linux is built and unit-tested,
-not verified in OBS.
+rule sets. The checks below need eyes or a real desktop and have not run yet.
 
 Setup: an Arch Linux or Ubuntu 24.04 machine with OBS 33, the plugin built and installed as README.md says, and a
 folder of two or three short videos of different lengths.
@@ -293,4 +306,5 @@ folder of two or three short videos of different lengths.
   feeds, HTTPS and certificate errors, and the Browse dialog's Playlists group are unverified in OBS.
 - Linux (R-LNX-7): a worker stuck in a call on a hung network share cannot be interrupted, so closing a source then
   waits for it; the plugin logs that it is waiting after 5 s.
-- Linux has been built and unit-tested in CI only; the items L.1 to L.11 above have not run.
+- Linux: the runtime harness passed in OBS 32.2 on Ubuntu 24.04 (software rendering, 2026-11-01); the manual items L.1 to L.11
+  above (dialogs, real desktops, network shares, Arch) have not run.

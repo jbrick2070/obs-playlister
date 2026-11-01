@@ -255,6 +255,52 @@ jobs:
           path: ${{ github.workspace }}/.ccache
           key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}
 
+  ubuntu-obs-harness:
+    name: Runtime harness in OBS on Ubuntu 🎬
+    # PLAN Linux port step 6: playlister-harness.lua inside OBS 33 (the OBS Project's PPA) under Xvfb with Mesa's
+    # software OpenGL. Whether OBS runs there at all is check V25, so a failure does not fail the run until it has
+    # passed once.
+    runs-on: ubuntu-24.04
+    needs: check-event
+    continue-on-error: true
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OBS and Tools 📦
+        run: |
+          : Install OBS and Tools 📦
+          sudo add-apt-repository --yes ppa:obsproject/obs-studio
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends obs-studio build-essential cmake ninja-build \
+            libsimde-dev libcurl4-openssl-dev ffmpeg xvfb libgl1-mesa-dri mesa-utils
+          obs --version || true
+
+      - name: Build and Install Plugin 🧱
+        run: |
+          : Build and Install Plugin 🧱
+          cmake -S . -B build_harness -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/usr \
+            -DOBS_PLAYLISTER_BUILD_TESTS=OFF
+          cmake --build build_harness
+          sudo cmake --install build_harness
+
+      - name: Run Harness 🎬
+        env:
+          TIMEOUT_SECONDS: "600"
+          HARNESS_LOG_COPY: ${{ github.workspace }}/harness-log.txt
+        run: bash tests/obs/run-harness.sh
+
+      - name: Upload Harness Log 📡
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-log-ubuntu-${{ needs.check-event.outputs.commitHash }}
+          path: ${{ github.workspace }}/harness-log.txt
+          if-no-files-found: ignore
+
   arch-build:
     name: Build for Arch Linux 🐧
     # against Arch's own obs-studio package, as an Arch user builds it (R-LNX-1, R-LNX-9)

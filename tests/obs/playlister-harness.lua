@@ -24,6 +24,15 @@ local MISSING_FILE = HARNESS_TEMP .. "/playlister-harness-missing.mp4"
 local CORRUPT_FILE = HARNESS_TEMP .. "/playlister-harness-corrupt.mp4"
 local CORRUPT_STILL = HARNESS_TEMP .. "/playlister-harness-corrupt.jpg"
 local STILL = os.getenv("PLAYLISTER_HARNESS_STILL") -- a valid 320x180 jpg the runner makes
+-- keys as the platform folds them: upper case on Windows (R-KEY-1), the name unchanged on Linux (R-LNX-5); the
+-- harness files are all named *.mp4, so the expected keys are written for Windows and folded back here
+local WINDOWS = package.config:sub(1, 1) == "\\"
+local function K(text)
+	if WINDOWS then
+		return text
+	end
+	return (text:gsub("%.MP4", ".mp4"))
+end
 local PLAYING, PAUSED, STOPPED, ENDED = 1, 4, 5, 6
 local src, item = nil, nil
 local D = {}
@@ -778,7 +787,7 @@ end)
 step("migrated resume", 1000, 15000, function() return st() == PLAYING and dur() > 0 end, function()
 	check("old settings resume on the saved folder item", dur() == D[2] and st() == PLAYING, status())
 	check("the migration writes schema 1, the folded key and the row uuid", setting_int("schema_version") == 1 and
-		setting_string("current_item_key") == "2.MP4" and setting_string("current_row_uuid") == "media",
+		setting_string("current_item_key") == K("2.MP4") and setting_string("current_row_uuid") == "media",
 		"schema " .. setting_int("schema_version") .. ", key " .. setting_string("current_item_key") .. ", row " ..
 		setting_string("current_row_uuid"))
 	check("the migration saves the kind of a folder named like a media file", row_kind("media") == "folder " ..
@@ -789,7 +798,7 @@ end)
 step("next in the folder", 500, 15000, function() return dur() == D[3] and st() == PLAYING end, function()
 	obs.obs_source_save(src)
 	check("save writes the playing folder item's key, occurrence and row", setting_string("current_item_key") ==
-		"3.MP4" and setting_int("current_item_occurrence") == 1 and setting_string("current_row_uuid") == "media",
+		K("3.MP4") and setting_int("current_item_occurrence") == 1 and setting_string("current_row_uuid") == "media",
 		"key " .. setting_string("current_item_key") .. ", row " .. setting_string("current_row_uuid"))
 	-- a later update must not migrate again (it would turn the old file name back into the key)
 	update_settings(function(data) obs.obs_data_set_bool(data, "loop", true) end)
@@ -797,7 +806,7 @@ end)
 
 step("no second migration", 1000, 1000, nil, function()
 	obs.obs_source_save(src)
-	check("a later update leaves the resume key alone", setting_string("current_item_key") == "3.MP4" and
+	check("a later update leaves the resume key alone", setting_string("current_item_key") == K("3.MP4") and
 		dur() == D[3], "key " .. setting_string("current_item_key") .. ", " .. status())
 	remove_source()
 end)
@@ -811,7 +820,7 @@ step("restarted source", 1500, 1500, nil, function()
 		obs.obs_data_set_int(settings, "schema_version", 1)
 		obs.obs_data_set_int(settings, "current_media_index", 0)
 		obs.obs_data_set_string(settings, "current_row_uuid", "media")
-		obs.obs_data_set_string(settings, "current_item_key", "3.MP4")
+		obs.obs_data_set_string(settings, "current_item_key", K("3.MP4"))
 		obs.obs_data_set_int(settings, "current_item_occurrence", 1)
 		obs.obs_data_set_int(settings, "visibility_behavior", 2)
 	end)
@@ -828,11 +837,11 @@ step("resume by uuid and key", 1000, 15000, function() return st() == PLAYING an
 		"media: " .. row_kind("media") .. "; f1: " .. row_kind("f1"))
 	-- R-UP-20: a folder item is stored by its row, occurrence and key
 	check("select file stores the folder items' identities",
-		select_file_values() == "0 f1:0: media:1:1.MP4 media:1:2.MP4 media:1:3.MP4", select_file_values())
+		select_file_values() == K("0 f1:0: media:1:1.MP4 media:1:2.MP4 media:1:3.MP4"), select_file_values())
 	-- an occurrence that is not there is not swapped for another item of its key, and a folder row itself is no
 	-- item; neither plays or moves to another item
 	local before = media_next_count
-	play_selected("media:2:2.MP4")
+	play_selected(K("media:2:2.MP4"))
 	check("play selected with an item that is not there is reported, not played", reports_stale_choice() and
 		dur() == D[3] and media_next_count == before, mark.status_after_click .. ", " .. status() .. ", media_next " ..
 		(media_next_count - before))
@@ -846,7 +855,7 @@ end)
 
 step("stale choice", 1000, 1000, nil, function()
 	check("a stale choice leaves the playing item alone", dur() == D[3] and st() == PLAYING, status())
-	play_selected("media:1:2.MP4")
+	play_selected(K("media:1:2.MP4"))
 end)
 
 step("folder item selected", 500, 15000, function() return dur() == D[2] and st() == PLAYING end, function()
@@ -860,10 +869,10 @@ step("folder item selected", 500, 15000, function() return dur() == D[2] and st(
 end)
 
 step("renamed while playing", 500, 15000, function()
-	return select_file_values():find("media:1:0.MP4", 1, true) ~= nil
+	return select_file_values():find(K("media:1:0.MP4"), 1, true) ~= nil
 end, function()
 	check("the rename reaches the list, in name order",
-		select_file_values() == "0 f1:0: media:1:0.MP4 media:1:1.MP4 media:1:2.MP4", select_file_values())
+		select_file_values() == K("0 f1:0: media:1:0.MP4 media:1:1.MP4 media:1:2.MP4"), select_file_values())
 	check("the playing item keeps playing through the change, not restarted", dur() == D[2] and st() == PLAYING and
 		tm() > mark.before_rename, status() .. " before=" .. mark.before_rename)
 	-- the Current File text is written on updates and button presses only (upstream's note), so Refresh first
@@ -880,16 +889,16 @@ end, function()
 end)
 
 step("file added while playing", 500, 15000, function()
-	return select_file_values():find("media:1:9.MP4", 1, true) ~= nil
+	return select_file_values():find(K("media:1:9.MP4"), 1, true) ~= nil
 end, function()
 	check("a file added to the watched folder joins the list",
-		select_file_values() == "0 f1:0: media:1:1.MP4 media:1:2.MP4 media:1:3.MP4 media:1:9.MP4",
+		select_file_values() == K("0 f1:0: media:1:1.MP4 media:1:2.MP4 media:1:3.MP4 media:1:9.MP4"),
 		select_file_values())
 	check("the playing item keeps playing while the file joins", dur() == D[2] and st() == PLAYING and
 		tm() > mark.before_add, status() .. " before=" .. mark.before_add)
 	-- loop is on by default, as upstream; off, the list ends after the folder's last item
 	update_settings(function(data) obs.obs_data_set_bool(data, "loop", false) end)
-	play_selected("media:1:3.MP4")
+	play_selected(K("media:1:3.MP4"))
 end)
 
 -- R-DIR-4: the file after the playing one is rewritten in place; while its new version is gated it keeps its place
@@ -927,7 +936,7 @@ step("list ended on a folder item", 500, 15000, function() return st() == ENDED 
 end)
 
 step("file added after the end", 500, 15000, function()
-	return select_file_values():find("media:1:8.MP4", 1, true) ~= nil
+	return select_file_values():find(K("media:1:8.MP4"), 1, true) ~= nil
 end, function()
 	-- save writes the ended item's name; it must still point at a live item after the folder's new listing
 	obs.obs_source_save(src)
@@ -953,17 +962,17 @@ step("source with a newest-only folder", 1500, 1500, nil, function()
 end)
 
 step("newest plays", 500, 15000, function() return st() == PLAYING and dur() > 0 end, function()
-	check("newest only plays the newest file alone", dur() == D[1] and select_file_values() == "0 media:1:9.MP4",
+	check("newest only plays the newest file alone", dur() == D[1] and select_file_values() == K("0 media:1:9.MP4"),
 		select_file_values() .. ", " .. status())
 	copy_file(FILES[2], MEDIA_FOLDER .. "/7.mp4")
 	mark.before_newer = tm()
 end)
 
 step("a newer file arrives", 500, 15000, function()
-	return select_file_values() == "0 media:1:7.MP4"
+	return select_file_values() == K("0 media:1:7.MP4")
 end, function()
 	check_status("the status block shows the newest file of the folder's five", "1: folder - 1 of 5 files", 0)
-	check("the newer file replaces it in the list while it keeps playing", select_file_values() == "0 media:1:7.MP4" and
+	check("the newer file replaces it in the list while it keeps playing", select_file_values() == K("0 media:1:7.MP4") and
 		dur() == D[1] and st() == PLAYING and tm() > mark.before_newer,
 		select_file_values() .. ", " .. status() .. " before=" .. mark.before_newer)
 	mark.before_restart = tm()
@@ -1018,7 +1027,7 @@ step("a new file waits", 5000, 5000, nil, function()
 end)
 
 local function lists_new_file()
-	return select_file_values():find(" media:1:6.MP4", 1, true) ~= nil
+	return select_file_values():find(K(" media:1:6.MP4"), 1, true) ~= nil
 end
 step("waiting changes applied", 500, 10000, lists_new_file, function()
 	check("apply waiting changes now adds the new file while the item plays on", lists_new_file() and

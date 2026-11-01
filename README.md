@@ -34,8 +34,10 @@ is nothing else to install or configure.
 
 Linux (the next version, 0.5.0): Playlister now builds on Ubuntu 24.04 and Arch
 Linux, and every automated test passes there, including watched folders,
-playlist files and web lists. It has not yet been checked inside OBS on Linux;
-reports from Linux users are very welcome (open an issue). macOS is planned
+playlist files and web lists. Inside OBS, the 124 runtime checks the Windows
+build passes also pass on Ubuntu 24.04 with OBS 32.2 (run on a server with
+software rendering); the dialogs have not been looked at on Linux yet. Reports
+from Linux users are very welcome (open an issue). macOS is planned
 after Linux.
 Version 0.4.0 (Phase 3a): a row can be a playlist file (.m3u, .m3u8, .pls) or
 a web address. A playlist file is read again when it changes; a web address
@@ -72,9 +74,9 @@ and built for OBS 33.
 
 ## Install
 
-Requires OBS Studio 33.0.0 or later, on Windows x64 or Linux x86_64. Older OBS
-versions do not load this layout. Once installed, add a source of type
-**Playlister** in OBS.
+Requires OBS Studio 33.0.0 or later on Windows x64, and OBS Studio 32.2 or later on Linux x86_64 (the OBS
+Project's Ubuntu PPA has 32.2, Arch has 33). Older OBS versions on Windows do not load this layout. Once
+installed, add a source of type **Playlister** in OBS.
 
 ### Windows
 
