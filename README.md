@@ -123,6 +123,18 @@ On Linux, a watched folder on a network drive (NFS, SMB, CIFS) or a FUSE file
 system is checked on the folder check interval, as Linux does not report
 changes made there by other machines.
 
+## Languages
+
+Playlister follows the language OBS runs in (Settings > General > Language;
+OBS needs a restart to change it). Besides English it speaks Simplified
+Chinese, Spanish, Brazilian Portuguese, Russian, Japanese, German, French,
+Korean, Traditional Chinese and Turkish. Where OBS itself already translates
+a string, Playlister starts from OBS's own translation. The rest was drafted
+by an AI model (Claude), and every file was reviewed by a second one (Gemini),
+whose corrections were taken; no native speaker has checked it yet. If something reads wrong in your language, please open an
+issue or a pull request: the files are in `data/locale/`, one per language,
+and `en-US.ini` is the English source.
+
 ## Limitations
 
 - The Properties window shows the current file, but it cannot update by itself

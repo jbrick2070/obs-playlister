@@ -288,6 +288,25 @@ folder of two or three short videos of different lengths.
 | L.10 | Hardware decoding on and off; the Properties dialog and the Browse dialog | both play; the dialogs look and work as on Windows | Pending |
 | L.11 | Open Properties of any Playlister (Linux, and on Windows with the next build) | the last line reads "Playlister 0.5.0" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
 
+## Translations (version 0.5.1)
+
+`ctest` checks every language file against `en-US.ini` (`check-locale-files`: the same keys, the same `%1`..`%9`,
+valid UTF-8 without a BOM, no stray quote). In OBS, `locale-check.lua` starts OBS in another language for one run
+(user.ini is restored afterwards), adds a Playlister whose row is a missing .m3u and checks that Properties shows that
+language's text: the Play Selected File label, the row kind and the provider's "not found" message in the status
+block, and the version line. Run it once in a Latin-script and once in a CJK language:
+
+```
+.\tests\obs\run-harness.ps1 -ObsRoot <portable OBS> -Files <three videos> -Script locale-check.lua -Language de-DE
+.\tests\obs\run-harness.ps1 -ObsRoot <portable OBS> -Files <three videos> -Script locale-check.lua -Language ja-JP
+```
+
+| # | Check | Expected | Result |
+|---|-------|----------|--------|
+| T.1 | `locale-check.lua` with `-Language de-DE` | every check passes | Pass (2026-10-31, OBS 33.0.0 portable, 5 of 5) |
+| T.2 | `locale-check.lua` with `-Language ja-JP` | every check passes | Pass (2026-10-31, OBS 33.0.0 portable, 5 of 5) |
+| T.3 | By eye, OBS set to a language you read: Properties, the Browse dialog's filter names, a row's status line | the text is in that language, fits its controls and reads naturally | Pending |
+
 ## Known residual risks
 
 - Startup is judged by media time or audio only (R-BEH-5, step 6 spike). A live stream that delivers video but whose

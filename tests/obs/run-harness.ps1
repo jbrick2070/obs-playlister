@@ -38,7 +38,9 @@ param(
 	# another script in this folder, run the same way (spike-child-signals.lua records the child's behavior)
 	[string]$Script = 'playlister-harness.lua',
 	# a folder of renders for phase2-acceptance.lua
-	[string]$Otr = ''
+	[string]$Otr = '',
+	# OBS's language for this run, e.g. de-DE (locale-check.lua); user.ini is restored afterwards
+	[string]$Language = ''
 )
 $ErrorActionPreference = 'Stop'
 if ($Files.Count -ne 3) { throw 'pass exactly three media files, each of a different duration' }
@@ -97,8 +99,15 @@ try {
 	if (Test-Path $userIni) {
 		Copy-Item $userIni $userIniBackup
 		$ini = [IO.File]::ReadAllText($userIni) -replace '(?m)^PreviewProgramMode=true', 'PreviewProgramMode=false'
+		if ($Language) {
+			# OBS 33 reads its language from user.ini, [General] Language (frontend/OBSApp.cpp)
+			if ($ini -match '(?m)^Language=') { $ini = $ini -replace '(?m)^Language=[^\r\n]*', "Language=$Language" }
+			else { $ini = $ini -replace '(?m)^\[General\]\r?$', "[General]`r`nLanguage=$Language" }
+			if ($ini -notmatch '(?m)^Language=') { throw 'user.ini has no [General] section to set the language in' }
+		}
 		[IO.File]::WriteAllText($userIni, $ini, (New-Object Text.UTF8Encoding $false))
 	}
+	elseif ($Language) { throw "no $userIni to set the language in (start this OBS once first)" }
 	$emptyFolder = Join-Path ([IO.Path]::GetTempPath()) ('playlister-harness-empty-' + [guid]::NewGuid().ToString('N'))
 	New-Item -ItemType Directory $emptyFolder | Out-Null
 	$env:PLAYLISTER_HARNESS_EMPTY_FOLDER = $emptyFolder -replace '\\', '/'
@@ -216,6 +225,13 @@ try {
 	$json.modules.'scripts-tool' = @([pscustomobject]@{ path = $scriptPath; settings = [pscustomobject]@{} })
 	[IO.File]::WriteAllText($collection, ($json | ConvertTo-Json -Depth 64), (New-Object Text.UTF8Encoding $false))
 
+	if ($Language) {
+		# locale-check.lua reads the texts it expects from the language file itself (UTF-8; os.getenv in Lua on
+		# Windows would garble them)
+		$localeFile = Join-Path $Repo "data\locale\$Language.ini"
+		if (-not (Test-Path $localeFile)) { throw "no language file for $Language`: $localeFile" }
+		$env:PLAYLISTER_LOCALE_FILE = $localeFile -replace '\\', '/'
+	}
 	$env:PLAYLISTER_HARNESS_FILES = (($Files | ForEach-Object { (Resolve-Path $_).Path -replace '\\', '/' }) -join '|')
 	$bin = Join-Path $ObsRoot 'bin\64bit'
 	$obs = Start-Process -FilePath (Join-Path $bin 'obs64.exe') -WorkingDirectory $bin -ArgumentList '--portable', '--disable-updater', '--multi' -PassThru
@@ -294,6 +310,7 @@ finally {
 		catch { "warning: could not restore ${userIni} from ${userIniBackup}: $_" }
 	}
 	Remove-Item Env:\PLAYLISTER_HARNESS_FILES -ErrorAction SilentlyContinue
+	Remove-Item Env:\PLAYLISTER_LOCALE_FILE -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_EMPTY_FOLDER -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_MEDIA_FOLDER -ErrorAction SilentlyContinue
 	Remove-Item Env:\PLAYLISTER_HARNESS_MISSING_FOLDER -ErrorAction SilentlyContinue

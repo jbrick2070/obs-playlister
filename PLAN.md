@@ -435,10 +435,20 @@ code is written), one commit and one push.
    read-only) then reviews each draft against the English and lists errors and awkward wording; Claude takes what holds
    and records what it did not take. Each file starts with a comment: an AI-drafted translation, reviewed by a second
    model, corrections welcome. README says the same and how to send corrections.
+   As built: strings whose English matches OBS's own en-US text word for word start from OBS's official translations
+   (22 to 25 per file); Claude drafted the rest; Gemini's review gave 152 corrections across the ten files and all were
+   taken, including some to OBS's own strings, so where they differ Gemini's wording wins. A Sonnet 5.5 review then
+   fixed four small slips (two copied from OBS's files). Each file has a three-line header; README has a Languages
+   section.
 4. Checks and release: in OBS, set the language to German and to Japanese (Settings > General > Language, restart) and
    read Properties and the status block (TESTING.md item, and a harness check that the version line is translated when
    a locale other than English is loaded, if the harness can set OBS's language); README; version 0.5.1 on the
    operator's word.
+   As built: `tests/obs/locale-check.lua` and a `-Language` option in `run-harness.ps1` (sets user.ini [General]
+   Language for one run and restores it; the script reads its expected texts from the language file, as Lua's getenv on
+   Windows garbles non-ASCII). It checks the Play Selected File label, the row kind and the provider's not-found message
+   in the status block, and the version line. German and Japanese pass in OBS 33.0.0 (TESTING.md T.1, T.2); the English
+   harness still passes 124 of 124. Version 0.5.1 waits for the operator's word.
 
 Not in this step: translating log lines, the installer's own pages, or README.
 
