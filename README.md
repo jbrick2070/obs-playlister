@@ -4,6 +4,8 @@ A playlist source for OBS Studio 33 and later. It plays a list of local files,
 folders and URLs through OBS's own Media Source, and editing the list does not
 restart the clip that is playing.
 
+![Playlister in OBS Studio 33: the Program scene "Transport" plays a Playlister source ("Transport Queue" in the Audio Mixer) while Studio Mode previews another scene. A frame of a real OBS window capture.](docs/images/playlister-hero.png)
+
 Playlister is a third-party plugin for OBS Studio. It is not made, endorsed or
 supported by the OBS Project. Before 0.3.1 its name began with "OBS"; its
 plugin files, source ID and this repository keep the identifier
