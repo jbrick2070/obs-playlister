@@ -64,6 +64,30 @@ static void child_updated(void *data, calldata_t *cd)
 	os_event_signal(player->child_updated);
 }
 
+static void child_stopped(void *data, calldata_t *cd)
+{
+	UNUSED_PARAMETER(cd);
+	struct pl_player *player = data;
+	os_event_signal(player->child_stopped);
+}
+
+/* Waits until the child signals that it applied what was asked (what names it for the log), with no time limit.
+ * Returns true when the child signaled; false when the player is shutting down, without waiting further (also when
+ * the shutdown began before the call). */
+static bool wait_for_child(struct pl_player *player, os_event_t *event, const char *what)
+{
+	bool logged = false;
+	while (!os_atomic_load_bool(&player->shutting_down)) {
+		if (os_event_timedwait(event, 2000) == 0)
+			return true;
+		if (!logged) {
+			obs_log(LOG_WARNING, "the media source has not applied %s for 2 s; still waiting", what);
+			logged = true;
+		}
+	}
+	return false;
+}
+
 /* libobs applies obs_source_update to a video source at that source's next tick on the graphics thread
  * (obs-source.c, deferred update), and queues media calls for that tick too. Waiting for the child's "update"
  * signal keeps the commands in order: an unload is applied before the load after it, and a pause or seek after a
@@ -71,17 +95,9 @@ static void child_updated(void *data, calldata_t *cd)
  * count against the next load; only a shutdown ends it. */
 static void update_child(struct pl_player *player, obs_data_t *data)
 {
-	bool logged = false;
 	os_event_reset(player->child_updated);
 	obs_source_update(player->child, data);
-	while (!os_atomic_load_bool(&player->shutting_down)) {
-		if (os_event_timedwait(player->child_updated, 2000) == 0)
-			return;
-		if (!logged) {
-			obs_log(LOG_WARNING, "the media source has not applied an update for 2 s; still waiting");
-			logged = true;
-		}
-	}
+	wait_for_child(player, player->child_updated, "an update");
 }
 
 /* Updates the child while its ends are ignored. Destroying media that is still opening makes its decoder thread
@@ -105,11 +121,58 @@ static void unload_child(struct pl_player *player)
 	obs_data_release(data);
 }
 
+#define CAPTURE_WAIT_MS 100 /* R-BEH-8: about six frames at 60 fps */
+
+/* R-BEH-8: before a load that replaces the item on screen, video_render keeps the child's picture, so the source can
+ * draw it until the new item's first frame. The source is not always drawn (a hidden source, a stalled renderer), so
+ * the wait is short and the load goes ahead without a hold when nothing answered. A shutdown ends the wait. */
+static void capture_frame(struct pl_player *player)
+{
+	/* reset before the check: shutdown sets the flag and then signals, so neither can be missed */
+	os_event_reset(player->capture_answered);
+	if (os_atomic_load_bool(&player->shutting_down))
+		return;
+	os_atomic_set_bool(&player->capture_requested, true);
+	os_event_timedwait(player->capture_answered, CAPTURE_WAIT_MS);
+	/* withdrawn when unanswered; a capture already under way still ends before the load applies, as the load is
+	 * applied at a tick on the graphics thread, where video_render runs too */
+	os_atomic_set_bool(&player->capture_requested, false);
+}
+
+/* R-BEH-8: takes the child's picture off the screen at once. The child keeps its last frame at its end, and its own
+ * stop clears the picture only while it still has its media (obs-ffmpeg-source.c, ffmpeg_source_stop), which an
+ * unload, close-when-inactive or a URL's end takes away. */
+static void blank_child(struct pl_player *player)
+{
+	os_atomic_set_bool(&player->frame_release, true);
+	obs_source_output_video(player->child, NULL);
+}
+
+/* libobs applies a media stop at the child's next tick and then raises its "media_stopped" signal (obs-source.c,
+ * process_media_actions). The child's own stop clears the picture only while it still has media; a URL's end or
+ * close-when-inactive can destroy the media first, even after a stop was queued. Once the stop has applied nothing
+ * runs, so the picture is taken away then, whatever the child did. */
+static void stop_child(struct pl_player *player)
+{
+	os_atomic_set_bool(&player->frame_release, true);
+	os_event_reset(player->child_stopped);
+	obs_source_media_stop(player->child);
+	if (wait_for_child(player, player->child_stopped, "a stop"))
+		blank_child(player);
+}
+
 static void execute_load(struct pl_player *player, const struct pl_command *command)
 {
 	/* a newer load, stop or clear request decides what plays; opening this file first would only churn */
 	if (pl_load_tracker_superseded(&player->tracker, command->request))
 		return;
+
+	if (command->hold_frame) {
+		capture_frame(player);
+		/* a newer request came during the wait: it would replace this load before it showed anything */
+		if (pl_load_tracker_superseded(&player->tracker, command->request))
+			return;
+	}
 
 	/* Unloading first also makes every load a path change, so the child restarts even when the path is the one
 	 * it already had (upstream's should_restart, R-BEH-6) */
@@ -123,9 +186,10 @@ static void execute_load(struct pl_player *player, const struct pl_command *comm
 	obs_data_set_bool(data, S_FFMPEG_IS_LOCAL_FILE, !command->is_url);
 	obs_data_set_string(data, command->is_url ? S_FFMPEG_INPUT : S_FFMPEG_LOCAL_FILE, command->path);
 	write_child_settings(data, &player->settings);
-	/* R-DIR-9, on every load: a still stays on screen after its end (it ends at once) while the source holds it;
-	 * everything else is cleared at its end, as the child does by default (upstream never wrote it, R-UP-21) */
-	obs_data_set_bool(data, S_FFMPEG_CLEAR_ON_MEDIA_END, !command->still);
+	/* On every load (upstream never wrote it, R-UP-21): the child keeps its last frame at its end. A still stays on
+	 * screen while the source holds it (R-DIR-9); a media file's last frame stays only while the next item loads
+	 * (R-BEH-8), and an end that nothing follows takes it off the screen (pl_player_blank) */
+	obs_data_set_bool(data, S_FFMPEG_CLEAR_ON_MEDIA_END, false);
 	update_child(player, data);
 	obs_data_release(data);
 	/* the new media's evidence counts from here: the old media was destroyed by the unload (R-BEH-5) */
@@ -216,14 +280,19 @@ static void execute(struct pl_player *player, const struct pl_command *command)
 		pl_load_tracker_withdraw(&player->tracker);
 		player->starting = false;
 		player->pause_held = false;
-		obs_source_media_stop(player->child);
+		stop_child(player);
 		break;
 	case PL_COMMAND_CLEAR:
 		pl_load_tracker_withdraw(&player->tracker);
 		player->starting = false;
 		player->pause_held = false;
 		unload_child(player);
-		obs_source_media_stop(player->child);
+		/* the unload leaves the last frame in the child, and a stop without media does not clear it; waiting for
+		 * this stop also keeps its media_stopped from ending a later stop's wait early */
+		stop_child(player);
+		break;
+	case PL_COMMAND_BLANK:
+		blank_child(player);
 		break;
 	case PL_COMMAND_SET_TIME:
 		obs_source_media_set_time(player->child, command->time_ms);
@@ -277,9 +346,25 @@ bool pl_player_start(struct pl_player *player, obs_source_t *child)
 		pl_command_queue_free(&player->queue);
 		return false;
 	}
-	signal_handler_connect(obs_source_get_signal_handler(child), "update", child_updated, player);
+	if (os_event_init(&player->capture_answered, OS_EVENT_TYPE_AUTO) != 0) {
+		os_event_destroy(player->child_updated);
+		pl_command_queue_free(&player->queue);
+		return false;
+	}
+	if (os_event_init(&player->child_stopped, OS_EVENT_TYPE_AUTO) != 0) {
+		os_event_destroy(player->capture_answered);
+		os_event_destroy(player->child_updated);
+		pl_command_queue_free(&player->queue);
+		return false;
+	}
+	signal_handler_t *sh = obs_source_get_signal_handler(child);
+	signal_handler_connect(sh, "update", child_updated, player);
+	signal_handler_connect(sh, "media_stopped", child_stopped, player);
 	if (pthread_create(&player->thread, NULL, player_thread, player) != 0) {
-		signal_handler_disconnect(obs_source_get_signal_handler(child), "update", child_updated, player);
+		signal_handler_disconnect(sh, "media_stopped", child_stopped, player);
+		signal_handler_disconnect(sh, "update", child_updated, player);
+		os_event_destroy(player->child_stopped);
+		os_event_destroy(player->capture_answered);
 		os_event_destroy(player->child_updated);
 		pl_command_queue_free(&player->queue);
 		return false;
@@ -295,11 +380,17 @@ void pl_player_shutdown(struct pl_player *player)
 	/* the graphics thread may be the one destroying the source, so a pending wait must not hold up the join */
 	os_atomic_set_bool(&player->shutting_down, true);
 	os_event_signal(player->child_updated);
+	os_event_signal(player->capture_answered);
+	os_event_signal(player->child_stopped);
 	struct pl_command command = {.type = PL_COMMAND_QUIT};
 	pl_command_queue_push(&player->queue, &command);
 	pthread_join(player->thread, NULL);
 	player->thread_started = false;
-	signal_handler_disconnect(obs_source_get_signal_handler(player->child), "update", child_updated, player);
+	signal_handler_t *sh = obs_source_get_signal_handler(player->child);
+	signal_handler_disconnect(sh, "media_stopped", child_stopped, player);
+	signal_handler_disconnect(sh, "update", child_updated, player);
+	os_event_destroy(player->child_stopped);
+	os_event_destroy(player->capture_answered);
 	os_event_destroy(player->child_updated);
 	pl_command_queue_free(&player->queue);
 }
@@ -313,9 +404,13 @@ static void push_request(struct pl_player *player, struct pl_command *command)
 	pl_load_tracker_withdraw(&player->tracker);
 }
 
-void pl_player_load(struct pl_player *player, const char *path, bool is_url, bool still)
+void pl_player_load(struct pl_player *player, const char *path, bool is_url, bool still, bool hold_frame)
 {
-	struct pl_command command = {.type = PL_COMMAND_LOAD, .path = bstrdup(path), .is_url = is_url, .still = still};
+	struct pl_command command = {.type = PL_COMMAND_LOAD,
+				     .path = bstrdup(path),
+				     .is_url = is_url,
+				     .still = still,
+				     .hold_frame = hold_frame};
 	/* counted before the thread can handle it, so the handled count never runs ahead */
 	os_atomic_inc_long(&player->loads_requested);
 	push_request(player, &command);
@@ -342,6 +437,12 @@ void pl_player_clear(struct pl_player *player)
 {
 	struct pl_command command = {.type = PL_COMMAND_CLEAR};
 	push_request(player, &command);
+}
+
+void pl_player_blank(struct pl_player *player)
+{
+	struct pl_command command = {.type = PL_COMMAND_BLANK};
+	pl_command_queue_push(&player->queue, &command);
 }
 
 void pl_player_set_time(struct pl_player *player, int64_t ms)
@@ -384,4 +485,19 @@ bool pl_player_load_ended(struct pl_player *player, long epoch)
 bool pl_player_load_eligible(struct pl_player *player, long epoch)
 {
 	return epoch && os_atomic_load_long(&player->tracker.eligible_epoch) == epoch;
+}
+
+bool pl_player_take_capture_request(struct pl_player *player)
+{
+	return os_atomic_exchange_bool(&player->capture_requested, false);
+}
+
+void pl_player_capture_answered(struct pl_player *player)
+{
+	os_event_signal(player->capture_answered);
+}
+
+bool pl_player_take_frame_release(struct pl_player *player)
+{
+	return os_atomic_exchange_bool(&player->frame_release, false);
 }

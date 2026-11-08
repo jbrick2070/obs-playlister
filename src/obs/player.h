@@ -31,12 +31,18 @@ struct pl_player {
 	pthread_t thread;
 	bool thread_started;
 	os_event_t *child_updated;   /* signaled by the child's "update" signal */
+	os_event_t *child_stopped;   /* signaled by the child's "media_stopped" signal: a stop applied */
 	volatile bool shutting_down; /* stops waiting for child updates */
 	struct pl_load_tracker tracker;
 	volatile long applied_epoch;   /* the load whose child update has applied: its startup is judged (R-BEH-5) */
 	volatile long audio_epoch;     /* the applied load when the child last delivered audio */
 	volatile long loads_requested; /* load requests made so far */
 	volatile long loads_handled;   /* load requests the thread has executed or passed over as superseded */
+
+	/* R-BEH-8: the frame hold's handshake with the source's video_render, which owns the held frame */
+	volatile bool capture_requested; /* set before a replacing load's unload: video_render keeps the picture */
+	os_event_t *capture_answered;    /* signaled by video_render once it has answered that request */
+	volatile bool frame_release;     /* set on stop, clear and blank: video_render lets the held frame go */
 
 	/* player thread only */
 	struct pl_child_settings settings;
@@ -50,12 +56,17 @@ bool pl_player_start(struct pl_player *player, obs_source_t *child);
 /* Queues QUIT behind any pending request, joins the thread and frees what is left */
 void pl_player_shutdown(struct pl_player *player);
 
-/* Loads path into the child; loading the path the child already has restarts it, so this is also restart */
-void pl_player_load(struct pl_player *player, const char *path, bool is_url, bool still);
+/* Loads path into the child; loading the path the child already has restarts it, so this is also restart.
+ * hold_frame: the load replaces an item whose picture is on screen, so that picture stays until the new item has its
+ * first frame (R-BEH-8). */
+void pl_player_load(struct pl_player *player, const char *path, bool is_url, bool still, bool hold_frame);
 void pl_player_play_pause(struct pl_player *player, bool pause);
 void pl_player_stop(struct pl_player *player);
 /* Empties the child's path and stops the child (never the playlist source itself) */
 void pl_player_clear(struct pl_player *player);
+/* Takes the ended child's last picture off the screen, leaving its state as it is: for an end that nothing follows,
+ * as the child keeps its last frame at its end (R-BEH-8) */
+void pl_player_blank(struct pl_player *player);
 void pl_player_set_time(struct pl_player *player, int64_t ms);
 void pl_player_set_child_settings(struct pl_player *player, const struct pl_child_settings *settings);
 /* Withdraws auto-advance at once and supersedes queued loads, without a command of its own: for a hide whose stop
@@ -78,6 +89,12 @@ bool pl_player_load_eligible(struct pl_player *player, long epoch);
 /* Whether a load request has not reached the child yet: until then the child's state is still the old media's. Any
  * thread. */
 bool pl_player_load_pending(struct pl_player *player);
+
+/* For video_render (R-BEH-8): true once for each capture request; the request is then answered, captured or not */
+bool pl_player_take_capture_request(struct pl_player *player);
+void pl_player_capture_answered(struct pl_player *player);
+/* For video_render: true once after a stop, clear or blank, which let the held frame go */
+bool pl_player_take_frame_release(struct pl_player *player);
 
 /* Logs "<what> <path>", a URL with scheme, host and path only (it can carry credentials) */
 void pl_player_log_location(int level, const char *what, const char *path);

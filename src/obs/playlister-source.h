@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "player.h"
 #include "shuffler.h"
 #include "core/audio-queue.h"
+#include "core/frame-hold.h"
 #include "core/startup.h"
 #include "providers/provider.h"
 
@@ -144,6 +145,13 @@ struct media_playlist_source {
 	 * rows; read without the list lock, as libobs asks for the size with its own locks held (R-UP-72) */
 	volatile long kept_size;
 	volatile long row_count;
+
+	/* R-BEH-8: the replaced item's last picture, drawn until the new item has its first frame; graphics thread only
+	 * (video_render, and video_tick while hidden), which frees the texture when a hold ends (destroy frees one left
+	 * over) */
+	struct pl_frame_hold frame_hold;
+	gs_texrender_t *held_frame;
+	enum gs_color_space held_space; /* the color space the held frame was drawn in */
 
 	/* R-UP-20: the last Play Selected choice was no longer in the list; the status block says so until the next
 	 * choice is played or Refresh is pressed (R-LIST-5); under the list lock */

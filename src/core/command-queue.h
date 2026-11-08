@@ -32,6 +32,7 @@ enum pl_command_type {
 	PL_COMMAND_CLEAR,
 	PL_COMMAND_SET_TIME,
 	PL_COMMAND_SET_CHILD_SETTINGS,
+	PL_COMMAND_BLANK, /* takes the ended child's last picture off the screen (R-BEH-8) */
 	PL_COMMAND_QUIT,
 };
 
@@ -48,6 +49,7 @@ struct pl_command {
 	char *path;                     /* LOAD: owned, freed by pl_command_free */
 	bool is_url;                    /* LOAD */
 	bool still;                     /* LOAD: a still image, kept on screen after its end (R-DIR-9) */
+	bool hold_frame;                /* LOAD: replaces a picture on screen, held until the new one (R-BEH-8) */
 	long request;                   /* LOAD, STOP, CLEAR: request number, see load-tracker.h */
 	bool pause;                     /* PLAY_PAUSE */
 	int64_t time_ms;                /* SET_TIME */

@@ -55,6 +55,13 @@ when every check passed.
 .\tests\obs\run-harness.ps1 -ObsRoot <portable OBS 33 folder> -Files <a.mp4>, <b.mp4>, <c.mp4>
 ```
 
+The script installs the current build into `<ObsRoot>\plugins\obs-playlister`. A plain folder there is replaced. If
+that folder is a junction or symbolic link (a test OBS that loads the installed plugin from
+`C:\ProgramData\obs-studio\plugins\obs-playlister`), the script stops with a message instead, because deleting
+through the link can empty the real plugin folder and replacing it with a copy breaks the link (both happened on
+2026-11-08). `-InstallIntoLinkedPlugin` copies the build through the link instead, overwriting files and deleting
+nothing: that installs the build into the real plugin folder, and the script says so.
+
 On Linux, `tests/obs/run-harness.sh` does the same with the installed OBS, after `sudo cmake --install build`
 (Linux port step 6). It makes its own three videos with ffmpeg (30 s, 45 s, 20 s), runs OBS with a configuration of its
 own (`XDG_CONFIG_HOME` in a temporary folder, so the user's OBS settings are never touched), starts Xvfb when there is

@@ -65,6 +65,8 @@ endif()
 obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")
 obs_playlister_add_test(test-row-kind test-row-kind.c "${_core}/row-kind.c" "${_core}/filter.c" "${_core}/url.c")
 obs_playlister_add_test(test-startup test-startup.c "${_core}/startup.c")
+# The frame hold that keeps the replaced item's last picture until the next item's first frame (R-BEH-8)
+obs_playlister_add_test(test-frame-hold test-frame-hold.c "${_core}/frame-hold.c")
 # The size a source reports while it is not playing (R-BEH-7)
 obs_playlister_add_test(test-source-size test-source-size.c "${_core}/source-size.c")
 # Playlists (R-REM-1): URL and path resolution, M3U and PLS against fixtures

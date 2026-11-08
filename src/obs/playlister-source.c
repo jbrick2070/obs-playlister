@@ -57,6 +57,8 @@ static void retry_failed_on_request(struct media_playlist_source *mps);
 static bool nothing_playable(struct media_playlist_source *mps);
 static bool item_is_still(const struct media_file_data *item);
 static bool hold_shown(struct media_playlist_source *mps);
+static bool state_stopped(enum obs_media_state state);
+static bool picture_on_screen(struct media_playlist_source *mps);
 static void drop_playing_copy(struct media_playlist_source *mps);
 
 static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index);
@@ -492,7 +494,7 @@ static void update_media_source(void *data, bool forced)
 	 * path, and unloads first, so an unchanged path restarts too (upstream's should_restart). */
 	if (forced) {
 		pl_player_load(&mps->player, mps->actual_media->path, mps->actual_media->is_url,
-			       item_is_still(mps->actual_media));
+			       item_is_still(mps->actual_media), picture_on_screen(mps));
 		set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 		/* any load decides what plays, so a wait for a folder row to settle is over (R-KEY-2), and a stop after
 		 * everything failed is lifted (R-BEH-5) */
@@ -1122,6 +1124,14 @@ static bool hold_shown(struct media_playlist_source *mps)
 	       !state_stopped(media_state(mps));
 }
 
+/* R-BEH-8: a load made now replaces an item whose picture is on screen: the source plays or is paused (a stop, clear,
+ * failure or end that nothing followed took the picture away) and is shown somewhere. Read before the load sets the
+ * state; the caller holds the list lock. */
+static bool picture_on_screen(struct media_playlist_source *mps)
+{
+	return !state_stopped(media_state(mps)) && obs_source_showing(mps->source);
+}
+
 /* R-DIR-8: with an evicted item's copy current, Restart and Play from stopped start that item again rather than
  * the row's first item; true when it did */
 static bool restart_playing_copy(struct media_playlist_source *mps)
@@ -1129,7 +1139,7 @@ static bool restart_playing_copy(struct media_playlist_source *mps)
 	if (!mps->playing_copy_active || mps->actual_media != &mps->playing_copy)
 		return false;
 	pl_player_load(&mps->player, mps->playing_copy.path, mps->playing_copy.is_url,
-		       item_is_still(&mps->playing_copy));
+		       item_is_still(&mps->playing_copy), picture_on_screen(mps));
 	set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 	cancel_resume(mps);
 	mps->all_failed = false;
@@ -2152,6 +2162,11 @@ static void mps_destroy(void *data)
 		obs_source_remove_audio_capture_callback(mps->current_media_source, mps_audio_callback, mps);
 	}
 	obs_source_release(mps->current_media_source);
+	if (mps->held_frame) {
+		obs_enter_graphics();
+		gs_texrender_destroy(mps->held_frame);
+		obs_leave_graphics();
+	}
 	shuffler_destroy(&mps->shuffler);
 	free_files(&mps->files.da);
 	pl_audio_queue_free(&mps->audio);
@@ -2246,6 +2261,67 @@ error:
 	return NULL;
 }
 
+/* R-BEH-8: draws the child's picture into the held frame, in the color space the source is being drawn in, the way
+ * libobs draws a source into a texture for a filter (obs_source_process_filter_begin_with_color_space): premultiplied
+ * alpha on a clear target. Graphics thread. */
+static bool capture_child(void *param)
+{
+	struct media_playlist_source *mps = param;
+	uint32_t cx = obs_source_get_width(mps->current_media_source);
+	uint32_t cy = obs_source_get_height(mps->current_media_source);
+	enum gs_color_space space = gs_get_color_space();
+	enum gs_color_format format = gs_get_format_from_space(space);
+	if (mps->held_frame && gs_texrender_get_format(mps->held_frame) != format) {
+		gs_texrender_destroy(mps->held_frame);
+		mps->held_frame = NULL;
+	}
+	if (!mps->held_frame)
+		mps->held_frame = gs_texrender_create(format, GS_ZS_NONE);
+	if (!mps->held_frame)
+		return false;
+	/* a texrender draws once until reset; a capture can follow another within one frame */
+	gs_texrender_reset(mps->held_frame);
+	if (!gs_texrender_begin_with_color_space(mps->held_frame, cx, cy, space))
+		return false;
+	struct vec4 clear_color;
+	vec4_zero(&clear_color);
+	gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
+	gs_ortho(0.0f, (float)cx, 0.0f, (float)cy, -100.0f, 100.0f);
+	gs_blend_state_push();
+	gs_blend_function_separate(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA, GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+	obs_source_video_render(mps->current_media_source);
+	gs_blend_state_pop();
+	gs_texrender_end(mps->held_frame);
+	mps->held_space = space;
+	return true;
+}
+
+/* R-BEH-8: draws the held frame where the child would be drawn, converted to the current color space as libobs
+ * converts an async frame (core/frame-hold.c), with premultiplied alpha as libobs draws a scene item's texture */
+static void draw_held_frame(struct media_playlist_source *mps)
+{
+	gs_texture_t *texture = gs_texrender_get_texture(mps->held_frame);
+	if (!texture)
+		return;
+	struct pl_hold_draw draw;
+	pl_frame_hold_draw_choice(mps->held_space, gs_get_color_space(), gs_get_linear_srgb(), &draw);
+	float multiplier = 1.0f;
+	if (draw.multiplier == PL_HOLD_MULTIPLIER_TO_SCRGB)
+		multiplier = obs_get_video_sdr_white_level() / 80.0f;
+	else if (draw.multiplier == PL_HOLD_MULTIPLIER_FROM_SCRGB)
+		multiplier = 80.0f / obs_get_video_sdr_white_level();
+
+	const bool previous = gs_set_linear_srgb(draw.linear_srgb);
+	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "multiplier"), multiplier);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+	while (gs_effect_loop(effect, draw.tech))
+		obs_source_draw(texture, 0, 0, 0, 0, false);
+	gs_blend_state_pop();
+	gs_set_linear_srgb(previous);
+}
+
 static void mps_video_render(void *data, gs_effect_t *effect)
 {
 	struct media_playlist_source *mps = data;
@@ -2253,7 +2329,33 @@ static void mps_video_render(void *data, gs_effect_t *effect)
 	pthread_mutex_lock(&mps->mutex);
 	bool has_media = mps->actual_media != NULL;
 	pthread_mutex_unlock(&mps->mutex);
-	if (has_media) {
+
+	/* R-BEH-8: the child has a picture while libobs has a frame of it to draw; it has none from the start of a new
+	 * file until that file's first frame, and none after a stop or blank */
+	/* taken in this order, before the input is built: a release raised before a request is never taken after it */
+	bool release = pl_player_take_frame_release(&mps->player);
+	bool capture_requested = pl_player_take_capture_request(&mps->player);
+	struct pl_frame_hold_input input = {
+		.release = release,
+		.has_media = has_media,
+		.capture_requested = capture_requested,
+		.child_has_picture = obs_source_get_width(mps->current_media_source) &&
+				     obs_source_get_height(mps->current_media_source),
+		.applied_epoch = os_atomic_load_long(&mps->player.applied_epoch),
+		.now_ms = (int64_t)(os_gettime_ns() / 1000000),
+	};
+	bool holding = pl_frame_hold_render(&mps->frame_hold, &input, capture_child, mps);
+	if (input.capture_requested)
+		pl_player_capture_answered(&mps->player);
+	/* the texture is as big as the item (66 MB for 4K in 16-bit float): kept only while a hold lasts */
+	if (!holding && mps->held_frame) {
+		gs_texrender_destroy(mps->held_frame);
+		mps->held_frame = NULL;
+	}
+
+	if (holding) {
+		draw_held_frame(mps);
+	} else if (has_media) {
 		obs_source_video_render(mps->current_media_source);
 	} else {
 		obs_source_video_render(NULL);
@@ -2475,6 +2577,21 @@ static bool end_waits_for_startup(struct media_playlist_source *mps)
 	return mps->startup.epoch && !mps->startup.settled && mps->startup.still;
 }
 
+/* R-BEH-8: a source that is not shown draws nothing, so a held frame would only use memory (66 MB for 4K in 16-bit
+ * float) until it is shown again; it is let go and its texture freed. Graphics thread, like video_render. */
+static void let_go_of_hidden_frame(struct media_playlist_source *mps)
+{
+	if (obs_source_showing(mps->source) || (!mps->frame_hold.holding && !mps->held_frame))
+		return;
+	pl_frame_hold_release(&mps->frame_hold);
+	if (mps->held_frame) {
+		obs_enter_graphics();
+		gs_texrender_destroy(mps->held_frame);
+		obs_leave_graphics();
+		mps->held_frame = NULL;
+	}
+}
+
 static void mps_video_tick(void *data, float seconds)
 {
 	struct media_playlist_source *mps = data;
@@ -2495,6 +2612,7 @@ static void mps_video_tick(void *data, float seconds)
 
 	judge_startup(mps);
 	tend_still_hold(mps);
+	let_go_of_hidden_frame(mps);
 
 	/* Automatic advance is decided here, from the end the child recorded, and executed by the player thread, so
 	 * nothing recurses on the media thread and the graphics thread never waits on a load (R-THR-1). Next runs
@@ -2506,8 +2624,11 @@ static void mps_video_tick(void *data, float seconds)
 		pthread_mutex_lock(&mps->mutex);
 		bool ended = pl_player_take_end(&mps->player);
 		bool moved = ended && playlist_next_locked(mps);
-		if (ended && !moved)
+		if (ended && !moved) {
+			/* the child keeps its last frame at its end for a seamless cut (R-BEH-8); none follows */
+			pl_player_blank(&mps->player);
 			end_reached_locked(mps);
+		}
 		pthread_mutex_unlock(&mps->mutex);
 		if (moved) {
 			signal_media_next(mps);

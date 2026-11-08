@@ -9,6 +9,13 @@
 # "HARNESS DONE", closes OBS, restores the scene collection and user.ini (Studio Mode is off for the run), removes the folder and prints the results with the
 # plugin's log lines. Exit code 0 only when every check passed.
 #
+# Install step: a plain <ObsRoot>\plugins\obs-playlister folder is deleted and replaced by the build. When that folder
+# is a junction or symbolic link (for example to C:\ProgramData\obs-studio\plugins\obs-playlister, so the portable
+# OBS loads the installed plugin), the script refuses to run: deleting through a link with Remove-Item -Recurse can
+# empty the real plugin folder in Windows PowerShell 5.1, and replacing the link with a copy silently cuts the two
+# apart. With -InstallIntoLinkedPlugin it copies the build's files through the link instead, overwriting files and
+# deleting nothing, which installs the build into the real plugin folder the link points to.
+#
 # The three files need different durations, and the second one must be longer than about 35 s (one step seeks to
 # 30 s). -SceneCollection must name the collection OBS opens, or the harness never loads.
 #
@@ -40,7 +47,10 @@ param(
 	# a folder of renders for phase2-acceptance.lua
 	[string]$Otr = '',
 	# OBS's language for this run, e.g. de-DE (locale-check.lua); user.ini is restored afterwards
-	[string]$Language = ''
+	[string]$Language = '',
+	# <ObsRoot>\plugins\obs-playlister is a junction or link: copy the build into the folder it points to (the real
+	# installed plugin) instead of refusing
+	[switch]$InstallIntoLinkedPlugin
 )
 $ErrorActionPreference = 'Stop'
 if ($Files.Count -ne 3) { throw 'pass exactly three media files, each of a different duration' }
@@ -64,16 +74,40 @@ $userIni = Join-Path $ObsRoot 'config\obs-studio\user.ini'
 $userIniBackup = "$userIni.harness-backup"
 if (Test-Path $userIniBackup) { throw "a backup from an earlier run exists: $userIniBackup" }
 
+# the plugin folder may be a junction or link to the installed plugin; it is never deleted through (see the header)
+$target = Join-Path $ObsRoot 'plugins\obs-playlister'
+$targetItem = Get-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+$targetIsLink = $targetItem -and ($targetItem.Attributes -band [IO.FileAttributes]::ReparsePoint)
+if ($targetIsLink) {
+	$linkTarget = @($targetItem.Target) -join ', '
+	if (-not $InstallIntoLinkedPlugin) {
+		throw ("$target is a $($targetItem.LinkType) to $linkTarget. The harness will not delete or replace it. " +
+			'Pass -InstallIntoLinkedPlugin to copy this build into that real plugin folder (files are overwritten, ' +
+			'nothing is deleted), or make the folder a plain folder first.')
+	}
+	"installing into the real plugin folder: $target is a $($targetItem.LinkType) to $linkTarget; this build's files overwrite the installed plugin's"
+}
+
 Push-Location $Repo
 try {
 	cmake --build --preset windows-x64 --config RelWithDebInfo | Out-Null
 	if ($LASTEXITCODE -ne 0) { throw 'the build failed' }
 	Remove-Item -Recurse -Force 'release\RelWithDebInfo' -ErrorAction SilentlyContinue
 	cmake --install build_x64 --config RelWithDebInfo --prefix release/RelWithDebInfo | Out-Null
-	$target = Join-Path $ObsRoot 'plugins\obs-playlister'
-	Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
-	New-Item -ItemType Directory -Force (Join-Path $ObsRoot 'plugins') | Out-Null
-	Copy-Item -Recurse 'release\RelWithDebInfo\obs-playlister' $target
+	if ($targetIsLink) {
+		# through the link, file by file: overwrites, deletes nothing (a DLL an open OBS has loaded fails the copy)
+		$source = (Resolve-Path 'release\RelWithDebInfo\obs-playlister').Path
+		foreach ($file in Get-ChildItem -LiteralPath $source -Recurse -File) {
+			$destination = Join-Path $target $file.FullName.Substring($source.Length + 1)
+			New-Item -ItemType Directory -Force (Split-Path $destination) | Out-Null
+			Copy-Item -LiteralPath $file.FullName $destination -Force
+		}
+	}
+	else {
+		Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
+		New-Item -ItemType Directory -Force (Join-Path $ObsRoot 'plugins') | Out-Null
+		Copy-Item -Recurse 'release\RelWithDebInfo\obs-playlister' $target
+	}
 }
 finally {
 	Pop-Location

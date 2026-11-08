@@ -65,6 +65,8 @@ target_sources(
     src/core/filter.c
     src/core/folder-state.h
     src/core/folder-state.c
+    src/core/frame-hold.h
+    src/core/frame-hold.c
     src/core/keys.h
     src/core/keys.c
     src/core/list-parse.h
