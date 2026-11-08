@@ -24,6 +24,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string.h>
 #include <util/bmem.h>
 
+#include "test-common.h"
+
 #include "core/url.h"
 
 static void expect_text(const char *what, const char *input, char *found, const char *expected)
@@ -75,6 +77,21 @@ static void test_extension(void)
 	ext("C:\\a#b\\c.d?e.mp3", "mp3"); /* a local name may hold "?" and "#" */
 	ext("C:\\dir\\file.", NULL);
 	ext("relative/x.tar.gz", "gz");
+}
+
+static void redacted(const char *location, const char *expected)
+{
+	expect_text("redacted", location, pl_url_redacted(location), expected);
+}
+
+/* what a log line shows of a location: user information, query and fragment of a URL left out; a path as it is */
+static void test_redacted(void)
+{
+	redacted("https://user:pw@lists.example.com/show.m3u?token=SECRET#f", "https://lists.example.com/show.m3u");
+	redacted("https://a@b@host.example.com/x", "https://host.example.com/x"); /* the last '@' ends it */
+	redacted("http://host.example.com", "http://host.example.com");
+	redacted("C:\\Lists\\a.m3u", "C:\\Lists\\a.m3u");
+	redacted("/home/me/a.m3u", "/home/me/a.m3u");
 }
 
 static void resolve(const char *reference, const char *expected)
@@ -241,9 +258,11 @@ static void test_posix(void)
 
 int main(void)
 {
+	pl_test_no_crash_dialogs();
 	long allocations = bnum_allocs();
 	test_scheme();
 	test_extension();
+	test_redacted();
 	test_resolve();
 	test_decode();
 	test_file_url();

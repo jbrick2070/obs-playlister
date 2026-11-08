@@ -215,6 +215,12 @@ if [[ "${script}" == playlister-harness.lua ]]; then
 		echo "FAIL the corrupt still was loaded ${still_loads} times, not once"
 		failed=true
 	fi
+	# R-UP-5: select_index with a row past the end and with -1 is ignored, and each says so in the log
+	ignored_selects="$(grep -cE "select_index: .*out of range.*ignored" "${log}" || true)"
+	if [[ "${ignored_selects}" -lt 2 ]]; then
+		echo "FAIL select_index out of range was logged ${ignored_selects} times, not at least twice"
+		failed=true
+	fi
 fi
 # as run-harness.ps1: the leak count is reported; only the Phase 3a acceptance fails on it
 if ! grep -qE "Number of memory leaks: 0$" "${log}"; then

@@ -32,6 +32,11 @@ and the legacy install layout.
   macOS branch was converted the same way but is untested (macOS is not a target).
 - `cmake/common/bootstrap.cmake` registers `buildspec.json` as a configure dependency, so a version bump reaches
   `data/manifest.json` and the version resource without a manual reconfigure.
+- `cmake/common/buildspec_common.cmake` dependency download: an archive left by an interrupted or failed download
+  (its extraction marker does not match the expected hash, and neither does the archive's own SHA256) is removed
+  before the download step, so it is downloaded again instead of failing in `ARCHIVE_EXTRACT` on every configure; a
+  complete archive or a matching marker is left alone. A failed download removes its file before the `FATAL_ERROR`
+  (the template removes it after, where it never runs). The other plugin repos use the same block.
 - Default install prefix (`cmake/windows/defaults.cmake`): `%ALLUSERSPROFILE%/obs-studio/plugins`, as in template
   commit 013ffca.
 - `CMakePresets.json`: Windows SDK `10.0.26100.0`.

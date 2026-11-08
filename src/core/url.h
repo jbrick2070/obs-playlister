@@ -34,6 +34,11 @@ bool pl_url_is_http(const char *text);
  * the query and fragment are removed first; a local path keeps "?" and "#", which file names may contain. */
 char *pl_url_path_extension(const char *location);
 
+/* The location as a log line shows it, as URLs can carry credentials or signed query strings: for text with "://", the
+ * scheme and "://", the authority from after its last '@' (user information may itself contain '@') and the path up
+ * to the first '?' or '#'; anything else, such as a local path, unchanged. A secret inside the path still shows. */
+char *pl_url_redacted(const char *location);
+
 /* RFC 3986 section 5.2: reference resolved against base, which must be an absolute URL; dot segments removed, scheme
  * and host lower-cased. A reference that is an absolute URL itself is normalized the same way. */
 char *pl_url_resolve(const char *base, const char *reference);

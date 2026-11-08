@@ -98,6 +98,26 @@ char *pl_url_path_extension(const char *location)
 	return extension;
 }
 
+char *pl_url_redacted(const char *location)
+{
+	const char *scheme_end = strstr(location, "://");
+	if (!scheme_end)
+		return bstrdup(location);
+	const char *authority = scheme_end + 3;
+	const char *path_start = authority + strcspn(authority, "/?#");
+	/* the last '@' ends the user info, which may itself contain '@' */
+	for (const char *c = authority; c < path_start; c++) {
+		if (*c == '@')
+			authority = c + 1;
+	}
+
+	struct dstr shown = {0};
+	dstr_ncopy(&shown, location, (size_t)(scheme_end + 3 - location));
+	dstr_ncat(&shown, authority, (size_t)(path_start - authority));
+	dstr_ncat(&shown, path_start, strcspn(path_start, "?#"));
+	return shown.array;
+}
+
 /* RFC 3986 section 3, as the resolution in section 5 needs it: each part is a slice of the text, and a part that is
  * absent differs from one that is present but empty */
 struct uri_parts {

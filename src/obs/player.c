@@ -21,8 +21,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 #include <string.h>
 #include <util/bmem.h>
-#include <util/dstr.h>
 #include <util/platform.h>
+
+#include "core/url.h"
 
 /* Media Source (ffmpeg_source) settings */
 #define S_FFMPEG_LOCAL_FILE "local_file"
@@ -51,25 +52,9 @@ static bool child_settings_equal(const struct pl_child_settings *a, const struct
 /* URLs can carry credentials or signed query strings, so the log keeps scheme, host and path only */
 void pl_player_log_location(int level, const char *what, const char *path)
 {
-	const char *scheme_end = strstr(path, "://");
-	if (!scheme_end) {
-		obs_log(level, "%s %s", what, path);
-		return;
-	}
-	const char *authority = scheme_end + 3;
-	const char *path_start = authority + strcspn(authority, "/?#");
-	/* the last '@' ends the user info, which may itself contain '@' */
-	for (const char *c = authority; c < path_start; c++) {
-		if (*c == '@')
-			authority = c + 1;
-	}
-
-	struct dstr shown = {0};
-	dstr_ncopy(&shown, path, (size_t)(scheme_end + 3 - path));
-	dstr_ncat(&shown, authority, (size_t)(path_start - authority));
-	dstr_ncat(&shown, path_start, strcspn(path_start, "?#"));
-	obs_log(level, "%s %s", what, shown.array);
-	dstr_free(&shown);
+	char *shown = pl_url_redacted(path);
+	obs_log(level, "%s %s", what, shown);
+	bfree(shown);
 }
 
 static void child_updated(void *data, calldata_t *cd)

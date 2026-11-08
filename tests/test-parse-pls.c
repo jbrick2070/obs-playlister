@@ -133,6 +133,7 @@ static void test_numbers(void)
 
 int main(void)
 {
+	pl_test_no_crash_dialogs();
 	long allocations = bnum_allocs();
 	test_fixtures();
 	test_text();

@@ -278,6 +278,45 @@ static void test_identity_update_keeps_valid_next(void)
 	}
 }
 
+/* R-UP-82: Previous twice in a later cycle goes back past the cycle's start into the last cycle's history; an update
+ * that then adds undetermined items, with no select after it (apply_snapshot makes none), moves that range under
+ * next. One item added used to replay the current item; two left next at history, which the R-UP-76 clamp sent back
+ * to head, skipping the rest of that history. Checked by id, so it holds whatever rand() picks. */
+static void test_update_files_adding_keeps_place_in_history(void)
+{
+	for (size_t added = 1; added <= 2; added++) {
+		struct shuffler shuffler;
+		DARRAY(struct media_file_data) items;
+		DARRAY(struct media_file_data) grown;
+		da_init(items);
+		da_init(grown);
+		setup_second_cycle(&shuffler, &items.da, 4);
+		shuffler_prev(&shuffler);
+		shuffler_prev(&shuffler);
+		assert(shuffler.next == 3);
+		const char *current = shuffler.shuffled_files.array[2]->id;
+		const char *following = shuffler.shuffled_files.array[3]->id;
+
+		/* new storage with the same ids (the strings are shared), and new rows "5" and "6" */
+		da_copy(grown, items);
+		ArrayInitOffset(&grown.da, added, 4);
+		shuffler_update_files(&shuffler, &grown.da);
+		assert_invariant(&shuffler);
+		bool in_place = shuffler.next > 0 &&
+				strcmp(shuffler.shuffled_files.array[shuffler.next - 1]->id, current) == 0;
+		if (!in_place)
+			print_state(&shuffler);
+		assert(in_place);
+		assert(strcmp(shuffler_next(&shuffler)->id, following) == 0);
+
+		shuffler_destroy(&shuffler);
+		for (size_t i = 4; i < grown.num; i++)
+			bfree(grown.array[i].id);
+		da_free(grown);
+		ArrayDestroy(&items.da);
+	}
+}
+
 /* R-KEY-1: folder items with entries match by key and occurrence across a rescan, whatever their file names */
 static void test_update_files_matches_keys(void)
 {
@@ -516,6 +555,8 @@ int main(void)
 	test_update_files_matches_keys();
 	printf("test_identity_update_keeps_valid_next\n");
 	test_identity_update_keeps_valid_next();
+	printf("test_update_files_adding_keeps_place_in_history\n");
+	test_update_files_adding_keeps_place_in_history();
 	printf("test_random_operations_keep_invariant\n");
 	test_random_operations_keep_invariant();
 	printf("obs-playlister shuffler regression tests: passed\n");

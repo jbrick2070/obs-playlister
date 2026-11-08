@@ -24,6 +24,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "test-common.h"
+
 #include "core/source-size.h"
 
 static const struct pl_size none = {0, 0};
@@ -39,6 +41,7 @@ static void expect(struct pl_size got, uint32_t width, uint32_t height, const ch
 
 int main(void)
 {
+	pl_test_no_crash_dialogs();
 	struct pl_size child = {1280, 720};
 	struct pl_size kept = {640, 360};
 

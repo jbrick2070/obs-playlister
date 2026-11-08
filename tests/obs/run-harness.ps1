@@ -268,13 +268,19 @@ try {
 	# R-BEH-5: the corrupt file is loaded once by each failing source and once more by Play, the corrupt still once; a
 	# list that cycles through its failures loads them again and again, and a Play that did nothing loads one less
 	$loadCountsWrong = $false
+	$logLineMissing = $false
 	if ($Script -eq 'playlister-harness.lua') {
 		$corruptLoads = @(Select-String -Path $log.FullName -Pattern '\[obs-playlister\] playing .*playlister-harness-corrupt\.mp4').Count
 		$stillLoads = @(Select-String -Path $log.FullName -Pattern '\[obs-playlister\] playing .*playlister-harness-corrupt\.jpg').Count
 		if ($corruptLoads -ne 3) { "FAIL the corrupt file was loaded $corruptLoads times, not 3"; $loadCountsWrong = $true }
 		if ($stillLoads -ne 1) { "FAIL the corrupt still was loaded $stillLoads times, not once"; $loadCountsWrong = $true }
+		# R-UP-5: select_index with a row past the end and with -1 is ignored, and each says so in the log
+		$ignoredSelects = @(Select-String -Path $log.FullName -Pattern 'select_index: .*out of range.*ignored').Count
+		if ($ignoredSelects -lt 2) {
+			"FAIL select_index out of range was logged $ignoredSelects times, not at least twice"
+			$logLineMissing = $true
+		}
 	}
-	$logLineMissing = $false
 	if ($Script -eq 'phase2-acceptance.lua') {
 		# R-PLAT-10: the denied folder's log line names the Win32 code
 		if (-not (Select-String -Path $log.FullName -Pattern 'access denied \(permissions or security software\); Win32 error 5\)' -Quiet)) {

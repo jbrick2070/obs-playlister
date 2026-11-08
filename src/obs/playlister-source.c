@@ -28,6 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/row-kind.h"
 #include "core/sort.h"
 #include "core/source-size.h"
+#include "core/url.h"
 #include "providers/fold-key.h"
 
 /* the audio queue's planes go straight into struct obs_source_audio */
@@ -69,7 +70,7 @@ static size_t find_folder_item_index(struct darray *array, const char *key, uint
 static void set_media_state(void *data, enum obs_media_state state);
 static enum obs_media_state mps_get_state(void *data);
 
-static void mps_end_reached(void *data);
+static void end_reached_locked(struct media_playlist_source *mps);
 
 static void media_source_ended(void *data, calldata_t *cd);
 void mps_audio_callback(void *data, obs_source_t *source, const struct audio_data *audio_data, bool muted);
@@ -464,7 +465,7 @@ static void clear_media_source(void *data)
 	pl_player_clear(&mps->player);
 	/* nothing is playing now; get_state and video_render go by this (R-UP-78). Callers hold the list lock. */
 	mps->actual_media = NULL;
-	mps->state = OBS_MEDIA_STATE_STOPPED;
+	set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
 }
 
 /* Checks if the media source has to be updated, because updating its
@@ -492,7 +493,7 @@ static void update_media_source(void *data, bool forced)
 	if (forced) {
 		pl_player_load(&mps->player, mps->actual_media->path, mps->actual_media->is_url,
 			       item_is_still(mps->actual_media));
-		mps->state = OBS_MEDIA_STATE_PLAYING;
+		set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 		/* any load decides what plays, so a wait for a folder row to settle is over (R-KEY-2), and a stop after
 		 * everything failed is lifted (R-BEH-5) */
 		cancel_resume(mps);
@@ -529,6 +530,10 @@ static bool select_index_locked(struct media_playlist_source *mps, size_t media_
 			mark_save_dirty(mps);
 			played = true;
 		}
+	} else {
+		/* R-UP-5: a row past the end does nothing, and says so */
+		obs_log(LOG_INFO, "select_index: row %zu is out of range (%zu rows); ignored", media_index + 1,
+			mps->files.num);
 	}
 	return played;
 }
@@ -595,6 +600,11 @@ static void select_index_proc(void *data, calldata_t *cd)
 	long long folder_item_index = 0;
 	calldata_get_int(cd, "media_index", &media_index);
 	calldata_get_int(cd, "folder_item_index", &folder_item_index);
+	/* R-UP-5: a negative row would become a huge index; it does nothing, and says so */
+	if (media_index < 0) {
+		obs_log(LOG_INFO, "select_index: media_index %lld is out of range; ignored", media_index);
+		return;
+	}
 	select_index_proc_(mps, media_index, folder_item_index);
 }
 
@@ -696,7 +706,13 @@ static size_t find_folder_item_index(struct darray *array, const char *key, uint
 static void set_media_state(void *data, enum obs_media_state state)
 {
 	struct media_playlist_source *mps = data;
-	mps->state = state;
+	os_atomic_set_long(&mps->state, (long)state);
+}
+
+/* The source's own media state; read without the list lock by video_tick, the hotkey and the media callbacks */
+static inline enum obs_media_state media_state(struct media_playlist_source *mps)
+{
+	return (enum obs_media_state)os_atomic_load_long(&mps->state);
 }
 
 static enum obs_media_state mps_get_state(void *data)
@@ -714,22 +730,19 @@ static enum obs_media_state mps_get_state(void *data)
 		return OBS_MEDIA_STATE_STOPPED;
 	/* a held still is playing or paused by our own state (R-DIR-9) */
 	if (hold_shown(mps))
-		return mps->state == OBS_MEDIA_STATE_PAUSED ? OBS_MEDIA_STATE_PAUSED : OBS_MEDIA_STATE_PLAYING;
+		return media_state(mps) == OBS_MEDIA_STATE_PAUSED ? OBS_MEDIA_STATE_PAUSED : OBS_MEDIA_STATE_PLAYING;
 	return obs_source_media_get_state(mps->current_media_source);
 }
 
-/* Called from video_tick with no lock held; the parent's media_ended signal is emitted outside the lock */
-static void mps_end_reached(void *data)
+/* The end of the list, with the list lock held: ENDED, and back to the first playable row, so Play or Restart starts
+ * there at item 1. Set in the same hold of the lock as the decision that nothing follows, so a selection made
+ * meanwhile comes after it. The caller raises the parent's media_ended once the lock is released. */
+static void end_reached_locked(struct media_playlist_source *mps)
 {
-	struct media_playlist_source *mps = data;
-	pthread_mutex_lock(&mps->mutex);
 	set_media_state(mps, OBS_MEDIA_STATE_ENDED);
-	/* back to the first playable row, so Play or Restart starts there; its folder position starts at item 1 */
 	size_t first = skip_empty_folder_rows(mps, 0, false);
 	set_current_media_index(mps, first < mps->files.num ? first : 0);
 	reset_folder_item_index(mps);
-	pthread_mutex_unlock(&mps->mutex);
-	obs_source_media_ended(mps->source);
 	mark_save_dirty(mps);
 }
 
@@ -1096,8 +1109,8 @@ static bool state_stopped(enum obs_media_state state)
 static bool playback_stopped(struct media_playlist_source *mps, bool held)
 {
 	if (held)
-		return state_stopped(mps->state);
-	return state_stopped(mps->state) || state_stopped(obs_source_media_get_state(mps->current_media_source));
+		return state_stopped(media_state(mps));
+	return state_stopped(media_state(mps)) || state_stopped(obs_source_media_get_state(mps->current_media_source));
 }
 
 /* R-DIR-9: the hold is the source's playback while its load is the current one and the source is not stopped (the
@@ -1106,7 +1119,7 @@ static bool hold_shown(struct media_playlist_source *mps)
 {
 	return os_atomic_load_bool(&mps->hold_active) &&
 	       pl_player_load_eligible(&mps->player, os_atomic_load_long(&mps->hold_epoch)) &&
-	       !state_stopped(mps->state);
+	       !state_stopped(media_state(mps));
 }
 
 /* R-DIR-8: with an evicted item's copy current, Restart and Play from stopped start that item again rather than
@@ -1117,7 +1130,7 @@ static bool restart_playing_copy(struct media_playlist_source *mps)
 		return false;
 	pl_player_load(&mps->player, mps->playing_copy.path, mps->playing_copy.is_url,
 		       item_is_still(&mps->playing_copy));
-	mps->state = OBS_MEDIA_STATE_PLAYING;
+	set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 	cancel_resume(mps);
 	mps->all_failed = false;
 	return true;
@@ -1148,7 +1161,7 @@ static void play_pause_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey
 	struct media_playlist_source *mps = data;
 
 	if (pressed && obs_source_showing(mps->source))
-		obs_source_media_play_pause(mps->source, mps->state == OBS_MEDIA_STATE_PLAYING);
+		obs_source_media_play_pause(mps->source, media_state(mps) == OBS_MEDIA_STATE_PLAYING);
 }
 
 static void restart_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
@@ -1208,7 +1221,7 @@ static void mps_play_pause(void *data, bool pause)
 	/* a load that has not reached the child yet (just requested by an update, Play, Restart or Next): the child's
 	 * state is still the old media's, so the source's own decides, and a pause is queued behind the load, which the
 	 * player holds until the new media starts (R-UP-79) */
-	bool loading = pl_player_load_pending(&mps->player) && !state_stopped(mps->state);
+	bool loading = pl_player_load_pending(&mps->player) && !state_stopped(media_state(mps));
 	bool stopped = !loading && playback_stopped(mps, held);
 	if (!pause) {
 		if (!stopped) {
@@ -1261,7 +1274,10 @@ static void mps_stop(void *data)
 	 * advance (R-BEH-6) */
 	pthread_mutex_lock(&mps->mutex);
 	pl_player_stop(&mps->player);
-	set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
+	/* after the list ended, ENDED stays: under the list lock it means the end-of-list position holds, so a later
+	 * snapshot keeps Play and Restart on item 1 (apply_snapshot); state_stopped counts it as stopped all the same */
+	if (media_state(mps) != OBS_MEDIA_STATE_ENDED)
+		set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
 	/* a user stop: a folder row that settles later does not start by itself (R-KEY-2), nor does a list change after
 	 * everything failed (R-BEH-5) */
 	cancel_resume(mps);
@@ -1443,7 +1459,7 @@ static void mps_activate(void *data)
 		/* a plain unpause, as upstream: a source the user stopped stays stopped when it is shown again. Our own
 		 * state counts too, because the hide's pause may still be on its way to the child. */
 		pthread_mutex_lock(&mps->mutex);
-		if (mps->state == OBS_MEDIA_STATE_PAUSED ||
+		if (media_state(mps) == OBS_MEDIA_STATE_PAUSED ||
 		    obs_source_media_get_state(mps->current_media_source) == OBS_MEDIA_STATE_PAUSED) {
 			pl_player_play_pause(&mps->player, false);
 			set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
@@ -1852,10 +1868,14 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 			evicted = pl_merge_current_fate(snapshot->entries, snapshot->count, snapshot->visible,
 							snapshot->visible_count, id, NULL) == PL_CURRENT_EVICTED;
 		}
-		bool playing_or_paused = mps->state == OBS_MEDIA_STATE_PLAYING || mps->state == OBS_MEDIA_STATE_PAUSED;
+		/* read once for the branches below; under the list lock, ENDED means the end-of-list position holds */
+		enum obs_media_state state = media_state(mps);
+		bool playing_or_paused = state == OBS_MEDIA_STATE_PLAYING || state == OBS_MEDIA_STATE_PAUSED;
 		if (found != DARRAY_INVALID) {
 			mps->actual_media = &row->folder_items.array[found];
-			if (current_row)
+			/* after the list ended the position stays on the first row's first item (end_reached_locked), so Play
+			 * and Restart start there */
+			if (current_row && state != OBS_MEDIA_STATE_ENDED)
 				mps->current_folder_item_index = found;
 			/* back in the visible list: the copy is done with */
 			drop_playing_copy(mps);
@@ -1871,11 +1891,12 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 			mps->current_folder_item_index = 0;
 		} else {
 			mps->actual_media = NULL;
-			if (current_row && mps->state == OBS_MEDIA_STATE_PLAYING) {
+			if (current_row && state == OBS_MEDIA_STATE_PLAYING) {
 				move_past_removed(mps, row, row_index, &old_items.da, first_successor);
-			} else if (current_row) {
-				/* stopped, paused or ended: nothing starts by itself; Play goes on from the item that
-				 * followed it, if that is still listed */
+			} else if (current_row && state != OBS_MEDIA_STATE_ENDED) {
+				/* stopped or paused: nothing starts by itself; Play goes on from the item that followed
+				 * it, if that is still listed. After the list ended the position stays on the first row's
+				 * first item (end_reached_locked), so Play and Restart start there. */
 				mps->current_folder_item_index = 0;
 				for (size_t j = first_successor; j < old_items.num; j++) {
 					const struct pl_entry *entry = old_items.array[j].entry;
@@ -2021,10 +2042,13 @@ static void start_and_stop_providers(struct media_playlist_source *mps, struct d
 		struct provider_start *start = &starts.array[i];
 		struct pl_provider *provider = pl_provider_create(start->kind, start->location, start->row_uuid,
 								  start->instance_id, options, apply_snapshot, mps);
-		if (!provider)
+		if (!provider) {
+			/* a URL row's credentials and signed query stay out of the log */
+			char *shown = pl_url_redacted(start->location);
 			obs_log(LOG_ERROR,
-				"row %s cannot be read: its worker could not be started; the row stays empty",
-				start->location);
+				"row %s cannot be read: its worker could not be started; the row stays empty", shown);
+			bfree(shown);
+		}
 		pthread_mutex_lock(&mps->mutex);
 		size_t row_index = 0;
 		struct media_file_data *row = provider ? NULL : folder_row(mps, start->row_uuid, &row_index);
@@ -2281,7 +2305,7 @@ static bool item_is_still(const struct media_file_data *item)
 		return false;
 	if (item->entry)
 		return item->entry->kind == PL_ENTRY_STILL;
-	return pl_filter_kind(item->path) == PL_ENTRY_STILL;
+	return pl_location_kind(item->path) == PL_ENTRY_STILL;
 }
 
 /* Nothing in the list may play now (everything failed, is being rewritten, or is an empty or awaiting row) */
@@ -2326,12 +2350,13 @@ static void skip_failed_load(struct media_playlist_source *mps, long epoch, bool
 		/* the end of the list: a load that timed out may still start later (OBS retries a URL by itself), so the
 		 * child is stopped rather than left to play under an ended source */
 		pl_player_stop(&mps->player);
+		end_reached_locked(mps);
 	}
 	pthread_mutex_unlock(&mps->mutex);
 	if (moved)
 		signal_media_next(mps);
 	else if (!stopped)
-		mps_end_reached(mps);
+		obs_source_media_ended(mps->source);
 }
 
 /* Play or Restart when nothing may play because everything failed: the user asks, so the failed entries are tried
@@ -2372,7 +2397,7 @@ static void judge_startup(struct media_playlist_source *mps)
 		.media_time = obs_source_media_get_time(mps->current_media_source),
 		.audio = os_atomic_load_long(&mps->player.audio_epoch) == mps->startup.epoch,
 		.ended = pl_player_load_ended(&mps->player, mps->startup.epoch),
-		.may_advance = mps->state == OBS_MEDIA_STATE_PLAYING && active,
+		.may_advance = media_state(mps) == OBS_MEDIA_STATE_PLAYING && active,
 	};
 	enum pl_startup_verdict verdict = pl_startup_evaluate(&mps->startup, &evidence, now_ms);
 	if (verdict == PL_STARTUP_FAILED) {
@@ -2401,13 +2426,15 @@ static void advance_after_hold(struct media_playlist_source *mps, long epoch)
 	/* the child's end, kept waiting during the hold, belongs to this advance */
 	pl_load_tracker_withdraw(&mps->player.tracker);
 	bool moved = playlist_next_locked(mps);
-	if (!moved)
+	if (!moved) {
 		pl_player_stop(&mps->player);
+		end_reached_locked(mps);
+	}
 	pthread_mutex_unlock(&mps->mutex);
 	if (moved)
 		signal_media_next(mps);
 	else
-		mps_end_reached(mps);
+		obs_source_media_ended(mps->source);
 }
 
 /* R-DIR-9: the hold runs while the source plays; a pause freezes it (a hide does too under Pause/unpause), and a stop,
@@ -2424,7 +2451,7 @@ static void tend_still_hold(struct media_playlist_source *mps)
 	int64_t now_ms = (int64_t)(os_gettime_ns() / 1000000);
 	int64_t step = now_ms > mps->hold_last_ms ? now_ms - mps->hold_last_ms : 0;
 	mps->hold_last_ms = now_ms;
-	if (mps->state != OBS_MEDIA_STATE_PLAYING)
+	if (media_state(mps) != OBS_MEDIA_STATE_PLAYING)
 		return;
 	long elapsed = os_atomic_load_long(&mps->hold_elapsed_ms) + (long)step;
 	long duration = os_atomic_load_long(&mps->hold_duration_ms);
@@ -2475,15 +2502,17 @@ static void mps_video_tick(void *data, float seconds)
 	 * parent's next and ended signals are raised with no plugin lock held. */
 	if (os_atomic_load_long(&mps->player.tracker.ended_epoch) != 0 && !end_waits_for_startup(mps)) {
 		/* the end is taken and acted on under the list lock, so a selection made meanwhile either withdraws it
-		 * first or comes after the advance; never both */
+		 * first or comes after the advance, or after the end of the list; never both */
 		pthread_mutex_lock(&mps->mutex);
 		bool ended = pl_player_take_end(&mps->player);
 		bool moved = ended && playlist_next_locked(mps);
+		if (ended && !moved)
+			end_reached_locked(mps);
 		pthread_mutex_unlock(&mps->mutex);
 		if (moved) {
 			signal_media_next(mps);
 		} else if (ended) {
-			mps_end_reached(mps);
+			obs_source_media_ended(mps->source);
 		}
 	}
 

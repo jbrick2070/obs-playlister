@@ -534,6 +534,9 @@ static enum pl_folder_note read_events(struct pl_folder_os *os, pl_folder_rename
 			if (event->mask & IN_Q_OVERFLOW) {
 				set_error(os, EOVERFLOW);
 				note = PL_FOLDER_NOTE_OVERFLOW;
+				/* events were dropped, maybe a new subfolder's: the next arm watches the tree again, and until
+				 * then the watch is not polled (folder-os.h) */
+				os->armed = false;
 				continue;
 			}
 			if (event->wd == os->root_wd &&

@@ -68,9 +68,10 @@ enum list_shape {
 struct pl_list_provider {
 	/* fixed at create */
 	char *location;
-	bool remote;    /* an http(s) URL; else a local playlist file */
-	bool classify;  /* a remote row: the first response decides what it is (R-LIST-1 steps 3 and 4) */
-	char agent[64]; /* the User-Agent, "obs-playlister/<version>" (R-REM-5) */
+	char *log_location; /* the location as the log shows it (pl_url_redacted) */
+	bool remote;        /* an http(s) URL; else a local playlist file */
+	bool classify;      /* a remote row: the first response decides what it is (R-LIST-1 steps 3 and 4) */
+	char agent[64];     /* the User-Agent, "obs-playlister/<version>" (R-REM-5) */
 	struct pl_thread *thread;
 	struct pl_stop *stop;
 	struct pl_wake *wake; /* a request is waiting */
@@ -157,7 +158,7 @@ static void take_list(struct pl_list_provider *p, struct pl_list_result *result)
 	p->fresh = true;
 	enum list_shape shape = p->parsed.stream ? SHAPE_STREAM : SHAPE_LIST;
 	if (shape == SHAPE_STREAM && p->shape != SHAPE_STREAM)
-		obs_log(LOG_INFO, "list %s: an HLS stream; played as one entry and not fetched again", p->location);
+		obs_log(LOG_INFO, "list %s: an HLS stream; played as one entry and not fetched again", p->log_location);
 	p->shape = shape;
 	bfree(p->error);
 	p->error = NULL;
@@ -456,7 +457,7 @@ static void take_direct(struct pl_list_provider *p)
 	bfree(extension);
 	take_list(p, &result);
 	if (p->shape != SHAPE_DIRECT)
-		obs_log(LOG_INFO, "list %s: a media URL; played directly and never downloaded", p->location);
+		obs_log(LOG_INFO, "list %s: a media URL; played directly and never downloaded", p->log_location);
 	p->shape = SHAPE_DIRECT;
 }
 
@@ -540,12 +541,12 @@ static void refresh(struct pl_list_provider *p)
 	p->attempted = true;
 	p->last_attempt_ms = mono_now();
 	if (p->error && (!p->logged_error || strcmp(p->error, p->logged_error) != 0)) {
-		obs_log(LOG_WARNING, "list %s: %s%s", p->location, p->error,
+		obs_log(LOG_WARNING, "list %s: %s%s", p->log_location, p->error,
 			p->has_list ? "; keeping the last good list" : "");
 		bfree(p->logged_error);
 		p->logged_error = bstrdup(p->error);
 	} else if (!p->error && p->logged_error) {
-		obs_log(LOG_INFO, "list %s: read again without error", p->location);
+		obs_log(LOG_INFO, "list %s: read again without error", p->log_location);
 		bfree(p->logged_error);
 		p->logged_error = NULL;
 	}
@@ -559,9 +560,9 @@ static void refresh(struct pl_list_provider *p)
 	if (fresh && p->shape == SHAPE_LIST && p->parsed.count && !dated) {
 		if (p->options.mode != PL_MODE_FULL)
 			obs_log(LOG_INFO, "list %s: no dates; the newest entries are the last in the list",
-				p->location);
+				p->log_location);
 		else if (p->options.sort_key == PL_SORT_DATE)
-			obs_log(LOG_INFO, "list %s: no dates; sorted by date it plays in list order", p->location);
+			obs_log(LOG_INFO, "list %s: no dates; sorted by date it plays in list order", p->log_location);
 	}
 }
 
@@ -756,6 +757,7 @@ static void free_provider(struct pl_list_provider *p)
 	bfree(p->error);
 	bfree(p->logged_error);
 	bfree(p->location);
+	bfree(p->log_location);
 	bfree(p);
 }
 
@@ -767,6 +769,7 @@ struct pl_list_provider *pl_list_provider_create(enum pl_row_kind kind, const ch
 		return NULL;
 	struct pl_list_provider *p = bzalloc(sizeof(*p));
 	p->location = bstrdup(location);
+	p->log_location = pl_url_redacted(location);
 	p->remote = pl_url_is_http(location);
 	p->classify = kind == PL_ROW_REMOTE;
 	p->format = format_of(location);
@@ -788,7 +791,7 @@ struct pl_list_provider *pl_list_provider_create(enum pl_row_kind kind, const ch
 	if (!p->thread) {
 		struct dstr code = {0};
 		pl_os_error_cat(&code, error);
-		obs_log(LOG_ERROR, "list %s: the worker thread could not be started (%s)", p->location, code.array);
+		obs_log(LOG_ERROR, "list %s: the worker thread could not be started (%s)", p->log_location, code.array);
 		dstr_free(&code);
 		free_provider(p);
 		return NULL;
@@ -833,6 +836,6 @@ void pl_list_provider_destroy(struct pl_list_provider *provider)
 	/* a fetch in progress returns at once on the stop (R-REM-5); a local read stuck on a stalled share is
 	 * interrupted where the platform can (R-THR-3, R-LNX-7) */
 	pl_stop_set(provider->stop);
-	pl_thread_join(provider->thread, provider->location);
+	pl_thread_join(provider->thread, provider->log_location);
 	free_provider(provider);
 }

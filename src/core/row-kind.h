@@ -45,3 +45,6 @@ enum pl_row_kind pl_classify_row(const char *path, bool saved_folder, const stru
 
 /* A network share path: \\server\share\... (either separator), or the \\?\UNC\ form */
 bool pl_path_is_unc(const char *path);
+
+/* R-DIR-9: still or media by the extension of the path; a URL's query and fragment do not count */
+enum pl_entry_kind pl_location_kind(const char *location);

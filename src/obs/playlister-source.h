@@ -105,7 +105,9 @@ struct media_playlist_source {
 	obs_hotkey_id next_hotkey;
 	obs_hotkey_id prev_hotkey;
 
-	enum obs_media_state state;
+	/* enum obs_media_state; read without the list lock (video_tick, the hotkey, get_state/duration/time): only through
+	 * media_state() and set_media_state() */
+	volatile long state;
 	enum visibility_behavior visibility_behavior;
 	enum restart_behavior restart_behavior;
 

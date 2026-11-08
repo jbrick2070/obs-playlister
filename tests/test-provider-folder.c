@@ -17,11 +17,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 /* The folder provider on a real folder in the temp directory: the initial listing and its filters, new files
- * through the write-complete gate, renames that keep their identity, deletions, a file rewritten in place keeping
- * its place, view and filter changes without a new listing, lock list at start, subfolders (a hidden one and a
- * junction or symbolic link back up the tree skipped), a missing folder that comes back, and on Windows a folder
- * through this machine's admin share where it can be reached. Expected keys are written as file names and folded
- * as the platform folds them (K). Each wait has a generous limit, so a slow machine only makes it slower. */
+ * through the write-complete gate, renames that keep their identity (also a file renamed twice before one listing),
+ * deletions, a file rewritten in place keeping its place, view and filter changes without a new listing, lock list
+ * at start, subfolders (a hidden one and a junction or symbolic link back up the tree skipped), a missing folder that
+ * comes back, a change of the pending keys alone being published, and on Windows a folder through this machine's
+ * admin share where it can be reached. Expected keys are written as file names and folded as the platform folds
+ * them (K). Each wait has a generous limit, so a slow machine only makes it slower. */
 
 #if !defined(_WIN32) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE /* nftw */
@@ -51,6 +52,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "core/filter.h"
 #include "providers/provider.h"
+#include "providers/publication.h"
 
 #define WAIT_MS 15000
 
@@ -667,6 +669,100 @@ static void test_listing_and_changes(void)
 	bfree(folder);
 }
 
+/* R-DIR-8: a file renamed twice within one debounce (A to B to C) keeps its identity. The listing after both shows
+ * only C while the gate knows only A, so the queued renames compose before any is tried; without that, C is gated as
+ * a new file and listed later without its previous key. */
+static void test_rename_chain(void)
+{
+	char *folder = make_folder("chain");
+	write_file(folder, "a.mp4", 100, OLD);
+
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_container_options options = default_options();
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 43, &options, on_publish, &inbox);
+	assert(provider);
+	assert(wait_for(&inbox, 0, shows_exactly, K("a.mp4"), "the file before its renames"));
+
+	size_t mark = inbox_count(&inbox);
+	char *a = path_in(folder, "a.mp4");
+	char *b = path_in(folder, "b.mp4");
+	char *c = path_in(folder, "c.mp4");
+	move_path(a, b);
+	move_path(b, c);
+	const struct pl_snapshot *renamed = wait_for(&inbox, mark, lists, K("c.mp4"), "the file renamed twice");
+	assert(renamed);
+	const struct pl_entry *moved = entry(renamed, K("c.mp4"));
+	assert(moved->previous_key && strcmp(moved->previous_key, K("a.mp4")) == 0);
+	/* never gated as a new file */
+	pthread_mutex_lock(&inbox.mutex);
+	for (size_t i = mark; i < inbox.snapshots.num; i++)
+		assert(!pending(inbox.snapshots.array[i], K("c.mp4")));
+	pthread_mutex_unlock(&inbox.mutex);
+
+	bfree(a);
+	bfree(b);
+	bfree(c);
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	remove_folder(folder);
+	bfree(folder);
+}
+
+/* R-DIR-4, R-KEY-2: with the same entries and as many pending keys, other pending keys are still a change to
+ * publish; the source keeps the keys it was given, so it would wait for a file that is gone and load one still being
+ * written. Listing order alone is no change. */
+static void test_pending_keys_republished(void)
+{
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_publication publication;
+	pl_publication_init(&publication, 44, on_publish, &inbox);
+	struct pl_container_options options = default_options();
+	struct pl_entry x = {0};
+	x.location = "x.mp4";
+	x.key = "X.MP4";
+	x.occurrence = 1;
+	char a_key[] = "A.MP4";
+	char *a[] = {a_key};
+	struct pl_publication_status status = {.listed = true, .lock_point = true};
+	status.pending_keys = a;
+	status.pending_count = 1;
+	assert(pl_publication_update(&publication, &options, pl_publication_copy_entries(&x, 1, false), 1, &status,
+				     false) == PL_PUBLICATION_PUBLISHED);
+
+	/* A, still being written, is deleted and B is written: the entries and the count stay */
+	char b_key[] = "B.MP4";
+	char *b[] = {b_key};
+	status.pending_keys = b;
+	assert(pl_publication_update(&publication, &options, pl_publication_copy_entries(&x, 1, false), 1, &status,
+				     false) == PL_PUBLICATION_PUBLISHED);
+	pthread_mutex_lock(&inbox.mutex);
+	const struct pl_snapshot *last = inbox.snapshots.array[inbox.snapshots.num - 1];
+	assert(last->pending_count == 1 && strcmp(last->pending_keys[0], "B.MP4") == 0);
+	pthread_mutex_unlock(&inbox.mutex);
+
+	/* the same again is no change */
+	assert(pl_publication_update(&publication, &options, pl_publication_copy_entries(&x, 1, false), 1, &status,
+				     false) == PL_PUBLICATION_UNCHANGED);
+
+	/* nor are the same keys in another order */
+	char c_key[] = "C.MP4";
+	char *bc[] = {b_key, c_key};
+	char *cb[] = {c_key, b_key};
+	status.pending_keys = bc;
+	status.pending_count = 2;
+	assert(pl_publication_update(&publication, &options, pl_publication_copy_entries(&x, 1, false), 1, &status,
+				     false) == PL_PUBLICATION_PUBLISHED);
+	status.pending_keys = cb;
+	assert(pl_publication_update(&publication, &options, pl_publication_copy_entries(&x, 1, false), 1, &status,
+				     false) == PL_PUBLICATION_UNCHANGED);
+
+	pl_publication_free(&publication);
+	inbox_free(&inbox);
+}
+
 static void test_subfolders(void)
 {
 	char *folder = make_folder("tree");
@@ -849,8 +945,12 @@ int main(void)
 	printf("create arguments: passed\n");
 	test_is_directory();
 	printf("directory test: passed\n");
+	test_pending_keys_republished();
+	printf("pending keys republished: passed\n");
 	test_listing_and_changes();
 	printf("listing and changes: passed\n");
+	test_rename_chain();
+	printf("rename chain: passed\n");
 	test_subfolders();
 	printf("subfolders: passed\n");
 	test_missing_folder();

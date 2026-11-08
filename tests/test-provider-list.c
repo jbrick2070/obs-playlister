@@ -20,14 +20,17 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * through a stand-in fetcher (resolution against the final URL, refresh on the interval, one fetch in flight with
  * requests coalesced, the last good list kept with an error, the interval changed in place), remote rows classified
  * by their first response (R-LIST-1), direct media and HLS rows that are never fetched again, the D-12 a filter,
- * the lock, the "no dates" note, and destroy during a fetch that hangs. Local lists follow the platform's path rules
- * (R-LNX-10). Each wait has a generous limit, so a slow machine only makes it slower. */
+ * the lock, the "no dates" note, a URL's credentials and query kept out of the log, and destroy during a fetch that
+ * hangs. Local lists follow the platform's path rules (R-LNX-10). Each wait has a generous limit, so a slow machine
+ * only makes it slower. */
 
 #undef NDEBUG
 #include <assert.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <util/base.h>
 #include <util/bmem.h>
 #include <util/darray.h>
 #include <util/dstr.h>
@@ -350,7 +353,8 @@ static void write_file(const char *name, const char *text)
 {
 	char path[FOLDER_SIZE * 2];
 	snprintf(path, sizeof(path), "%s" SEP "%s", folder, name);
-	FILE *file = os_fopen(path, "wb");
+	/* with this test's own C runtime, which writes it below (test-common.h) */
+	FILE *file = pl_test_fopen(path, "wb");
 	assert(file);
 	fwrite(text, 1, strlen(text), file);
 	fclose(file);
@@ -525,6 +529,68 @@ static void test_remote_list(void)
 
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
+}
+
+/* ---- what the provider logs ---- */
+
+static pthread_mutex_t log_mutex;
+static DARRAY(char *) log_lines;
+
+/* Each message as the log would show it; providers log from their worker threads */
+static void capture_log(int level, const char *format, va_list args, void *param)
+{
+	UNUSED_PARAMETER(level);
+	UNUSED_PARAMETER(param);
+	char line[4096];
+	vsnprintf(line, sizeof(line), format, args);
+	char *copy = bstrdup(line);
+	pthread_mutex_lock(&log_mutex);
+	da_push_back(log_lines, &copy);
+	pthread_mutex_unlock(&log_mutex);
+}
+
+/* OBS logs are often posted for support, so a list URL's user information and query (credentials, signed tokens)
+ * never reach them; the host and path still do (pl_url_redacted) */
+static void test_log_redacts_urls(void)
+{
+	const char *url = "https://u:pw@lists.example.com/secret.m3u?token=SECRET";
+	struct route *route = add_route(url, PL_FETCH_OK, 200, "audio/x-mpegurl", NULL, "#EXTM3U\na.mp3\n");
+	pthread_mutex_init(&log_mutex, NULL);
+	da_init(log_lines);
+	base_set_log_handler(capture_log, NULL);
+
+	/* sorted by date, a list without dates logs its "no dates" line with each fresh read */
+	struct pl_container_options options;
+	default_options(&options);
+	options.sort_key = PL_SORT_DATE;
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_provider *provider = start(PL_ROW_PLAYLIST, url, &options, &inbox);
+	wait_for(&inbox, 0, shows, "https://u:pw@lists.example.com/a.mp3", "the list at a URL with credentials");
+	/* and an error is logged */
+	set_route(route, PL_FETCH_HTTP_STATUS, 500, NULL);
+	size_t since = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	wait_for(&inbox, since, is_error_stale, "the server answered HTTP 500", "an error at a URL with credentials");
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	base_set_log_handler(NULL, NULL);
+
+	bool secret_shown = false;
+	bool location_shown = false;
+	for (size_t i = 0; i < log_lines.num; i++) {
+		const char *line = log_lines.array[i];
+		if (strstr(line, "SECRET") || strstr(line, "pw@")) {
+			fprintf(stderr, "the log shows a credential: %s\n", line);
+			secret_shown = true;
+		}
+		if (strstr(line, "lists.example.com/secret.m3u"))
+			location_shown = true;
+		bfree(log_lines.array[i]);
+	}
+	da_free(log_lines);
+	pthread_mutex_destroy(&log_mutex);
+	assert(!secret_shown && location_shown);
 }
 
 static bool single_entry(const struct pl_snapshot *snapshot, const void *context)
@@ -756,6 +822,7 @@ int main(void)
 
 	test_local();
 	test_remote_list();
+	test_log_redacts_urls();
 	test_classification();
 	test_review_cases();
 	test_destroy_while_fetching();

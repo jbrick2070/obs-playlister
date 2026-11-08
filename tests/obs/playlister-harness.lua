@@ -946,6 +946,122 @@ end, function()
 	remove_source()
 end)
 
+-- The same with one folder row, the common setup, where the row Play goes back to after the end is also the ended
+-- item's row (the source above starts with a file row, so it cannot show this): a folder change after the end must
+-- not move Play and Restart to the ended item; they start at item 1. Loop off, name order: 1, 2, 3, 8 and 9.mp4
+-- here, the list ending on 9.mp4 (a copy of the first file, so only the time going back shows that it loaded)
+step("source with one folder row", 1500, 1500, nil, function()
+	create_source("playlister-harness-one-folder", function(settings)
+		set_playlist(settings, { { MEDIA_FOLDER, "media" } })
+		obs.obs_data_set_int(settings, "sort_key", 1)
+		obs.obs_data_set_bool(settings, "loop", false)
+		obs.obs_data_set_int(settings, "visibility_behavior", 2)
+	end)
+	check("source with one folder row created and shown", src ~= nil and item ~= nil)
+end)
+
+step("one folder row plays", 1000, 15000, function() return st() == PLAYING and dur() > 0 and tm() > 1500 end,
+	function()
+		mark.before_last = tm()
+		play_selected(K("media:1:9.MP4"))
+	end)
+
+step("the folder's last item", 500, 15000, function()
+	return st() == PLAYING and dur() > 0 and tm() < mark.before_last
+end, function()
+	check("play selected plays the folder's last item", refreshed_file_name() == "1-5: " .. MEDIA_FOLDER .. "/9.mp4",
+		refreshed_file_name() .. ", " .. status())
+	seek_near_end()
+end)
+
+-- ENDED on two polls in a row: video_tick has taken the end (see "end of list")
+step("one folder row ended", 1000, 20000, function()
+	mark.one_folder_ended = st() == ENDED and (mark.one_folder_ended or 0) + 1 or 0
+	return mark.one_folder_ended >= 2
+end, function()
+	check("with loop off the end of the folder's last item ends the list", st() == ENDED, status())
+	-- Stop after the end (as a hide under stop/restart does) must keep the end-of-list position too; the stop is a
+	-- media action applied at the next tick, long before the new file below is listed
+	obs.obs_source_media_stop(src)
+	-- sorts last; a copy of the third file, so it has its own duration
+	copy_file(FILES[3], MEDIA_FOLDER .. "/99.mp4")
+end)
+
+step("file added after the end of one folder row", 500, 15000, function()
+	return select_file_values():find(K("media:1:99.MP4"), 1, true) ~= nil
+end, function()
+	obs.obs_source_media_play_pause(src, false)
+end)
+
+-- R-UP-5: select_index with a row past the end, and with -1, does nothing; the runner fails the run unless the log
+-- says so for both
+local function select_index(media_index)
+	local cd = obs.calldata_create()
+	obs.calldata_set_int(cd, "media_index", media_index)
+	obs.calldata_set_int(cd, "folder_item_index", 0)
+	obs.proc_handler_call(obs.obs_source_get_proc_handler(src), "select_index", cd)
+	obs.calldata_destroy(cd)
+end
+
+step("play after the end of one folder row", 500, 15000, function() return st() == PLAYING and dur() > 0 end,
+	function()
+		local name = refreshed_file_name()
+		check("after the list ended, Stop and a folder change, Play starts at item 1",
+			st() == PLAYING and name:sub(1, 5) == "1-1: ", name .. ", " .. status())
+		mark.name_before_select = name
+		mark.time_before_select = tm()
+		select_index(1) -- the row count: one past the last row
+		select_index(-1)
+	end)
+
+step("select_index out of range", 1000, 1000, nil, function()
+	check("select_index with a row past the end, or -1, changes nothing", st() == PLAYING and
+		current_file_name() == mark.name_before_select and refreshed_file_name() == mark.name_before_select and
+		tm() > mark.time_before_select, refreshed_file_name() .. ", " .. status())
+	-- A selection made after the end plays with its own state, so it can be paused. The end is set under the same
+	-- hold of the list lock as the decision that nothing follows, so a selection cannot land between the two; that
+	-- race cannot be forced here (Lua timers run on the graphics thread), so these steps pass without that guard too
+	-- unless the race hits. They guard the path.
+	play_selected(K("media:1:99.MP4"))
+end)
+
+step("the folder's last item again", 500, 15000, function() return dur() == D[3] and st() == PLAYING end, function()
+	seek_near_end()
+end)
+
+step("one folder row ended again", 1000, 20000, function()
+	mark.one_folder_ended_again = st() == ENDED and (mark.one_folder_ended_again or 0) + 1 or 0
+	return mark.one_folder_ended_again >= 2
+end, function()
+	play_selected(K("media:1:2.MP4"))
+end)
+
+step("selection after the end", 500, 15000, function() return dur() == D[2] and st() == PLAYING end, function()
+	check("a selection after the end plays it", st() == PLAYING and
+		refreshed_file_name() == "1-2: " .. MEDIA_FOLDER .. "/2.mp4", refreshed_file_name() .. ", " .. status())
+	obs.obs_source_media_play_pause(src, true)
+end)
+
+-- the pause reaches the child a tick or two later, so the step waits for the time to read the same twice in a row
+step("pause after the end", 1000, 5000, function()
+	local now = tm()
+	local settled = st() == PAUSED and mark.pause_after_end_poll == now
+	mark.pause_after_end_poll = now
+	return settled
+end, function()
+	check("a selection after the end can be paused (its state is not the ended one)", st() == PAUSED, status())
+	remove_source()
+end)
+
+-- the copy goes once the child that may hold it open is released; tried until it is gone, before the next source
+-- counts the folder's files
+step("one folder row's copy removed", 0, 10000, function()
+	os.remove(MEDIA_FOLDER .. "/99.mp4")
+	return not exists(MEDIA_FOLDER .. "/99.mp4")
+end, function()
+	check("the harness copy for the one-folder source is removed", not exists(MEDIA_FOLDER .. "/99.mp4"))
+end)
+
 -- R-DIR-8: a newest-only row whose playing file is no longer the newest; the newest now is 9.mp4, the copy the
 -- harness rewrote above (a copy of the first file). A newer copy arrives while 9.mp4 plays: 9.mp4 plays to its end
 -- from the source's own copy of its entry, and then the newer file plays.

@@ -256,8 +256,12 @@ static char *encode_unsafe(char *url)
 static char *resolve(const char *base, const char *reference)
 {
 	if (is_url_base(base)) {
-		if (pl_url_scheme_length(reference))
-			return network_scheme(reference) ? encode_unsafe(pl_url_resolve(base, reference)) : NULL;
+		/* a scheme without "://" names no host ("http:clip.mp4"): refused, as an unusable line */
+		size_t scheme = pl_url_scheme_length(reference);
+		if (scheme)
+			return strncmp(reference + scheme, "://", 3) == 0 && network_scheme(reference)
+				       ? encode_unsafe(pl_url_resolve(base, reference))
+				       : NULL;
 		bool drive = ((reference[0] >= 'a' && reference[0] <= 'z') ||
 			      (reference[0] >= 'A' && reference[0] <= 'Z')) &&
 			     reference[1] == ':';
@@ -275,7 +279,9 @@ static char *resolve(const char *base, const char *reference)
 
 	/* a list on Linux follows POSIX path rules, one on Windows Windows rules, told apart by its own path (R-LNX-10) */
 	bool posix = pl_path_is_posix(base);
-	if (pl_url_scheme_length(reference)) {
+	/* only "scheme://" and file: are URLs: on Linux 'Show:Ep1.mp4' is a file name next to the list (R-LNX-10) */
+	size_t scheme = pl_url_scheme_length(reference);
+	if (scheme && (scheme_is(reference, "file") || strncmp(reference + scheme, "://", 3) == 0)) {
 		if (!scheme_is(reference, "file"))
 			return bstrdup(reference);
 		/* through the path rules too, so a file: URL and a plain path to one file get one key */

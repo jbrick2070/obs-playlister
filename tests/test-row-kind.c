@@ -16,7 +16,8 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-/* Row classification (R-LIST-1): the rules apply in order, and only the last one asks the disk */
+/* Row classification (R-LIST-1): the rules apply in order, and only the last one asks the disk; and a plain row's
+ * still or media kind by its location (R-DIR-9) */
 
 #undef NDEBUG
 #include <assert.h>
@@ -144,6 +145,18 @@ static void test_unc(void)
 	assert(!pl_path_is_unc(""));
 }
 
+/* R-DIR-9: a plain URL row is a still by its path's extension, whatever its query or fragment says; a local name keeps
+ * "#" and "?", which file names may contain */
+static void test_location_kind(void)
+{
+	assert(pl_location_kind("https://host.example.com/video.mp4?poster=cover.png") == PL_ENTRY_MEDIA);
+	assert(pl_location_kind("https://host.example.com/slide.png?token=x") == PL_ENTRY_STILL);
+	assert(pl_location_kind("https://host.example.com/slide.JPG#t=1") == PL_ENTRY_STILL);
+	assert(pl_location_kind("C:/a/photo#1.png") == PL_ENTRY_STILL);
+	assert(pl_location_kind("/home/me/what?.png") == PL_ENTRY_STILL);
+	assert(pl_location_kind("https://host.example.com/") == PL_ENTRY_MEDIA);
+}
+
 int main(void)
 {
 	pl_test_no_crash_dialogs();
@@ -152,6 +165,7 @@ int main(void)
 	test_order();
 	test_empty_filter();
 	test_unc();
+	test_location_kind();
 	assert(bnum_allocs() == allocations);
 	printf("row kind tests: passed\n");
 	return 0;

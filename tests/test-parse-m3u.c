@@ -228,6 +228,23 @@ static void test_references(void)
 		   "rtmp://x/y\nHTTP://H/a.MP4\nfile:///etc/passwd\nfile:///C:/Music/../a.mp3\nfile:///C:/a//b.mp3\n"
 		   "file:////server/share/x.mp3\n",
 		   "C:\\L\\x.m3u", local, 0, 1);
+
+	/* in a local list only "scheme://" and file: are URLs: on Linux a name with a colon is a file next to the list
+	 * (R-LNX-10) */
+	const struct expected_entry colons[] = {
+		{"/home/me/lists/rec-12:00:00.mp4", NULL, PL_ENTRY_MEDIA},
+		{"/home/me/lists/Show:Ep1.mp4", NULL, PL_ENTRY_MEDIA},
+		{"https://h.example.com/a.mp4", NULL, PL_ENTRY_MEDIA},
+	};
+	PARSE_TEXT("colon names", "rec-12:00:00.mp4\nShow:Ep1.mp4\nhttps://h.example.com/a.mp4\n",
+		   "/home/me/lists/x.m3u", colons, 0, 0);
+
+	/* in a remote list a scheme without "://" names no host: refused, as an unusable line */
+	const struct expected_entry hostless[] = {
+		{"https://host.example.com/dir/ok.mp3", NULL, PL_ENTRY_MEDIA},
+	};
+	PARSE_TEXT("hostless reference", "http:clip.mp4\nok.mp3\n", "https://host.example.com/dir/l.m3u", hostless, 0,
+		   1);
 }
 
 static char *upper_key(const char *location, void *context)
@@ -271,6 +288,7 @@ static void test_keys(void)
 
 int main(void)
 {
+	pl_test_no_crash_dialogs();
 	long allocations = bnum_allocs();
 	test_fixtures();
 	test_line_ends();

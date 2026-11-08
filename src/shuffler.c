@@ -347,6 +347,7 @@ void shuffler_update_files(struct shuffler *s, struct darray *array)
 			size_t new_head = 0;
 			size_t new_next = s->next;
 			size_t new_history = shuffled_files.num;
+			size_t history_before_next = 0;
 
 			// Find determined media
 			for (size_t i = 0; i < s->head; i++) {
@@ -368,11 +369,17 @@ void shuffler_update_files(struct shuffler *s, struct darray *array)
 				size_t new_idx = find_media_index(&shuffled_files.da, old_data, new_head);
 				if (new_idx != DARRAY_INVALID) {
 					da_swap(shuffled_files, --new_history, new_idx);
+					if (i < s->next)
+						history_before_next++;
 				} else {
 					if (i < s->next && new_next > 0)
 						new_next--;
 				}
 			}
+			/* the current item is in the last cycle's history (Previous went back past the start of this cycle): next
+			 * stays just after it there, wherever added or removed undetermined items moved that range (R-UP-82) */
+			if (s->next > s->head && s->next > s->history)
+				new_next = new_history + history_before_next;
 			s->head = new_head;
 			s->next = new_next;
 			s->history = new_history;

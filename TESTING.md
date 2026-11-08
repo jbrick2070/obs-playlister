@@ -27,6 +27,9 @@ folder items by identity, report a choice whose occurrence is gone (or a folder 
 folder item it names, then keep playing it while a file in its folder is renamed (the list follows in name
 order) and while a new file is copied in (it joins once admitted), pass over a harness copy rewritten in place while it is
 still being written and play it once admitted, and with loop off keep the ended last item through a folder change; a
+source with that folder as its only row then ends on the folder's last item, takes in a new file and must start Play
+at item 1 rather than at the ended item, must ignore `select_index` one past the last row and at -1 (the runner fails
+the run unless the log says so for both), and must play and pause a selection made after the end; a
 newest-only source on the same folder then plays that copy, keeps playing it when a newer copy arrives and takes its
 place in the list, and plays the newer one after its end (R-DIR-8); its migrated predecessor uses a junction named like a media file, which only the kind the
 migration saves keeps a folder. A fourth source has a row saved as a folder that does not exist: it must stay a
@@ -190,7 +193,7 @@ version expected in 1.1 and 1.2 is that build's (0.5.0 now).
 | 1.17a | As 1.17, but before acting in the dialog add a row to the playlist and apply, then point the dialog at the moved file (R-UP-67, Phase 2 step 1.4 build) | the row is relocated; no crash | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.17b | Add a folder row and apply, close OBS, rename that folder, start OBS (R-UP-34, R-LIST-1; Phase 2 step 4 build) | the missing-files dialog does not list the folder; the folder row is passed over; renaming the folder back and pressing OK in Properties plays its files again | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.18 | Close OBS while item 2 plays, start OBS again | item 2 resumes | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
-| 1.19 | Script `select_index` with `media_index` past the end | nothing happens (R-UP-5) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.19 | Script `select_index` with `media_index` past the end | nothing happens; the log says `select_index: row N is out of range (M rows); ignored` (R-UP-5) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.20 | Both plugins at once | a Media Playlist Source and a Playlister source work side by side | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.21 | Packaging (D-2, PLAN V9) | each zip extracts to the layout above; the Inno installer (unsigned, SmartScreen prompt expected) installs the same tree; the portable zip loads in a portable OBS 33 | 2026-10-24, Phase 1 build (CI run 40134077740): partial. Both zip layouts are as above, and the CI portable zip loads in a portable OBS 33.0.0. The Inno installer was not run (it needs an administrator); that part is pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 
@@ -279,14 +282,16 @@ folder of two or three short videos of different lengths.
 | L.1 | OBS starts with the plugin installed (Arch: `makepkg -si`; Ubuntu: the `.deb`) | the log has `[obs-playlister] plugin loaded`; Tools > Plugin Manager lists Playlister (record whether it is flagged Legacy, V22) | Pending |
 | L.2 | Add a Playlister with the video folder as a row | the folder's videos play in order; the row's status line reads "1: folder - N files" | Pending |
 | L.3 | Copy a large video into the folder while the source plays | it joins once the copy has finished; the playing video is not restarted | Pending |
-| L.4 | Rename a video in the folder; delete another | the renamed one keeps its place; the deleted one leaves; playback goes on | Pending |
+| L.4 | Rename a video in the folder; delete another; rename the playing video twice within half a second (`mv a.mp4 b.mp4; mv b.mp4 c.mp4`) | the renamed one keeps its place; the deleted one leaves; playback goes on; the video renamed twice keeps playing (R-DIR-8) | Pending |
 | L.5 | A hidden file (`.name.mp4`) and a hidden folder with subfolders on | both are left out | Pending |
 | L.6 | Move the watched folder away, then back | the row keeps its list; its status gives the reason and "showing the last list, from <time>"; it recovers within the check interval | Pending |
-| L.7 | A local .m3u with relative names and a `file:///` line | the entries resolve next to the list; the `file:` line plays the file it names | Pending |
+| L.7 | A local .m3u with relative names (one with a colon, such as `Show:Ep1.mp4`) and a `file:///` line | the entries resolve next to the list, the name with a colon too; the `file:` line plays the file it names | Pending |
 | L.8 | An http(s) .m3u on a real server, and a direct video URL | the list loads (HTTPS included); the video plays | Pending |
 | L.9 | A folder on a network share (NFS or SMB) | the row status (and the log line of the mode change) say it is a network file system; new files show up within the check interval | Pending |
 | L.10 | Hardware decoding on and off; the Properties dialog and the Browse dialog | both play; the dialogs look and work as on Windows | Pending |
 | L.11 | Open Properties of any Playlister (Linux, and on Windows with the next build) | the last line reads "Playlister 0.5.0" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
+| L.12 | A folder row with subfolders on. Note `sysctl fs.inotify.max_queued_events`, then `sudo sysctl fs.inotify.max_queued_events=64`; in one burst create 500 files and a new subfolder in the folder, then add a video to that subfolder. Restore the sysctl afterwards | the log shows the overflow ("more changes than the buffer holds; listing it again"), and the new video joins within about 3 s, not only at the next check (R-LNX-3) | Pending |
+| L.13 | A folder row with subfolders on. Note `sysctl fs.inotify.max_user_watches`, then `sudo sysctl fs.inotify.max_user_watches=<just above the tree's folder count>`; create a new subfolder holding a video (made elsewhere and moved in). Restore the sysctl afterwards | the log says "notifications cannot be armed; rescanning instead", and the video still joins within about 3 s (the debounce plus the write-complete wait), not only at the next check (R-DIR-3) | Pending |
 
 ## Translations (version 0.5.1)
 

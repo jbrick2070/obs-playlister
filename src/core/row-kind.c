@@ -88,3 +88,18 @@ enum pl_row_kind pl_classify_row(const char *path, bool saved_folder, const stru
 		return PL_ROW_FOLDER;
 	return is_directory(path, context) ? PL_ROW_FOLDER : PL_ROW_FILE;
 }
+
+enum pl_entry_kind pl_location_kind(const char *location)
+{
+	/* a local path keeps "?" and "#" (pl_url_path_extension), which file names may contain */
+	char *ext = pl_url_path_extension(location);
+	enum pl_entry_kind kind = PL_ENTRY_MEDIA;
+	if (ext) {
+		struct dstr name = {0};
+		dstr_printf(&name, "x.%s", ext);
+		kind = pl_filter_kind(name.array);
+		dstr_free(&name);
+	}
+	bfree(ext);
+	return kind;
+}

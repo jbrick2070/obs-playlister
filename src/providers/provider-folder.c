@@ -95,7 +95,7 @@ struct pl_folder_provider {
 	struct pl_watch watch;
 	struct pl_gate gate;
 	struct pl_folder_os *os; /* the listing, the probe and the watch */
-	bool arm_failed;         /* re-arming inside a rescan failed; the main loop reports it */
+	bool arm_failed;         /* re-arming failed (in a rescan or after a notification); the main loop reports it */
 	int64_t debounce_ms;     /* when the debounced rescan is due; 0 when none is */
 	enum missing_cause missing;
 	DARRAY(struct rename_pair) notified_renames; /* paired events since the last listing (relative names) */
@@ -298,12 +298,53 @@ static bool listing_has(const struct pl_folder_provider *p, const char *key)
 	return false;
 }
 
+/* R-DIR-8: renames still queued compose before any is tried, in order: a pair that starts where an earlier one ends
+ * continues it (A to B, then B to C, is A to C, with the later pair's wait), and a chain back to where it started is
+ * none. A listing taken after both shows only C, while the gate knows only A. */
+static void compose_notified_renames(struct pl_folder_provider *p)
+{
+	for (size_t i = 1; i < p->notified_renames.num;) {
+		char *from = pl_fold_key(p->notified_renames.array[i].old_key);
+		size_t earlier = DARRAY_INVALID;
+		for (size_t j = i; j-- > 0 && earlier == DARRAY_INVALID;) {
+			char *to = pl_fold_key(p->notified_renames.array[j].new_key);
+			if (strcmp(to, from) == 0)
+				earlier = j; /* the latest pair that ended there */
+			bfree(to);
+		}
+		bfree(from);
+		if (earlier == DARRAY_INVALID) {
+			i++;
+			continue;
+		}
+		struct rename_pair *chain = &p->notified_renames.array[earlier];
+		struct rename_pair *later = &p->notified_renames.array[i];
+		bfree(chain->new_key);
+		chain->new_key = later->new_key;
+		chain->rescans = later->rescans;
+		bfree(later->old_key);
+		da_erase(p->notified_renames, i);
+		char *origin = pl_fold_key(chain->old_key);
+		char *destination = pl_fold_key(chain->new_key);
+		bool back = strcmp(origin, destination) == 0;
+		bfree(origin);
+		bfree(destination);
+		if (back) {
+			bfree(chain->old_key);
+			bfree(chain->new_key);
+			da_erase(p->notified_renames, earlier);
+			i--; /* the pairs after it moved down one */
+		}
+	}
+}
+
 /* Paired rename events move an admitted file to its new name without a new wait (R-DIR-8), once a listing shows the
  * new name: one taken before the rename still shows the old one, and moving the file then would let that listing
  * gate the old name as new and drop the new one. Such a rename waits for the next listing, once. A folder rename is
  * not followed: the files below it are listed as new. */
 static void apply_notified_renames(struct pl_folder_provider *p)
 {
+	compose_notified_renames(p);
 	DARRAY(struct rename_pair) waiting;
 	da_init(waiting);
 	for (size_t i = 0; i < p->notified_renames.num; i++) {
@@ -450,9 +491,10 @@ static void on_notification(struct pl_folder_provider *p)
 	case PL_FOLDER_NOTE_NONE:
 		return;
 	case PL_FOLDER_NOTE_ABORTED:
-		/* not cancelled by us (close waits for its own cancel): keep watching */
+		/* not cancelled by us (close waits for its own cancel): keep watching. The fall-back to rescan-only waits
+		 * for a change still waiting for its debounced rescan (worker_main). */
 		if (!pl_folder_os_arm(p->os))
-			run_event(p, PL_WATCH_OPENED_ARM_FAILED);
+			p->arm_failed = true;
 		return;
 	case PL_FOLDER_NOTE_OVERFLOW:
 		on_overflow(p);
@@ -467,9 +509,10 @@ static void on_notification(struct pl_folder_provider *p)
 		break;
 	}
 	pl_watch_notified(&p->watch);
-	/* armed again before the debounced rescan, so a change made meanwhile is caught */
+	/* armed again before the debounced rescan, so a change made meanwhile is caught; the fall-back to rescan-only
+	 * waits for this change's debounced rescan (worker_main) */
 	if (!pl_folder_os_arm(p->os))
-		run_event(p, PL_WATCH_OPENED_ARM_FAILED);
+		p->arm_failed = true;
 	if (!p->debounce_ms)
 		p->debounce_ms = mono_now() + DEBOUNCE_MS;
 }
@@ -663,13 +706,18 @@ static void worker_main(void *data)
 		int64_t now = mono_now();
 		if (now >= p->watch.next_ms)
 			run_event(p, PL_WATCH_TIMER);
-		if (p->arm_failed) {
-			p->arm_failed = false;
-			run_event(p, PL_WATCH_OPENED_ARM_FAILED);
-		}
+		bool debounced = false;
 		if (p->debounce_ms && mono_now() >= p->debounce_ms) {
 			p->debounce_ms = 0;
 			run_event(p, PL_WATCH_CHANGED);
+			debounced = true;
+		}
+		/* a failed re-arm waits for the change notified with it to be listed (R-DIR-3), then rescan-only takes over;
+		 * only a watch that is still in notify mode falls back (a folder that went missing meanwhile stays missing) */
+		if (p->arm_failed && (!p->debounce_ms || debounced)) {
+			p->arm_failed = false;
+			if (p->watch.mode == PL_WATCH_NOTIFY)
+				run_event(p, PL_WATCH_OPENED_ARM_FAILED);
 		}
 		if (pl_gate_next_deadline(&p->gate) <= mono_now())
 			pl_gate_tick(&p->gate, mono_now(), pl_utc_now_ms(), pl_folder_os_sample, pl_folder_os_probe,

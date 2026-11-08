@@ -27,6 +27,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/bmem.h>
 #include <util/platform.h>
 
+#include "test-common.h"
+
 #include "core/list-parse.h"
 
 struct expected_entry {
@@ -40,7 +42,8 @@ static char *read_fixture(const char *name, size_t *size)
 {
 	char path[1024];
 	snprintf(path, sizeof(path), "%s/%s", FIXTURE_DIR, name);
-	FILE *file = os_fopen(path, "rb");
+	/* with this test's own C runtime, which reads it below (test-common.h) */
+	FILE *file = pl_test_fopen(path, "rb");
 	if (!file) {
 		fprintf(stderr, "cannot open %s\n", path);
 		assert(false);

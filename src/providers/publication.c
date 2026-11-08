@@ -163,6 +163,11 @@ static struct pl_snapshot *build_snapshot(struct pl_publication *publication,
 	return snapshot;
 }
 
+static int compare_texts(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
 /* Everything the receiver can see, to publish only what changed */
 static char *snapshot_signature(const struct pl_snapshot *snapshot)
 {
@@ -182,6 +187,15 @@ static char *snapshot_signature(const struct pl_snapshot *snapshot)
 		  snapshot->held_changes, (int)snapshot->level,
 		  snapshot->status_message ? snapshot->status_message : "", snapshot->stale,
 		  snapshot->initial_scan_complete);
+	/* which keys are pending, not only how many: the receiver keeps its own copy (R-DIR-4, R-KEY-2); sorted, so a
+	 * change in listing order alone is no change */
+	char **pending = bmalloc((snapshot->pending_count ? snapshot->pending_count : 1) * sizeof(char *));
+	for (size_t i = 0; i < snapshot->pending_count; i++)
+		pending[i] = snapshot->pending_keys[i];
+	qsort(pending, snapshot->pending_count, sizeof(char *), compare_texts);
+	for (size_t i = 0; i < snapshot->pending_count; i++)
+		dstr_catf(&signature, "pending-key %s\n", pending[i]);
+	bfree(pending);
 	return signature.array;
 }
 
