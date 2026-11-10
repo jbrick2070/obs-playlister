@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <obs-module.h>
 #include <plugin-support.h>
+#include <string.h>
 
 #include "core/text.h"
 
@@ -39,16 +40,21 @@ static const char *locale_text(const char *key)
 	return text == key ? NULL : text;
 }
 
-/* Shown by the OBS 33 Plugin Manager when data/manifest.json gives no display name. Keep both strings in sync
- * with buildspec.json (displayName) and cmake/common/manifest.json.in (description). */
+/* Shown by the OBS 33 Plugin Manager when data/manifest.json gives no display name. Keep it in sync with
+ * buildspec.json (displayName). */
 const char *obs_module_name(void)
 {
 	return "Playlister";
 }
 
+/* R-UX-9: in OBS's language (libobs sets the module's locale when it opens the module, before anyone can ask). The
+ * English, the same as en-US.ini and cmake/common/manifest.json.in (description), only if no locale is loaded. */
 const char *obs_module_description(void)
 {
-	return "Playlist source for OBS Studio: plays files and folders through OBS's media source.";
+	const char *text = obs_module_text("Description");
+	return strcmp(text, "Description") != 0
+		       ? text
+		       : "Plays video, audio and image files, folders, playlist files and web addresses, one after another.";
 }
 
 bool obs_module_load(void)

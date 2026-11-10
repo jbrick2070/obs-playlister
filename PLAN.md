@@ -457,6 +457,57 @@ code is written), one commit and one push.
 
 Not in this step: translating log lines, the installer's own pages, or README.
 
+### Ease of use, 0.5.1 (2026-11-10 review; REQUIREMENTS section 11b)
+
+Why: an ease-of-use review on 2026-11-10 found that a new user meets a silent, empty window, that Status and Current
+File look current when they are not, and that some labels use "N" as a placeholder or name things that do not exist.
+Text and small code only: no default, behavior or order of controls changes. One step; it ends with the full `ctest`.
+The runtime harness is not run in this step, as it installs into the operator's running OBS; its expected texts are
+updated, and CI's Linux harness runs them on the next push.
+
+1. REQUIREMENTS section 11b (R-UX-1 to R-UX-9) and this section, before the code.
+2. `en-US.ini`: new keys `Description`, `RestartBehavior.Tooltip`, `RefreshHint`, `HotkeysHint`,
+   `RowStatus.EmptyList`, `RowStatus.FailedNoStart`, `RowStatus.FailedTimeout`; new wording for `SelectFileStale`,
+   `CurrentFileName.Help`, `RefreshFilename`, `SpeedWarning`, `RowStatus.AllFailed`, the three `RestartBehavior`
+   texts, `FolderOptions`, `ContainerMode.NewestN`, `NewestCount`, `FolderCheckEnabled`, `FolderCheckInterval`,
+   `RemoteRefresh`, `LockListAtStart`, `LockListAtStart.Tooltip`, `ApplyWaitingChanges.Tooltip`; `RowStatus.Failed`
+   removed (no use left). Settings keys do not change, so saved sources and scene collections are unaffected.
+3. `playlister-source.c`: the empty-list line in `build_status_block` (R-UX-1); a failure mark keeps whether the entry
+   ended or ran out of time (`struct failure_mark` in `playlister-source.h`; `skip_failed_load` already knows), and
+   `row_status` shows it (R-UX-4); the Refresh hint under the Refresh button and the hotkeys line above the version
+   line (info texts with names of their own, as OBS refuses a second property named ""); the restart tooltip.
+   `plugin-main.c`: `obs_module_description` from the locale (R-UX-9); `manifest.json.in` the same English.
+4. The eleven translations: every new or changed key, in each file's own form of address and punctuation; a second
+   look by agy (Gemini 4 Argon, read-only), its corrections taken where they hold.
+   As built: agy's first pass answered OK for all eleven files; a stricter second pass, which had to quote what it
+   read, gave 24 corrections in ten languages (none in German). 20 were taken as given and 4 adjusted: Korean
+   HotkeysHint without a doubled particle, Turkish CurrentFile keeping "yeniden" (again), and both Chinese
+   LockListAtStart labels saying "defer applying changes" (暂缓应用更改, 暫緩套用變更) rather than agy's "defer changes".
+   One change of Claude's own: pt-BR CurrentFileName.Help says "sendo reproduzido" instead of "tocando". ja-JP,
+   ko-KR, zh-CN and zh-TW keep their RemoteRefresh text, which already says "time between web list checks".
+5. `tests/obs/playlister-harness.lua`: the expected stale-choice, failed-row and all-failed texts. Both failing rows
+   there end at once (a missing file and a file that is no media), so they read "it did not start".
+6. README (Quick start first; Status lines, Options, Hotkeys; the live-change sentence corrected), `CHANGELOG.md` with
+   the README's version history and an Unreleased section (allowlisted in `.gitignore`), TESTING.md items U.1-U.4.
+7. `ctest`, clang-format 17.0.3 on the changed C files, `git diff --check`, line endings kept per file. The Sonnet QA
+   (R-STD-9) runs before the commit.
+
+Left for the operator (the review's proposals; each moves controls, removes one, or changes behavior):
+- Put Playlist and Status first in Properties, above Loop Playlist, and the playback options last (review item 1).
+- Put Current File and Refresh directly under Status (item 2).
+- Put Speed and hardware decoding next to each other, with the warning line above them (item 3).
+- Name each row in its status line ("3: intro.mp4 - could not be played", "1: Clips (folder) - 12 files"), add a first
+  line "Playing: %1", "Paused: %1" or "Stopped", and then drop Current File (item 5). This changes the R-LIST-5 line
+  format that the OBS test scripts check word for word, and it only simplifies the window once Current File goes.
+- Whether hotkeys should also work while the source is hidden under "Always play even when not visible" (item 7,
+  R-UP-42).
+- Move Still image duration out of the folder group, next to Speed, as it also times stills in plain file rows
+  (item 8).
+- Not taken as findings by the review, noted for later: Play Selected File does nothing and says nothing with No File
+  Selected, an empty folder row or a file still being written; five unused upstream strings in the locale files
+  (`NetworkCaching`, `AudioTrack`, `SubtitleEnabled`, `SubtitleTrack`, `VoskFilter`); "Select File", "Current File"
+  and "Play Selected File" say "File" although an item can be a web address.
+
 ### Phase 4 -- VJ modes (boundary only)
 
 Nothing is built. The only commitment is R-VJ-2: everything that touches the child source lives in `player.c` and its thread (Phase 2 steps 1.2 and 6), and providers never know how entries are shown.

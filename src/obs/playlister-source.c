@@ -184,6 +184,8 @@ struct obs_source_info media_playlist_source_info = {
 #define S_APPLY_WAITING "apply_waiting_changes" /* the Properties button (R-DIR-11), no setting */
 #define S_ROW_STATUS "row_status"               /* the status block (R-LIST-5), an info text; no setting */
 #define S_PLUGIN_VERSION "plugin_version"       /* the version line (R-LIST-6), an info text; no setting */
+#define S_REFRESH_HINT "refresh_hint"           /* what Refresh updates (R-UX-2), an info text; no setting */
+#define S_HOTKEYS_HINT "hotkeys_hint"           /* where the hotkeys are (R-UX-6), an info text; no setting */
 #define ROW_KIND_FOLDER "folder"
 #define SCHEMA_VERSION 1
 #define S_ID "uuid"
@@ -259,13 +261,18 @@ struct obs_source_info media_playlist_source_info = {
 #define T_ROW_STATUS_WAITING T_("RowStatus.WaitingForFiles")
 #define T_ROW_STATUS_ONE_CHANGE T_("RowStatus.OneChangeWaiting")
 #define T_ROW_STATUS_CHANGES T_("RowStatus.ChangesWaiting")
-#define T_ROW_STATUS_FAILED T_("RowStatus.Failed")
+#define T_ROW_STATUS_FAILED_NO_START T_("RowStatus.FailedNoStart")
+#define T_ROW_STATUS_FAILED_TIMEOUT T_("RowStatus.FailedTimeout")
 #define T_ROW_STATUS_ONE_FAILED T_("RowStatus.OneFileFailed")
 #define T_ROW_STATUS_FILES_FAILED T_("RowStatus.FilesFailed")
 #define T_ROW_STATUS_LAST_LIST T_("RowStatus.LastList")
 #define T_ROW_STATUS_NOT_WATCHED T_("RowStatus.NotWatched")
 #define T_ROW_STATUS_NOT_READ T_("RowStatus.NotRead")
 #define T_ROW_STATUS_ALL_FAILED T_("RowStatus.AllFailed")
+#define T_ROW_STATUS_EMPTY_LIST T_("RowStatus.EmptyList")
+#define T_RESTART_BEHAVIOR_TOOLTIP T_("RestartBehavior.Tooltip")
+#define T_REFRESH_HINT T_("RefreshHint")
+#define T_HOTKEYS_HINT T_("HotkeysHint")
 
 #define T_PLAY_PAUSE T_("PlayPause")
 #define T_RESTART T_("Restart")
@@ -310,30 +317,40 @@ static char *failure_key(const struct media_file_data *item)
 	return key.array;
 }
 
-static bool item_failed(const struct media_playlist_source *mps, const struct media_file_data *item)
+/* The item's failure mark, or NULL when it has not failed */
+static const struct failure_mark *find_failure(const struct media_playlist_source *mps,
+					       const struct media_file_data *item)
 {
 	if (!mps->failed.num || !item)
-		return false;
+		return NULL;
 	char *key = failure_key(item);
-	bool found = false;
-	for (size_t i = 0; i < mps->failed.num && !found; i++)
-		found = strcmp(mps->failed.array[i], key) == 0;
+	const struct failure_mark *found = NULL;
+	for (size_t i = 0; i < mps->failed.num && !found; i++) {
+		if (strcmp(mps->failed.array[i].key, key) == 0)
+			found = &mps->failed.array[i];
+	}
 	bfree(key);
 	return found;
 }
 
-static void mark_failed(struct media_playlist_source *mps, const struct media_file_data *item)
+static bool item_failed(const struct media_playlist_source *mps, const struct media_file_data *item)
+{
+	return find_failure(mps, item) != NULL;
+}
+
+/* ended: it ended before it played; otherwise its startup window ran out (R-UX-4) */
+static void mark_failed(struct media_playlist_source *mps, const struct media_file_data *item, bool ended)
 {
 	if (item_failed(mps, item))
 		return;
-	char *key = failure_key(item);
-	da_push_back(mps->failed, &key);
+	struct failure_mark mark = {.key = failure_key(item), .ended = ended};
+	da_push_back(mps->failed, &mark);
 }
 
 static void clear_failures(struct media_playlist_source *mps)
 {
 	for (size_t i = 0; i < mps->failed.num; i++)
-		bfree(mps->failed.array[i]);
+		bfree(mps->failed.array[i].key);
 	da_free(mps->failed);
 }
 
@@ -945,8 +962,10 @@ static enum pl_status_level row_status(const struct media_playlist_source *mps, 
 	struct dstr status = {0};
 	if (!row->is_folder) {
 		dstr_copy(line, row->is_url ? T_ROW_KIND_URL : T_ROW_KIND_FILE);
-		if (item_failed(mps, row)) {
-			dstr_copy(&status, T_ROW_STATUS_FAILED);
+		/* R-UX-4: why it failed, as skip_failed_load judged it */
+		const struct failure_mark *failure = find_failure(mps, row);
+		if (failure) {
+			dstr_copy(&status, failure->ended ? T_ROW_STATUS_FAILED_NO_START : T_ROW_STATUS_FAILED_TIMEOUT);
 			level = PL_STATUS_ERROR;
 		}
 	} else {
@@ -991,13 +1010,15 @@ static enum pl_status_level row_status(const struct media_playlist_source *mps, 
 	return level;
 }
 
-/* The status block: one line per row, "N: kind - status", then a line when auto-advance stopped because nothing may
- * play (R-BEH-5) and one when the last Play Selected choice was stale (R-UP-20); returns the worst level. The caller
- * holds the list lock. */
+/* The status block: one line per row, "N: kind - status", or what to do when there is no row (R-UX-1), then a line
+ * when auto-advance stopped because nothing may play (R-BEH-5) and one when the last Play Selected choice was stale
+ * (R-UP-20); returns the worst level. The caller holds the list lock. */
 static enum pl_status_level build_status_block(const struct media_playlist_source *mps, struct dstr *block)
 {
 	enum pl_status_level worst = PL_STATUS_OK;
 	struct dstr line = {0};
+	if (!mps->files.num)
+		dstr_copy(block, T_ROW_STATUS_EMPTY_LIST);
 	for (size_t i = 0; i < mps->files.num; i++) {
 		enum pl_status_level level = row_status(mps, &mps->files.array[i], &line);
 		if (level > worst)
@@ -2464,7 +2485,7 @@ static void skip_failed_load(struct media_playlist_source *mps, long epoch, bool
 				       ended ? "skipped, as it ended before playing:"
 					     : "skipped, as it did not start playing within its startup window:",
 				       mps->actual_media->path);
-		mark_failed(mps, mps->actual_media);
+		mark_failed(mps, mps->actual_media, ended);
 	}
 	/* its end, if it ended, belongs to this failure, not to a normal advance */
 	pl_load_tracker_withdraw(&mps->player.tracker);
@@ -2916,8 +2937,8 @@ static bool apply_waiting_clicked(obs_properties_t *props, obs_property_t *prope
 	return false;
 }
 
-/* The shared "Folder and feed options" group (R-LIST-3, D-7): one set of options for every folder row of the source,
- * with the ranges of PLAN section 3.4 */
+/* The shared "Folder and playlist options" group (R-LIST-3, D-7, R-UX-7): one set of options for every folder row of
+ * the source, with the ranges of PLAN section 3.4 */
 static void add_folder_options(obs_properties_t *props, struct media_playlist_source *mps)
 {
 	obs_properties_t *group = obs_properties_create();
@@ -3005,6 +3026,8 @@ static obs_properties_t *mps_properties(void *data)
 				    OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(p, T_RESTART_BEHAVIOR_CURRENT_FILE, RESTART_BEHAVIOR_CURRENT_FILE);
 	obs_property_list_add_int(p, T_RESTART_BEHAVIOR_FIRST_FILE, RESTART_BEHAVIOR_FIRST_FILE);
+	/* R-UX-5: it also decides what plays when a source that restarts on show is shown again (mps_activate) */
+	obs_property_set_long_description(p, T_RESTART_BEHAVIOR_TOOLTIP);
 
 	obs_properties_add_bool(props, S_FFMPEG_HW_DECODE, T_USE_HARDWARE_DECODING);
 
@@ -3041,6 +3064,9 @@ static obs_properties_t *mps_properties(void *data)
 	p = obs_properties_add_text(props, S_CURRENT_FILE_NAME, T_CURRENT_FILE_NAME, OBS_TEXT_INFO);
 	obs_property_set_long_description(p, T_CURRENT_FILE_NAME_HELP);
 	obs_properties_add_button2(props, S_REFRESH_FILENAME, T_REFRESH_FILENAME, refresh_filename_clicked, mps);
+	/* R-UX-2: nothing here is pushed into the open window (R-BEH-2), so the window says how to update it. A name of
+	 * its own: OBS refuses a second property with the same name, and the speed warning has "". */
+	obs_properties_add_text(props, S_REFRESH_HINT, T_REFRESH_HINT, OBS_TEXT_INFO);
 	//update_current_filename_property(mps, p);
 
 	p = obs_properties_add_list(props, S_SELECT_FILE, T_SELECT_FILE, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -3059,6 +3085,9 @@ static obs_properties_t *mps_properties(void *data)
 	obs_property_int_set_suffix(p, "%");
 	p = obs_properties_add_text(props, "", T_SPEED_WARNING, OBS_TEXT_INFO);
 	obs_property_text_set_info_type(p, OBS_TEXT_INFO_WARNING);
+
+	/* R-UX-6: where the hotkeys are set, and that they act only while the source is shown (R-UP-42) */
+	obs_properties_add_text(props, S_HOTKEYS_HINT, T_HOTKEYS_HINT, OBS_TEXT_INFO);
 
 	/* R-LIST-6: which version is running, at a glance; a label, never a setting */
 	struct dstr version = {0};

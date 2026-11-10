@@ -46,6 +46,12 @@ struct row_provider {
 	struct pl_provider *provider; /* NULL until created, or when it could not be */
 };
 
+/* R-BEH-5: an entry that failed to play, and why, for its status line (R-UX-4) */
+struct failure_mark {
+	char *key;  /* failure_key */
+	bool ended; /* it ended before it played; otherwise its startup window ran out */
+};
+
 /* R-KEY-2: where playback resumes once a folder row that was not listed yet settles */
 struct resume_target {
 	bool pending;
@@ -124,9 +130,9 @@ struct media_playlist_source {
 	volatile bool release_held; /* a playback trigger: video_tick has the providers publish kept lists (R-DIR-11) */
 
 	/* R-BEH-5 */
-	struct pl_startup startup; /* the startup of the load that applied last; video_tick only */
-	DARRAY(char *) failed;     /* entries that failed to play (failure_key), under the list lock */
-	bool all_failed;           /* nothing left that may play: auto-advance stopped until something changes */
+	struct pl_startup startup;          /* the startup of the load that applied last; video_tick only */
+	DARRAY(struct failure_mark) failed; /* entries that failed to play, under the list lock */
+	bool all_failed;                    /* nothing may play: auto-advance stopped until something changes */
 
 	/* R-DIR-9: the still being held, set by video_tick and read by the media callbacks */
 	volatile bool hold_active;

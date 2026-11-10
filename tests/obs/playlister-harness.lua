@@ -252,20 +252,21 @@ local function folder_options_problem()
 	local problem = nil
 	if not content then
 		problem = "no folder_options group"
-	elseif obs.obs_property_description(group) ~= "Folder and feed options" then
+	elseif obs.obs_property_description(group) ~= "Folder and playlist options" then
 		problem = "group label " .. obs.obs_property_description(group)
 	end
+	-- the labels of R-UX-7
 	local labels = {
 		include_subfolders = "Include subfolders",
 		extension_filter = "File types to play",
 		sort_key = "Sort by",
 		sort_descending = "Descending",
 		container_mode = "Files to play",
-		newest_count = "N (files)",
+		newest_count = "How many newest files",
 		still_duration_s = "Still image duration",
-		folder_check_enabled = "Check folder every N seconds",
-		folder_check_interval_s = "N (between checks)",
-		lock_list_at_start = "Lock list at start",
+		folder_check_enabled = "Check folders again on a timer",
+		folder_check_interval_s = "Time between folder checks",
+		lock_list_at_start = "Hold changes until the next Play",
 		apply_waiting_changes = "Apply waiting changes now",
 	}
 	for name, label in pairs(labels) do
@@ -578,7 +579,7 @@ step("nothing chosen", 1000, 1000, nil, function()
 	check("play selected with a position from before Phase 2 is reported, not played", media_next_count == before and
 		reports_stale_choice() and dur() == D[3], mark.status_after_click .. ", " .. status())
 	check_status("a stale choice is a warning in the status block", "1: file\n2: file\n3: file\nThe list changed " ..
-		"since this item was listed. Press Refresh Filename and choose it again.", 1)
+		"since this item was listed. Press Refresh and choose it again.", 1)
 	before = media_next_count
 	play_selected("row-1:0:")
 	check("play selected with item 1 chosen raises media_next once", media_next_count == before + 1,
@@ -1112,8 +1113,8 @@ step("evicted item ended", 500, 15000, function() return dur() == D[2] and st() 
 	remove_source()
 end)
 
--- R-DIR-11: with "Lock list at start" on, a new file in the folder waits until "Apply waiting changes now" is pressed,
--- and the playing item plays on through it
+-- R-DIR-11: with "Hold changes until the next Play" on, a new file in the folder waits until "Apply waiting changes
+-- now" is pressed, and the playing item plays on through it
 step("source with a locked list", 1500, 1500, function() return true end, function()
 	create_source("playlister-harness-locked", function(settings)
 		set_playlist(settings, { { MEDIA_FOLDER, "media" } })
@@ -1222,8 +1223,10 @@ end)
 step("failing rows skipped", 500, 15000, function() return dur() == D[1] and st() == PLAYING end, function()
 	check("a missing file and a corrupt one are skipped for the file after them", dur() == D[1] and st() == PLAYING,
 		status())
-	check_status("the status block shows the failed rows as errors",
-		"1: file - could not be played\n2: file - could not be played\n3: file", 2)
+	-- both end at once, so the reason is that they did not start (R-UX-4), not their startup window
+	check_status("the status block shows the failed rows as errors, with why",
+		"1: file - could not be played: it did not start\n2: file - could not be played: it did not start\n" ..
+		"3: file", 2)
 	remove_source()
 end)
 
@@ -1238,9 +1241,9 @@ end)
 
 step("everything failed", 3000, 3000, nil, function()
 	check("a list where nothing plays stops instead of cycling", st() == STOPPED, status())
-	check_status("the status block says why playback stopped", "1: file - could not be played\n" ..
-		"2: file - could not be played\nPlayback stopped: nothing in the list can be played. Fix or remove the " ..
-		"failing entries, or press Play to try them again.", 2)
+	check_status("the status block says why playback stopped", "1: file - could not be played: it did not start\n" ..
+		"2: file - could not be played: it did not start\nPlayback stopped: nothing in the list can be played. " ..
+		"Fix or remove the failing rows. Or press Play in the OBS media controls to try them again.", 2)
 	obs.obs_source_media_play_pause(src, false)
 end)
 

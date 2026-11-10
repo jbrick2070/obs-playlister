@@ -12,7 +12,7 @@ ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure --no-tests=erro
 Playlister source through: play, auto-advance at the end of a file, next and previous, stop (no advance),
 Play then Pause at once from stop (both happen: the item reloads and stays paused), Play again, pause, seek, restart, a speed change, hide and show (stop/restart and stop/play-next), end of
 the list with loop off, wrap-around with loop on, next then pause in a row, Properties (the Select File list,
-Refresh Filename, the identities Select File stores, Play Selected File with nothing chosen, with a position
+Refresh, the identities Select File stores, Play Selected File with nothing chosen, with a position
 saved before Phase 2 (reported, not played) and with item 1 chosen, counting `media_next` signals)
 and save, and removal; then a second source whose saved current row is an empty folder: it must move on to the
 next row, the Select File list must leave the empty folder out, next and wrap must pass over the empty row, next
@@ -40,7 +40,7 @@ tries them once more and stops again); a corrupt still fails by its 5 s startup 
 fails the run unless the corrupt file was loaded exactly 3 times and the corrupt still once. A last source holds a
 valid still the runner makes (R-DIR-9) for 4 s: playing with the hold as its duration and on screen, a seek inside it
 ignored, a pause that freezes the hold, a stop after which nothing moves on, Play that holds it again from the start,
-and then the next row. After the newest-only source, a source with Lock list at start on the harness folder
+and then the next row. After the newest-only source, a source with Hold changes until the next Play on the harness folder
 shows the folder options as one labeled group in Properties (ranges, tooltips and the Browse dialog's still images
 checked; N, the interval and the Apply button follow their options), keeps a new file waiting for 5 s while it
 plays, and adds it, without a reload, once Apply waiting changes now is pressed (R-LIST-3, R-DIR-11, R-UP-10).
@@ -122,7 +122,7 @@ the script refuses a link folder the runner did not make.
 | 2.3 | A new render copied in | joins within about 3 s, as the newest |
 | 2.4 | The producer contract: written as `.mp4.part`, then renamed to `.mp4` | not listed under the partial name; joins once renamed |
 | 2.5 | A file growing 1 MB every 100 ms for 8 s; a file held open for writing | neither is listed while written; the held file is counted ("waiting for 1 file to finish writing") and playback goes on; each joins within about 3 s once complete |
-| 2.6 | A case-only rename; A -> B -> C with shuffle on and Lock list at start, then Apply waiting changes now; renaming and deleting the playing render | the renamed item keeps its place and shows its new name; the renames wait ("N changes waiting") and are applied at once as one renamed item while playback goes on; Windows refuses to rename or delete the playing file (the child holds it open; every run so far) and playback goes on |
+| 2.6 | A case-only rename; A -> B -> C with shuffle on and Hold changes until the next Play, then Apply waiting changes now; renaming and deleting the playing render | the renamed item keeps its place and shows its new name; the renames wait ("N changes waiting") and are applied at once as one renamed item while playback goes on; Windows refuses to rename or delete the playing file (the child holds it open; every run so far) and playback goes on |
 | 2.7 | Sort by name, descending, mid-play | the list follows natural order, descending; playback keeps its place |
 | 2.8 | 2,000 small text files at once, with the folder check off | a render copied in afterwards joins within 12 s (about 3 s by notification; after a run of overflows the folder is listed on the 10 s interval instead, and a dead watch would wait for the 60 s safety net); the text files are not listed. The burst can overflow the change buffer (the log says "more changes than the buffer holds" when it does); in these runs it did not, and the overflow path is covered by `test-folder-state` and by 2.11 |
 | 2.9 | A watched folder moved away, then back | "the folder went away ...; showing the last list, from <time>" as an error, the list kept; back to "2 files" when it returns |
@@ -184,16 +184,16 @@ version expected in 1.1 and 1.2 is that build's (0.5.0 now).
 | 1.2 | Tools > Plugin Manager | "Playlister" ("OBS Playlister" before 0.3.1), version 0.2.0 on the Phase 1 build and the current build's version on later ones, no Legacy chip; Media Playlist Source still shows its Legacy chip. Note which manifest fields are displayed (PLAN V7) and whether the Discover tab is still "Coming soon" (D-10) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.3 | Windows security (R-PLAT-10) | `Get-AuthenticodeSignature` on the DLL reports NotSigned; Windows Security protection history and the Code Integrity log show nothing for `obs64.exe` or `obs-playlister.dll` | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.4 | Add a "Playlister" source; open Properties | Labels read "Loop Playlist", "Shuffle", "Use hardware decoding when available" (checked by default, D-11), never raw keys | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
-| 1.5 | Add two video files; play | first file plays; Current File shows `1: <path>` after Refresh Filename | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.5 | Add two video files; play | first file plays; Current File shows `1: <path>` after Refresh | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.6 | Hardware decoding | Task Manager > GPU shows "Video Decode" activity while a file plays | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.7 | Next / Previous (media controls and hotkeys) | moves between the two files; hotkeys appear under the source as "Next" / "Previous" | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.8 | Loop on, let the last file end | wraps to the first file | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
-| 1.9 | Loop off, let the last file end | stops; restart plays again per Restart behavior | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.9 | Loop off, let the last file end | stops; restart plays again as A restart plays says | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.10 | Shuffle on, Loop on, two files: both play once, then one starts the second pass; pick the other file in Select File, press Play Selected File and let it play to the end (R-UP-75) | no crash; a new shuffled pass starts | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.11 | Shuffle on, Loop on, three files: all three play once; while the fourth file plays (the first of the second pass), remove it from the list, then add it back (R-UP-73) | no crash at either edit; playback continues | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.12 | Speed 50% and 150% | playback speed changes (the video restarts, as the warning says) | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.13 | Each visibility behavior: hide and show the source | Stop/restart, Pause/unpause, Always play, Stop/play next behave as named | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
-| 1.14 | Restart behavior: current file vs first file | Restart replays the current file, or starts at file 1 | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 1.14 | A restart plays: current file vs first file | Restart replays the current file, or starts at file 1 | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.15 | Add a folder row; play | its files play in order; Select File lists them as `N-M: <path>` | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.16 | Play Selected File with a chosen item | jumps to that item | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 1.17 | Move a listed file away, restart OBS | the missing-files dialog offers to find or remove it | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
@@ -210,7 +210,7 @@ Setup as Phase 1, with the Phase 2 build. Items the runtime harness covers are n
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
-| 2.1 | Open Properties of a source whose list has a file, a folder and a missing file; press Esc without changing anything; then choose an item, remove it from the folder, press Play Selected File | the Status block under the playlist shows one row per line (`1: file`, `2: folder - N files`, `3: file - could not be played` once it failed), in the error color when a row failed; Esc closes Properties without asking to save; after Play Selected File the block shows the "list changed" notice in the warning color, and Refresh Filename clears it | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.1 | Open Properties of a source whose list has a file, a folder and a missing file; press Esc without changing anything; then choose an item, remove it from the folder, press Play Selected File | the Status block under the playlist shows one row per line (`1: file`, `2: folder - N files`, `3: file - could not be played` once it failed), in the error color when a row failed; Esc closes Properties without asking to save; after Play Selected File the block shows the "list changed" notice in the warning color, and Refresh clears it | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.12 | Close OBS while a folder item plays; start it again | the same folder item resumes, not the folder's first item | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.13 | OBS hotkeys for Play/Pause, Restart, Stop, Next and Previous on a folder row; Next then Play/Pause at once | each acts as its button does; the load and the pause both happen; Stop never advances | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.15 | A watched folder on a removable drive: unplug it, plug it back | "the folder went away" with the last list kept; the row recovers when the drive is back | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
@@ -262,8 +262,8 @@ An error row reads "web address - empty; <the error>": the row is listed and hol
 | 3.11 | /gzip-at-cap and /gzip-over-cap | at the cap the list loads (empty: the body is comments); over it, "the list is over 16 MB" | Passed (acceptance) |
 | 3.12 | /redirect/5 and /redirect/6 | five redirects load the list; six show "too many redirects" | Passed (acceptance) |
 | 3.13 | /hang as a row; then /hang again, removed after 5 s | "timed out" after about 30 s (the receive timeout: the server takes the request and never answers; the 60 s deadline is for a body that keeps trickling, covered by `test-fetch`); removing the source returns at once and OBS stays responsive | Passed (acceptance; timed out after 31-34 s, removal took 0 ms, next tick after 0.1 s) |
-| 3.14 | "Check web lists every" changed to 30 s while a served list plays, then the list edited on disk | the interval change does not restart playback; the change appears within 30 s (plus the fetch) | Passed (acceptance; appeared after 25.6 s) |
-| 3.15 | Lock list at start on, with a playlist row whose file is edited during playback | "1 change waiting" until Apply waiting changes now, which adds it without a restart | Passed (acceptance) |
+| 3.14 | "Time between web list checks" changed to 30 s while a served list plays, then the list edited on disk | the interval change does not restart playback; the change appears within 30 s (plus the fetch) | Passed (acceptance; appeared after 25.6 s) |
+| 3.15 | Hold changes until the next Play on, with a playlist row whose file is edited during playback | "1 change waiting" until Apply waiting changes now, which adds it without a restart | Passed (acceptance) |
 | 3.16 | An HTTPS playlist on a real server, and one with an expired or self-signed certificate | the first loads; the second shows "secure connection failed" | Pending (manual) |
 | 3.17 | The Browse dialog | a Playlists group lists .m3u, .m3u8 and .pls files | Pending (manual) |
 | 3.18 | Studio Mode on: add a second Playlister to the preview scene, with other videos than the first; then a Playlister to a scene that is not shown (R-UP-81, 0.4.1) | each is selected as a box of its own video's size (the canvas size before it ever played), whose handles can be dragged to move and resize it, not a tiny box at the top left; after a transition it plays in that box. The harness checks the sizes; this checks how OBS draws them | Pending (manual) |
@@ -319,6 +319,19 @@ block, and the version line. Run it once in a Latin-script and once in a CJK lan
 | T.2 | `locale-check.lua` with `-Language ja-JP` | every check passes | Pass (2026-10-31, OBS 33.0.0 portable, 5 of 5) |
 | T.3 | By eye, OBS set to a language you read: Properties, the Browse dialog's filter names, a row's status line | the text is in that language, fits its controls and reads naturally | Pending |
 | T.4 | `locale-check.lua` with `-Language nl-NL` (Dutch, added 2026-11-01) | every check passes | Pass (2026-11-01, OBS 33.0.1 portable, 5 of 5) |
+
+## Ease of use (version 0.5.1)
+
+The wording of REQUIREMENTS section 11b. `ctest` checks that every new key is in every language file; the runtime
+harness checks the failed-row reasons, the all-failed line and the stale-choice line word for word. The rest is by
+eye:
+
+| # | Check | Expected | Result |
+|---|-------|----------|--------|
+| U.1 | Add a new Playlister source; look at Status before adding anything | "The list is empty. Press + next to Playlist to add files, a folder, a playlist file or a web address." (R-UX-1) | Pending |
+| U.2 | Properties of any source, from top to bottom | the Refresh button (no longer Refresh Filename) with the line about Status, Current File and Select File under it; the hover help of Current File and of A restart plays; the warning under Speed in full; the hotkeys line above the version line; the folder group's new labels; every long text wraps inside the window (R-UX-2, R-UX-3, R-UX-5, R-UX-6, R-UX-7) | Pending |
+| U.3 | A list with a missing file, then a URL that never answers (for example `http://10.255.255.1/x.mp4`), each with a playable file after it; press Refresh after each fails | the missing file reads "could not be played: it did not start"; the URL reads the reason that matches its `[obs-playlister]` log line: "skipped, as it ended before playing" gives "it did not start", "skipped, as it did not start playing within its startup window" gives "it took too long to start" (R-UX-4) | Pending |
+| U.4 | OBS in German and in Japanese (T.1, T.2), U.1 and U.2 again | the new texts are in that language and fit their controls | Pending |
 
 ## Known residual risks
 
