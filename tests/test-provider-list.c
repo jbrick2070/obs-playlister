@@ -777,6 +777,29 @@ static void test_review_cases(void)
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
 
+	/* R-REM-8: caught half-written while a script rewrites it, then finished before the second look: the part is
+	 * never published, and the finished file is taken once it holds still */
+	write_file("saved.m3u", "a.mp4\nb.mp4\n");
+	options.folder_check_enabled = false;
+	options.folder_check_interval_s = 60;
+	inbox_init(&inbox);
+	provider = start(PL_ROW_PLAYLIST, saved, &options, &inbox);
+	wait_for(&inbox, 0, count_is, &two, "the list before the rewrite");
+	os_sleep_ms(50);
+	since = inbox_count(&inbox);
+	write_file("saved.m3u", "a.mp4\n");
+	pl_provider_refresh_now(provider);
+	os_sleep_ms(1000);
+	write_file("saved.m3u", "a.mp4\nb.mp4\nc.mp4\n");
+	size_t three = 3;
+	wait_for(&inbox, since, count_is, &three, "the finished list");
+	pthread_mutex_lock(&inbox.mutex);
+	for (size_t i = since; i < inbox.snapshots.num; i++)
+		assert(inbox.snapshots.array[i]->count != 1);
+	pthread_mutex_unlock(&inbox.mutex);
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+
 	os_unlink(live);
 	os_unlink(saved);
 	os_rmdir(folder);

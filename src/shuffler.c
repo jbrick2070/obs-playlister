@@ -380,6 +380,10 @@ void shuffler_update_files(struct shuffler *s, struct darray *array)
 			 * stays just after it there, wherever added or removed undetermined items moved that range (R-UP-82) */
 			if (s->next > s->head && s->next > s->history)
 				new_next = new_history + history_before_next;
+			/* R-UP-84: the current item is the last one: next wraps to 0, as shuffler_next does, instead of
+			 * being clamped to head below */
+			if (new_next == shuffled_files.num && new_next != new_head)
+				new_next = 0;
 			s->head = new_head;
 			s->next = new_next;
 			s->history = new_history;

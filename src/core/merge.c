@@ -100,22 +100,39 @@ static bool is_rename_target(const struct pl_entry *renamed, size_t renamed_coun
 size_t pl_merge_rekey(struct pl_entry *old_entries, size_t old_count, const struct pl_entry *renamed,
 		      size_t renamed_count)
 {
+	/* R-UP-85: only entries with a previous key can rename anything. Most snapshots carry none, so this returns at
+	 * once; otherwise only those few are searched (a shallow copy: the strings stay the snapshot's). */
+	size_t with_previous = 0;
+	for (size_t r = 0; r < renamed_count; r++) {
+		if (renamed[r].previous_key)
+			with_previous++;
+	}
+	if (!with_previous)
+		return 0;
+	struct pl_entry *renames = bmalloc(with_previous * sizeof(*renames));
+	size_t n = 0;
+	for (size_t r = 0; r < renamed_count; r++) {
+		if (renamed[r].previous_key)
+			renames[n++] = renamed[r];
+	}
+
 	size_t rekeyed = 0;
 	for (size_t o = 0; o < old_count; o++) {
 		/* the old key decides, never one this pass already set, so renames of one snapshot apply at once */
 		const char *old_key = old_entries[o].key;
-		const struct pl_entry *rename = renamed_from(renamed, renamed_count, old_key);
+		const struct pl_entry *rename = renamed_from(renames, n, old_key);
 		if (rename) {
 			char *new_key = bstrdup(rename->key);
 			bfree(old_entries[o].key);
 			old_entries[o].key = new_key;
 			rekeyed++;
-		} else if (old_key && is_rename_target(renamed, renamed_count, old_key)) {
+		} else if (old_key && is_rename_target(renames, n, old_key)) {
 			/* overwritten by a rename: this file is gone */
 			bfree(old_entries[o].key);
 			old_entries[o].key = NULL;
 		}
 	}
+	bfree(renames);
 	return rekeyed;
 }
 

@@ -33,6 +33,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 
 #include "core/filter.h"
+#include "core/folder-state.h"
 #include "core/text.h"
 #include "core/parse-m3u.h"
 #include "core/parse-pls.h"
@@ -100,7 +101,10 @@ struct pl_list_provider {
 	int64_t last_attempt_ms; /* monotonic */
 	bool fresh;              /* a list was taken since the last refresh logged it */
 	bool empty_seen;         /* the last read found the local file empty and kept the list */
-	bool have_stamp;         /* a local file's size and time when it was last read well */
+	bool change_seen;        /* the local file changed; taken once it holds still (R-REM-8) */
+	uint64_t seen_size;
+	int64_t seen_write;
+	bool have_stamp; /* a local file's size and time when it was last read well */
 	uint64_t stamp_size;
 	int64_t stamp_write;
 };
@@ -206,29 +210,45 @@ static void read_local(struct pl_list_provider *p)
 	struct pl_file_info info;
 	unsigned long os_error;
 	enum pl_file_result result = pl_file_get_info(p->location, &info, &os_error);
+	/* a change waiting for its second look (R-REM-8) is over on every way out that takes no list */
 	if (result == PL_FILE_NOT_FOUND) {
+		p->change_seen = false;
 		set_error_text(p, pl_text("RowError.PlaylistNotFound", "playlist file not found"));
 		return;
 	}
 	if (result != PL_FILE_OK) {
+		p->change_seen = false;
 		read_error(p, result, os_error);
 		return;
 	}
 	/* unchanged since it was last read well: nothing to do, and a past error is over */
 	if (p->have_stamp && p->has_list && info.size == p->stamp_size && info.write_stamp == p->stamp_write &&
 	    !info.directory) {
+		p->change_seen = false;
 		bfree(p->error);
 		p->error = NULL;
 		return;
 	}
 	if (info.directory) {
+		p->change_seen = false;
 		set_error_text(p, pl_text("RowError.PlaylistIsFolder", "not a playlist file (a folder)"));
 		return;
 	}
 	if (info.size > LIST_CAP) {
+		p->change_seen = false;
 		set_error_text(p, pl_text("RowError.PlaylistTooLarge", "playlist file is over 16 MB"));
 		return;
 	}
+	/* R-REM-8: a file being rewritten in place can be caught half-written, and its first lines would replace the
+	 * good list. A changed file is taken only when a second look, about the folder gate apart, finds the same size
+	 * and write time; the good list stays meanwhile. The first list of a row is taken at once. */
+	if (p->has_list && (!p->change_seen || info.size != p->seen_size || info.write_stamp != p->seen_write)) {
+		p->change_seen = true;
+		p->seen_size = info.size;
+		p->seen_write = info.write_stamp;
+		return;
+	}
+	p->change_seen = false;
 
 	char *data;
 	size_t got;
@@ -572,6 +592,9 @@ static int64_t interval_ms(struct pl_list_provider *p)
 	/* a local file, stream or not, is checked as folders are; a read that failed or was cut short is tried again on
 	 * that interval even with the check off, so the row is not left on an error or a half-written file */
 	if (!p->remote) {
+		/* a changed file is looked at again after the folder gate, whether the check is on or not (R-REM-8) */
+		if (p->change_seen)
+			return PL_GATE_WINDOW_MS;
 		bool retry = p->error || p->empty_seen || (p->has_list && !p->have_stamp);
 		return p->options.folder_check_enabled || retry ? (int64_t)p->options.folder_check_interval_s * 1000
 								: 0;

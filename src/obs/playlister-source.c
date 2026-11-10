@@ -745,7 +745,26 @@ static void end_reached_locked(struct media_playlist_source *mps)
 	size_t first = skip_empty_folder_rows(mps, 0, false);
 	set_current_media_index(mps, first < mps->files.num ? first : 0);
 	reset_folder_item_index(mps);
+	/* R-UP-83: a used-up shuffler would make Play play one clip and end again. A new pass starts with nothing drawn
+	 * yet; the item that Play or Restart loads from here is selected first (start_after_end_locked), and the rest of
+	 * the pass follows in a new random order. */
+	if (mps->shuffle)
+		shuffler_reshuffle(&mps->shuffler);
 	mark_save_dirty(mps);
+}
+
+static long loads_requested(struct media_playlist_source *mps)
+{
+	return os_atomic_load_long(&mps->player.loads_requested);
+}
+
+/* After Play or Restart from the end of the list, with the list lock held: the item it loaded is the first of the new
+ * pass (R-UP-83). Nothing loaded (loads_before unchanged), nothing is selected. */
+static void start_after_end_locked(struct media_playlist_source *mps, bool was_ended, long loads_before)
+{
+	if (was_ended && mps->shuffle && loads_requested(mps) != loads_before && mps->actual_media &&
+	    mps->actual_media != &mps->playing_copy)
+		shuffler_select(&mps->shuffler, mps->actual_media);
 }
 
 /* The child's media_ended handler takes no lock and only records the end (R-THR-1); video_tick decides what
@@ -1242,11 +1261,14 @@ static void mps_play_pause(void *data, bool pause)
 		} else if (restart_playing_copy(mps)) {
 			os_atomic_set_bool(&mps->release_held, true);
 		} else {
+			const bool was_ended = media_state(mps) == OBS_MEDIA_STATE_ENDED;
+			const long loads_before = loads_requested(mps);
 			retry_failed_on_request(mps);
 			if (point_at_playable_item(mps)) {
 				/* Play from stopped or ended is a playback trigger: kept folder lists are published (R-DIR-11) */
 				os_atomic_set_bool(&mps->release_held, true);
 				update_media_source(mps, true);
+				start_after_end_locked(mps, was_ended, loads_before);
 			}
 		}
 	} else if (!stopped) {
@@ -1264,14 +1286,19 @@ static void mps_restart(void *data)
 	/* a playback trigger: kept folder lists are published (R-DIR-11); video_tick asks the providers */
 	os_atomic_set_bool(&mps->release_held, true);
 	pthread_mutex_lock(&mps->mutex);
+	const bool was_ended = media_state(mps) == OBS_MEDIA_STATE_ENDED;
+	const long loads_before = loads_requested(mps);
 	retry_failed_on_request(mps);
 	/* RESTART is a new load (R-BEH-6); after the list ended, the current item is the first one, as upstream did.
 	 * The loads set the PLAYING state; nothing playable leaves it as it was. */
 	if (mps->restart_behavior == RESTART_BEHAVIOR_FIRST_FILE) {
 		play_media_at_index(mps, 0, false, false);
+		start_after_end_locked(mps, was_ended, loads_before);
 	} else if (mps->restart_behavior == RESTART_BEHAVIOR_CURRENT_FILE) {
-		if (!restart_playing_copy(mps) && point_at_playable_item(mps))
+		if (!restart_playing_copy(mps) && point_at_playable_item(mps)) {
 			update_media_source(mps, true);
+			start_after_end_locked(mps, was_ended, loads_before);
+		}
 	}
 	pthread_mutex_unlock(&mps->mutex);
 }
@@ -2230,6 +2257,11 @@ static void *mps_create(obs_data_t *settings, obs_source_t *source)
 	signal_handler_t *sh_media_source = obs_source_get_signal_handler(mps->current_media_source);
 	signal_handler_connect(sh_media_source, "media_ended", media_source_ended, mps);
 
+	/* before the first update, which queues the first load, and before the hotkeys and the proc are registered: if
+	 * it fails, the source is freed, and nothing registered with OBS may still point at it */
+	if (!pl_player_start(&mps->player, mps->current_media_source))
+		goto error;
+
 	mps->play_pause_hotkey = obs_hotkey_register_source(source, "OBSPlaylister.PlayPause",
 							    obs_module_text("PlayPause"), play_pause_hotkey, mps);
 
@@ -2247,10 +2279,6 @@ static void *mps_create(obs_data_t *settings, obs_source_t *source)
 
 	proc_handler_t *ph = obs_source_get_proc_handler(source);
 	proc_handler_add(ph, "void select_index(int media_index, int folder_item_index)", select_index_proc, mps);
-
-	/* before the first update, which queues the first load */
-	if (!pl_player_start(&mps->player, mps->current_media_source))
-		goto error;
 
 	obs_source_update(source, NULL);
 
@@ -2628,6 +2656,11 @@ static void mps_video_tick(void *data, float seconds)
 			/* the child keeps its last frame at its end for a seamless cut (R-BEH-8); none follows */
 			pl_player_blank(&mps->player);
 			end_reached_locked(mps);
+		} else if (!ended && state_stopped(media_state(mps)) && !pl_player_load_pending(&mps->player)) {
+			/* R-BEH-8: an end that does not count while nothing plays, for example the child replaying its file by
+			 * itself when shown again under Stop/play next with nothing next: nothing follows, so its last frame
+			 * comes off the screen. Not while a load is pending, which keeps the frame for the cut. */
+			pl_player_blank(&mps->player);
 		}
 		pthread_mutex_unlock(&mps->mutex);
 		if (moved) {

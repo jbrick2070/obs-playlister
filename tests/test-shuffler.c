@@ -225,6 +225,9 @@ static void test_update_files_without_select_keeps_next_in_range(void)
 	shuffler_prev(&shuffler);
 	assert(shuffler.next == 3);
 	assert_invariant(&shuffler);
+	/* R-UP-84: the current item and the one that follows it, by id, so it holds whatever rand() picked */
+	const char *current = shuffler.shuffled_files.array[2]->id;
+	const char *following = shuffler.shuffled_files.array[0]->id;
 
 	/* the copy shares the other items' strings, so it is freed with da_free */
 	for (size_t i = 0; i < items.num; i++) {
@@ -235,6 +238,13 @@ static void test_update_files_without_select_keeps_next_in_range(void)
 	assert(shuffler.shuffled_files.num == 3);
 	assert_next_in_cycle(&shuffler);
 	assert_invariant(&shuffler);
+	size_t num = shuffler.shuffled_files.num;
+	size_t at = shuffler.next ? shuffler.next - 1 : num - 1;
+	bool in_place = strcmp(shuffler.shuffled_files.array[at]->id, current) == 0;
+	if (!in_place)
+		print_state(&shuffler);
+	assert(in_place);
+	assert(strcmp(shuffler_next(&shuffler)->id, following) == 0);
 
 	for (int i = 0; i < 8; i++) {
 		assert(shuffler_has_next(&shuffler));
@@ -314,6 +324,44 @@ static void test_update_files_adding_keeps_place_in_history(void)
 			bfree(grown.array[i].id);
 		da_free(grown);
 		ArrayDestroy(&items.da);
+	}
+}
+
+/* R-UP-83: loop off, a finished pass leaves the shuffler used up. At the end of the list it is reset with nothing
+ * drawn, and the item Play then loads (row 1, or any other) is selected: the rest of the pass plays every other item
+ * once, then the list ends. Every size from 1 to 4 and every first item, so no rand() pick can hide a skip. */
+static void test_new_pass_after_used_up_pass(void)
+{
+	for (size_t count = 1; count <= 4; count++) {
+		for (size_t first = 0; first < count; first++) {
+			struct shuffler shuffler;
+			DARRAY(struct media_file_data) items;
+			da_init(items);
+			shuffler_init(&shuffler);
+			ArrayInit(&items.da, count);
+			shuffler_update_files(&shuffler, &items.da);
+			for (size_t i = 0; i < count; i++)
+				shuffler_next(&shuffler);
+			assert(!shuffler_has_next(&shuffler));
+
+			shuffler_reshuffle(&shuffler);                   /* end_reached_locked */
+			shuffler_select(&shuffler, &items.array[first]); /* start_after_end_locked */
+			assert_invariant(&shuffler);
+			bool seen[4] = {false, false, false, false};
+			seen[first] = true;
+			for (size_t i = 1; i < count; i++) {
+				assert(shuffler_has_next(&shuffler));
+				struct media_file_data *item = shuffler_next(&shuffler);
+				size_t idx = (size_t)(item - items.array);
+				assert(idx < count && !seen[idx]);
+				seen[idx] = true;
+				assert_invariant(&shuffler);
+			}
+			assert(!shuffler_has_next(&shuffler));
+
+			shuffler_destroy(&shuffler);
+			ArrayDestroy(&items.da);
+		}
 	}
 }
 
@@ -557,6 +605,7 @@ int main(void)
 	test_identity_update_keeps_valid_next();
 	printf("test_update_files_adding_keeps_place_in_history\n");
 	test_update_files_adding_keeps_place_in_history();
+	test_new_pass_after_used_up_pass();
 	printf("test_random_operations_keep_invariant\n");
 	test_random_operations_keep_invariant();
 	printf("obs-playlister shuffler regression tests: passed\n");
