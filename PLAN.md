@@ -524,17 +524,17 @@ Nothing is built. The only commitment is R-VJ-2: everything that touches the chi
 
 - After coding, before commit: `ctest` green, then post-code QA by a Claude Sonnet 5.5 agent (R-STD-9) on the step's diff with the R-IDs it claims; confirmed findings fixed, `ctest` re-run, QA outcome noted in the commit message.
 - Before commit: no BOM, no zero-byte file, banned word absent, clang-format 17.0.3 applied if installed, new top-level paths allowlisted in `.gitignore`.
-- Push: exactly one `git push origin master`. On failure, hand over:
+- Push: exactly one `git push origin main`. On failure, hand over:
   ```
   cd "C:\Users\jeffr\Documents\obs-playlister"
   git status
-  git push origin master
+  git push origin main
   ```
-- After push: `git rev-parse HEAD` equals `git rev-parse origin/master`; BOM and zero-byte scans clean.
+- After push: `git rev-parse HEAD` equals `git rev-parse origin/main`; BOM and zero-byte scans clean.
 
 ## 7. Order of work
 
-Phase 1 is one commit series on `master` (personal fork, no PR flow). Phases 2 and 3 each start with a REQUIREMENTS.md check (R-STD-6) and end with a version bump (0.3.0 after Phase 2; 0.4.0 after 3a; 0.5.0 after the Linux port (D-13); 0.6.0, 0.7.0 after 3b, 3c). Nothing in Phase 2 starts until the Phase 1 acceptance list is green on OBS 33.0.0. (Waived by the operator on 2026-10-24: Phase 2 started with only TESTING.md 1.1 and the packaging checks done; the remaining Phase 1 items run on Phase 2 builds.) (Operator decision on 2026-10-25: the plugin is called "Playlister" from 0.3.1, as the OBS Project's branding policy does not allow "OBS" in any plugin's name; identifiers stay, D-3.) (Operator decision on 2026-10-25: 0.3.0 was bumped with the Phase 2 manual checks and the remaining Phase 1 items still to run; TESTING.md marks them pending.) (Operator decision on 2026-10-28: 0.4.0 was bumped after the Phase 3a acceptance script passed, with the manual Phase 3a items 3.8, 3.16, 3.17 and a public feed for 3.9 still to run, and the Phase 1 and 2 manual items still pending.) (Operator decision on 2026-11-01: 0.5.0 was bumped after the Linux runtime harness passed in OBS on Ubuntu, with the Linux manual items and all earlier manual items still pending; it includes the 0.4.1 size fix, which was never released on its own.) Decisions are needed at the first phase that depends on them (REQUIREMENTS section 14).
+Phase 1 is one commit series on `main` (called `master` until 2026-11-11; personal fork, no PR flow). Phases 2 and 3 each start with a REQUIREMENTS.md check (R-STD-6) and end with a version bump (0.3.0 after Phase 2; 0.4.0 after 3a; 0.5.0 after the Linux port (D-13); 0.6.0, 0.7.0 after 3b, 3c). Nothing in Phase 2 starts until the Phase 1 acceptance list is green on OBS 33.0.0. (Waived by the operator on 2026-10-24: Phase 2 started with only TESTING.md 1.1 and the packaging checks done; the remaining Phase 1 items run on Phase 2 builds.) (Operator decision on 2026-10-25: the plugin is called "Playlister" from 0.3.1, as the OBS Project's branding policy does not allow "OBS" in any plugin's name; identifiers stay, D-3.) (Operator decision on 2026-10-25: 0.3.0 was bumped with the Phase 2 manual checks and the remaining Phase 1 items still to run; TESTING.md marks them pending.) (Operator decision on 2026-10-28: 0.4.0 was bumped after the Phase 3a acceptance script passed, with the manual Phase 3a items 3.8, 3.16, 3.17 and a public feed for 3.9 still to run, and the Phase 1 and 2 manual items still pending.) (Operator decision on 2026-11-01: 0.5.0 was bumped after the Linux runtime harness passed in OBS on Ubuntu, with the Linux manual items and all earlier manual items still pending; it includes the 0.4.1 size fix, which was never released on its own.) Decisions are needed at the first phase that depends on them (REQUIREMENTS section 14).
 
 ## 8. Verify-at-build checklist
 
