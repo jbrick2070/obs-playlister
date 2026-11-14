@@ -30,7 +30,7 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.codeyan.media-playlist-source"
+            "bundleId": "com.jbrick2070.obs-playlister"
         }
     },
     "name": "obs-playlister",
