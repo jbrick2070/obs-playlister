@@ -10,6 +10,9 @@ Planned as 0.5.1.
 
 ### Added
 
+- README: added the "Which video player when" comparison table across VJster,
+  Visual Sidechain Tape Deck, and Playlister, showing speeds in both `%` and
+  `x` forms (`P1-6`).
 - Playlister speaks eleven languages besides English: Simplified Chinese,
   Spanish, Brazilian Portuguese, Russian, Japanese, German, French, Korean,
   Traditional Chinese, Turkish and Dutch. It follows the language OBS runs in.

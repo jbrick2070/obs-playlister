@@ -49,6 +49,17 @@ Python scripting, which needs a matching Python installed and set in
 Tools > Scripts > Python Settings. Playlister is a native plugin, so there
 is nothing else to install or configure.
 
+## Which video player when
+
+In the Fadester suite, four tools play video at adjustable speeds. Pick the one that matches your source and whether you need live speed changes during playback:
+
+| Player | What it plays | Speed range (both units) | Live speed behavior | Surface controls |
+| :--- | :--- | :--- | :--- | :--- |
+| **VJster (Chrome / Edge tab)** | A YouTube tab (with quality choice) or an HTML5 `<video>` tab captured into OBS | **25% to 200% (0.25x to 2x)** default (up to **400% (4x)** if YouTube lists it; **10% to 1600% (0.1x to 16x)** with **Extended** enabled) | Changes live in place without restarting | **Fadester for OBS** (VJster dials/keys) and **Fadester Companion** |
+| **VJster OBS page** | One YouTube video (`v=`) or playlist (`list=`) in an OBS **Browser Source** | **25% to 200% (0.25x to 2x)** (OBS CEF 150 embed ceiling) | Changes live in place without restarting; speed and play/pause only (no embed quality API) | **Fadester for OBS** (VJster dials/keys) and **Fadester Companion** |
+| **Visual Sidechain: Tape Deck** | One local or network-share video file (`MP4`, `MKV`, `MOV`, `WebM`) on a dedicated OBS **Browser Source** (Windows) | **25% to 800% (0.25x to 8x)** (`100% (1x)` normal) | Changes picture and sound live in place without restarting; optional **Tape pitch** and ratio **Speed Fader** | **Fadester for OBS** (**Tape Deck** key/dial or **OBS Filter**), Midi Fadester **Speed Fader**, OBS hotkeys, `obs-websocket` (`deck_command`). *(Fadester Companion preset support is a follow-up.)* |
+| **Playlister** | Ordered playlists of local files, folders, `.m3u` / `.m3u8` / `.pls` playlists, and stream URLs in an OBS **Playlister** source (Windows & Linux; macOS experimental, not verified on hardware) | **1% to 200% (0.01x to 2x)** (`100% (1x)` normal) | Source setting only: **changing Speed restarts the playing clip from its beginning** | **Fadester for OBS** (**Playlister** transport key), OBS Media Controls, OBS hotkeys, `obs-websocket` media inputs |
+
 ## Status lines
 
 Under the playlist, **Status** has one line for each row of the list: its
@@ -130,7 +141,7 @@ beginning. Removing or changing the row that plays starts another clip.
 - **Current File** and **Refresh**: what was playing when the window opened or
   when Refresh was last pressed.
 - **Select File** and **Play Selected File**: jump to any item of the list.
-- **Speed** (100%): playback speed.
+- **Speed** (100% / 1x, range 1% to 200% / 0.01x to 2x): playback speed. Changing Speed starts the playing clip again from its beginning.
 
 ## Hotkeys
 
