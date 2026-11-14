@@ -1,5 +1,7 @@
 # Playlister
 
+> **Setting up the Fadester Suite?** Start with **[START-HERE.md](https://github.com/jbrick2070/streamdeck-fadester/blob/main/docs/START-HERE.md)** for what to install for your controller, which video player to pick, first-run OBS settings, and the compatibility matrix.
+
 A playlist source for OBS Studio 33 and later. It plays video, audio and image
 files, folders, playlist files and web addresses through OBS's own Media Source,
 one after another, and editing the list does not restart the clip that is
