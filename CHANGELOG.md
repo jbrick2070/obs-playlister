@@ -58,6 +58,8 @@ Planned as 0.5.1.
   crash OBS when they were pressed.
 - Large folders and playlists (tens of thousands of entries) no longer hold up
   hotkeys and the Properties window each time their list is applied.
+- `buildspec.json`: macOS `bundleId` changed from upstream's
+  `com.codeyan.media-playlist-source` to `com.jbrick2070.obs-playlister`.
 - After the end of the list, a folder change or Stop no longer makes Play
   replay the last item instead of the first.
 - A file renamed twice in quick succession keeps its place in the list instead
