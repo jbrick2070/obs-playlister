@@ -10,6 +10,8 @@ Planned as 0.5.1.
 
 ### Added
 
+- README: linked the suite-wide `START-HERE.md` setup and compatibility guide
+  first at the top of `README.md` (`P1-5`).
 - README: added the "Which video player when" comparison table across VJster,
   Visual Sidechain Tape Deck, and Playlister, showing speeds in both `%` and
   `x` forms (`P1-6`).
