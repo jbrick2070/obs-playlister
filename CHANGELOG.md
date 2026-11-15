@@ -6,7 +6,7 @@ version numbers are the ones in `buildspec.json`.
 
 ## [Unreleased]
 
-Planned as 0.5.1.
+## [0.5.1] - 2026-11-15
 
 ### Added
 
@@ -140,7 +140,8 @@ The manual checks in OBS (TESTING.md) are still pending.
 
 - The original Media Playlist Source, renamed and built for OBS 33.
 
-[Unreleased]: https://github.com/jbrick2070/obs-playlister/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/jbrick2070/obs-playlister/compare/0.5.1...HEAD
+[0.5.1]: https://github.com/jbrick2070/obs-playlister/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/jbrick2070/obs-playlister/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/jbrick2070/obs-playlister/compare/0.3.1...0.4.0
 [0.3.1]: https://github.com/jbrick2070/obs-playlister/compare/0.3.0...0.3.1
