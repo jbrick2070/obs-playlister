@@ -4,7 +4,7 @@
 # Not published to the AUR from this repository; an Arch user is welcome to take it there.
 
 pkgname=obs-playlister
-pkgver=0.5.0
+pkgver=0.5.1
 pkgrel=1
 pkgdesc="A playlist source for OBS Studio with watched folders, M3U/PLS playlists and web addresses"
 arch=('x86_64')
@@ -14,8 +14,8 @@ license=('GPL-2.0-or-later')
 depends=('obs-studio>=33' 'curl')
 makedepends=('cmake' 'ninja' 'simde')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/jbrick2070/obs-playlister/archive/refs/tags/$pkgver.tar.gz")
-# the GitHub archive of tag 0.5.0 (checked twice, 2026-11-01)
-sha256sums=('c0f5cc49d1ae8b29188d7f14cf56caf918cef47c0c0445613e6eaa2b3ffc4d76')
+# the GitHub archive of tag 0.5.1 (checked twice, 2026-11-15)
+sha256sums=('eaf2d5dad11f41c521c7226e2297da9582c1103df32ad9224cc958d84ba8f502')
 
 build() {
 	cmake -S "$pkgname-$pkgver" -B build -G Ninja \
