@@ -44,7 +44,15 @@ int main(void)
 
 	long allocations = bnum_allocs();
 	expect_fold("clip.mp4", "CLIP.MP4");
+#ifdef _WIN32
 	expect_fold("Sub\\Episode 2.MKV", "SUB/EPISODE 2.MKV");
+#else
+	/* macOS (R-MAC-4): a backslash is a legal name character and stays */
+	expect_fold("Sub\\Episode 2.MKV", "SUB\\EPISODE 2.MKV");
+	/* a decomposed name (e and a combining acute, as HFS+ stored it) gets the key of the composed one, as APFS
+	 * compares names without regard to normalization */
+	expect_fold("cafe\xcc\x81.mp4", "CAF\xc3\x89.MP4");
+#endif
 	expect_fold("sub/ep10.mp4", "SUB/EP10.MP4");
 	/* e with acute, and Cyrillic: letters outside ASCII fold too */
 	expect_fold("caf\xc3\xa9.mp4", "CAF\xc3\x89.MP4");

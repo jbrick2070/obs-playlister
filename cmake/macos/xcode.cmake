@@ -53,11 +53,6 @@ set(CMAKE_XCODE_ATTRIBUTE_OTHER_CODE_SIGN_FLAGS[variant=Release] "--timestamp")
 set(CMAKE_XCODE_ATTRIBUTE_OTHER_CODE_SIGN_FLAGS[variant=RelWithDebInfo] "--timestamp")
 set(CMAKE_XCODE_ATTRIBUTE_OTHER_CODE_SIGN_FLAGS[variant=MinSizeRel] "--timestamp")
 
-# Enable codesigning with hardened runtime option when not in Debug configuration (required for Notarization)
-set(CMAKE_XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME[variant=Release] YES)
-set(CMAKE_XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME[variant=RelWithDebInfo] YES)
-set(CMAKE_XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME[variant=MinSizeRel] YES)
-
 # Disable injection of Xcode's base entitlements used for debugging when not in Debug configuration (required for
 # Notarization)
 set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_INJECT_BASE_ENTITLEMENTS[variant=Release] NO)
@@ -111,10 +106,10 @@ set(CMAKE_XCODE_ATTRIBUTE_GCC_STRICT_ALIASING NO)
 #
 # set(CMAKE_XCODE_ATTRIBUTE_CLANG_CXX_LANGUAGE_STANDARD c++17)
 
-# Enable support for module imports in ObjC
-set(CMAKE_XCODE_ATTRIBUTE_CLANG_ENABLE_MODULES YES)
-# Enable automatic linking of imported modules in ObjC
-set(CMAKE_XCODE_ATTRIBUTE_CLANG_MODULES_AUTOLINK YES)
+# Disable support for module imports in ObjC
+set(CMAKE_XCODE_ATTRIBUTE_CLANG_ENABLE_MODULES NO)
+# Disable automatic linking of imported modules in ObjC
+set(CMAKE_XCODE_ATTRIBUTE_CLANG_MODULES_AUTOLINK NO)
 # Enable strict msg_send rules for ObjC
 set(CMAKE_XCODE_ATTRIBUTE_ENABLE_STRICT_OBJC_MSGSEND YES)
 

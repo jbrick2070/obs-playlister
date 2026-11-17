@@ -24,7 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * admin share where it can be reached. Expected keys are written as file names and folded as the platform folds
  * them (K). Each wait has a generous limit, so a slow machine only makes it slower. */
 
-#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE /* nftw */
 #endif
 #undef NDEBUG
@@ -206,8 +206,8 @@ static bool at_version(const struct pl_snapshot *snapshot, const void *context)
 /* ---- the folder, per platform ---- */
 
 /* Expected keys, written as the file names (comma-separated lists too) and folded as the platform folds them:
- * upper case on Windows (R-KEY-1), unchanged on Linux (R-LNX-5). Plain malloc, freed at the end, so the bmem leak
- * check does not count them. */
+ * upper case on Windows (R-KEY-1) and macOS (R-MAC-4), unchanged on Linux (R-LNX-5). Plain malloc, freed at the end,
+ * so the bmem leak check does not count them. */
 #define MAX_KEYS 64
 static char *keys_made[MAX_KEYS];
 static size_t keys_count;
@@ -218,7 +218,7 @@ static const char *K(const char *names)
 	size_t size = strlen(names) + 1;
 	char *key = malloc(size);
 	memcpy(key, names, size);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
 	for (char *c = key; *c; c++) {
 		if (*c >= 'a' && *c <= 'z')
 			*c = (char)(*c - 'a' + 'A');
@@ -438,7 +438,8 @@ static void make_subfolder(const char *folder, const char *name)
 	bfree(path);
 }
 
-/* A hidden file or folder: on Linux its name starts with '.', so it is renamed; the name it has is returned (bmem) */
+/* A hidden file or folder: on Linux and macOS a name starting with '.', so it is renamed; the name it has is
+ * returned (bmem) */
 static char *hide(const char *folder, const char *name)
 {
 	struct dstr hidden = {0};

@@ -2,6 +2,16 @@
 # Copyright (C) 2026 Jeffrey A. Brick
 # SPDX-License-Identifier: GPL-2.0-or-later
 
+if(OS_MACOS)
+  # Test executables live outside OBS.app and need the development frameworks and dylibs (as midi-fadester's tests)
+  set(CMAKE_SKIP_RPATH FALSE)
+  set(CMAKE_XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "")
+  set(CMAKE_BUILD_RPATH "${CMAKE_SOURCE_DIR}/.deps/Frameworks;${CMAKE_SOURCE_DIR}/.deps/lib")
+  foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
+    list(APPEND CMAKE_BUILD_RPATH "${_prefix}/lib")
+  endforeach()
+endif()
+
 # Directories holding libobs and its dependency DLLs, put on the test PATH so nothing is copied and nothing is taken
 # from an installed OBS or a developer PATH (REQUIREMENTS R-TST-4).
 set(_test_dll_dirs "")
@@ -57,9 +67,12 @@ obs_playlister_add_test(test-modes test-modes.c "${_core}/modes.c" "${_core}/sor
 obs_playlister_add_test(test-keys test-keys.c "${_core}/keys.c" "${_core}/sort.c" "${_core}/natural.c")
 # What a row does with a new snapshot while an item plays: delete, eviction and renames (R-DIR-8)
 obs_playlister_add_test(test-merge test-merge.c "${_core}/merge.c" "${_core}/entry-list.c")
-# R-KEY-1 key folding at the Win32 boundary (Linux keys are the text unchanged, R-LNX-5)
+# R-KEY-1 key folding at the Win32 boundary and on macOS (R-MAC-4); Linux keys are the text unchanged (R-LNX-5)
 if(WIN32)
   obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-win.c")
+elseif(OS_MACOS)
+  obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-mac.c")
+  target_link_libraries(test-fold-key PRIVATE ${_playlister_macos_frameworks})
 endif()
 # The folder provider's write-complete gate and watch modes against a fake folder (R-DIR-3, R-DIR-4)
 obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")
@@ -119,6 +132,15 @@ if(WIN32)
     "${_providers}/fold-key-win.c"
     "${_providers}/os-win.c"
   )
+elseif(OS_MACOS)
+  list(
+    APPEND
+    _provider_sources
+    "${_providers}/folder-os-mac.c"
+    "${_providers}/fetch-curl.c"
+    "${_providers}/fold-key-mac.c"
+    "${_providers}/os-posix.c"
+  )
 else()
   list(
     APPEND
@@ -149,7 +171,7 @@ foreach(_test IN ITEMS test-provider-folder test-provider-list)
   if(WIN32)
     target_link_libraries(${_test} PRIVATE winhttp)
   else()
-    target_link_libraries(${_test} PRIVATE CURL::libcurl Threads::Threads)
+    target_link_libraries(${_test} PRIVATE CURL::libcurl Threads::Threads ${_playlister_macos_frameworks})
   endif()
 endforeach()
 

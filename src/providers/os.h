@@ -18,8 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
-/* The few operating-system services the providers need, so that only os-win.c (and later os-posix.c) call the
- * operating system directly (R-LNX-2): a stop signal, a wake signal, a wait for either, a worker thread, the wall
+/* The few operating-system services the providers need, so that only os-win.c and os-posix.c (Linux and macOS) call
+ * the operating system directly (R-LNX-2): a stop signal, a wake signal, a wait for either, a worker thread, the wall
  * clock, and reading one small file. */
 
 #include <stdbool.h>
@@ -62,9 +62,11 @@ void pl_wake_set(struct pl_wake *wake);
 void *pl_wake_win32_event(struct pl_wake *wake);
 #else
 /* The descriptors behind the signals, readable while set, for waits that also poll other descriptors (inotify,
- * libcurl). Reading the wake's takes it; the stop's is never read. */
+ * FSEvents, libcurl). The wake is taken with pl_wake_take once its descriptor polls readable; the stop's is never
+ * read. An eventfd on Linux, the read end of a pipe on macOS. */
 int pl_stop_fd(struct pl_stop *stop);
 int pl_wake_fd(struct pl_wake *wake);
+void pl_wake_take(struct pl_wake *wake);
 #endif
 
 enum pl_wait_result {
