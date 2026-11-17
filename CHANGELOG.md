@@ -6,6 +6,8 @@ version numbers are the ones in `buildspec.json`.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-17
+
 ### Added
 
 - macOS: Playlister builds for macOS 13.0 or later as one universal binary
@@ -13,8 +15,11 @@ version numbers are the ones in `buildspec.json`.
   `obs-playlister-<version>-macos-universal.pkg` (installs into
   `~/Library/Application Support/obs-studio/plugins/`) and a `.tar.xz` with
   the same `obs-playlister.plugin`. Both are unsigned and not notarized; README
-  says how to open them. The tests run on a macOS runner on every push; the
-  checks in OBS on a real Mac (TESTING.md, M.1 to M.16) are still to be done.
+  says how to open them. The tests run on a macOS runner on every push. On
+  2026-11-17 the build was installed in OBS 33.0.1 on an Apple Silicon Mac
+  (M6, macOS 27.3) and checked: it loads, its vendor requests answer, a
+  Playlister source is created, and OBS quits with 0 memory leaks. The
+  hands-on checks (TESTING.md, M.1 to M.16) are still to come.
 - macOS folder rows: changes are seen through FSEvents, renames keep the
   playing item (also a file renamed twice in a row), Finder-hidden files are
   left out, iCloud Drive files that are not downloaded are listed but never
@@ -162,7 +167,8 @@ The manual checks in OBS (TESTING.md) are still pending.
 
 - The original Media Playlist Source, renamed and built for OBS 33.
 
-[Unreleased]: https://github.com/jbrick2070/obs-playlister/compare/0.5.1...HEAD
+[Unreleased]: https://github.com/jbrick2070/obs-playlister/compare/0.5.2...HEAD
+[0.5.2]: https://github.com/jbrick2070/obs-playlister/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/jbrick2070/obs-playlister/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/jbrick2070/obs-playlister/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/jbrick2070/obs-playlister/compare/0.3.1...0.4.0
