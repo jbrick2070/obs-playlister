@@ -199,7 +199,7 @@ for user-mode code were turned on.
   `obs-studio` package:
 
   ```
-  git clone --branch 0.5.0 https://github.com/jbrick2070/obs-playlister.git
+  git clone --branch 0.5.1 https://github.com/jbrick2070/obs-playlister.git
   cd obs-playlister/packaging/arch
   makepkg -si
   ```

@@ -2,6 +2,7 @@
 
 Status: 2026-11-01. Approved by the operator on 2026-10-24 (decisions: REQUIREMENTS section 14).
 Phase 1 (0.2.0), Phase 2 (0.3.0; 0.3.1 renames the plugin Playlister), Phase 3a (0.4.0) and the Linux port (0.5.0, with the 0.4.1 size fix) are implemented; the manual checks of all of them (TESTING.md) are pending, apart from the Phase 3a items the acceptance script runs; Phases 3b, 3c and 4 are not started.
+Update 2026-11-16: 0.5.1 shipped on 2026-11-15 (CHANGELOG.md): eleven translations, no black frames between clips, clearer Properties labels and help text, and shuffle, playlist-reload, hotkey and log-privacy fixes. The manual checks above are still pending; Phases 3b, 3c and 4 are still not started.
 Revision: four-round panel review folded in (kibitz-runs/2026-10-24-obs-playlister-plan/).
 Companion to REQUIREMENTS.md; requirement IDs (R-...) and decisions (D-...)
 refer to that file. "src N" means src/media-playlist-source.c line N at f8d90bd.
