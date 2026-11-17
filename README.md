@@ -202,7 +202,9 @@ for user-mode code were turned on.
 - One build runs on Apple Silicon and Intel Macs.
 
 > **Mac users, please read.** The macOS build is new: it is built and its tests pass automatically on every
-> change, but it has not yet been run in OBS on a real Mac, so please report what you find. The `.pkg` is not
+> change. On 2026-11-17 it was installed in OBS 33.0.1 on an Apple Silicon Mac (M6, macOS 27.3) and checked: it
+> loads, its vendor requests answer, a Playlister source is created, and OBS quits with 0 memory leaks. The full
+> hands-on test is still to come, so please report what you find. The `.pkg` is not
 > signed or notarized by Apple, so macOS will refuse to open it the first time. To allow it, right-click (or
 > Control-click) the `.pkg` and choose **Open**, then **Open** again; or try to open it once, then go to
 > **System Settings → Privacy & Security** and click **Open Anyway**.
@@ -219,7 +221,7 @@ Security → Files and Folders** (or **Full Disk Access**) and start OBS again.
   `obs-studio` package:
 
   ```
-  git clone --branch 0.5.1 https://github.com/jbrick2070/obs-playlister.git
+  git clone --branch 0.5.2 https://github.com/jbrick2070/obs-playlister.git
   cd obs-playlister/packaging/arch
   makepkg -si
   ```

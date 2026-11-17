@@ -176,7 +176,7 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 `release/RelWithDebInfo/obs-playlister`, so the folder holds exactly
 `obs-playlister.dll`, `obs-playlister.pdb`, `data\manifest.json` and
 `data\locale\en-US.ini`. From Phase 2 on these run on the current build (the waiver in PLAN section 7), so the
-version expected in 1.1 and 1.2 is that build's (0.5.1 now).
+version expected in 1.1 and 1.2 is that build's (0.5.2 now).
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
@@ -296,7 +296,7 @@ folder of two or three short videos of different lengths.
 | L.8 | An http(s) .m3u on a real server, and a direct video URL | the list loads (HTTPS included); the video plays | Pending |
 | L.9 | A folder on a network share (NFS or SMB) | the row status (and the log line of the mode change) say it is a network file system; new files show up within the check interval | Pending |
 | L.10 | Hardware decoding on and off; the Properties dialog and the Browse dialog | both play; the dialogs look and work as on Windows | Pending |
-| L.11 | Open Properties of any Playlister (Linux and Windows) | the last line reads "Playlister 0.5.1" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
+| L.11 | Open Properties of any Playlister (Linux and Windows) | the last line reads "Playlister 0.5.2" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
 | L.12 | A folder row with subfolders on. Note `sysctl fs.inotify.max_queued_events`, then `sudo sysctl fs.inotify.max_queued_events=64`; in one burst create 500 files and a new subfolder in the folder, then add a video to that subfolder. Restore the sysctl afterwards | the log shows the overflow ("more changes than the buffer holds; listing it again"), and the new video joins within about 3 s, not only at the next check (R-LNX-3) | Pending |
 | L.13 | A folder row with subfolders on. Note `sysctl fs.inotify.max_user_watches`, then `sudo sysctl fs.inotify.max_user_watches=<just above the tree's folder count>`; create a new subfolder holding a video (made elsewhere and moved in). Restore the sysctl afterwards | the log says "notifications cannot be armed; rescanning instead", and the video still joins within about 3 s (the debounce plus the write-complete wait), not only at the next check (R-DIR-3) | Pending |
 
@@ -333,14 +333,16 @@ eye:
 | U.3 | A list with a missing file, then a URL that never answers (for example `http://10.255.255.1/x.mp4`), each with a playable file after it; press Refresh after each fails | the missing file reads "could not be played: it did not start"; the URL reads the reason that matches its `[obs-playlister]` log line: "skipped, as it ended before playing" gives "it did not start", "skipped, as it did not start playing within its startup window" gives "it took too long to start" (R-UX-4) | Pending |
 | U.4 | OBS in German and in Japanese (T.1, T.2), U.1 and U.2 again | the new texts are in that language and fit their controls | Pending |
 
-## macOS (unreleased)
+## macOS (0.5.2)
 
 macOS builds as one universal binary (arm64 and x86_64) and runs `ctest` on every push in CI (`macos-26`, Xcode 26;
 REQUIREMENTS section 2b). There, `test-provider-folder` drives real folders through the FSEvents watch (renames
 paired by inode, a rename chain, subfolders, a missing folder) and the shared-lock probe, `test-fold-key` checks the
 macOS key folding (upper case, NFC, backslash kept), `test-fetch` runs every fetch case against the system libcurl,
 and `test-provider-list` reads local playlists with the POSIX path rules. CI has no display and no OBS for the
-runtime harness, so nothing below has run yet: these checks are for the owner on a real Mac (R-MAC-6).
+runtime harness, so these checks are for the owner on a real Mac (R-MAC-6). A first check was made on 2026-11-17 in
+OBS 33.0.1 on an Apple Silicon Mac (M6, macOS 27.3): the plugin loads, its vendor requests answer, a Playlister
+source is created, and OBS quits with 0 memory leaks. The items below are still to be run one by one.
 
 Setup: a Mac with macOS 13 or later and OBS 33. Note whether it is Apple Silicon or Intel (ideally run M.1 to M.4 on
 both). Download the `.pkg` and the `.tar.xz` from the PR's macOS CI artifact or a release. A folder of two or three
@@ -392,7 +394,8 @@ short videos of different lengths. OBS logs are in `~/Library/Application Suppor
   written is held back by the stability rule (size and time unchanged across two samples 2 s apart) and by a shared
   lock that a writer holding an exclusive lock refuses; a writer that pauses for more than 2 s mid-copy could let a
   partial file in.
-- macOS: built and `ctest`-tested in CI only; the `.pkg` and plugin are unsigned and not notarized, and the manual
-  items M.1 to M.16 above have not run on a real Mac.
+- macOS: built and `ctest`-tested in CI, and given a first check in OBS 33.0.1 on an Apple Silicon Mac (2026-11-17:
+  loads, vendor requests answer, a source is created, 0 memory leaks on quit); the `.pkg` and plugin are unsigned and
+  not notarized, and the manual items M.1 to M.16 above have not been run one by one.
 - Linux: the runtime harness passed in OBS 32.2 on Ubuntu 24.04 (software rendering, 2026-11-01); the manual items L.1 to L.11
   above (dialogs, real desktops, network shares, Arch) have not run.
