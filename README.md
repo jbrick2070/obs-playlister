@@ -42,7 +42,7 @@ from scratch, and folders play in Playlister itself (the script could also
 fill a VLC Video Source or an Image Slideshow). Playlister is its
 own source type and installs next to Media Playlist Source without either one
 replacing the other; existing Media Playlist Source sources are left as they
-are. It also runs on Linux. What changed in each version is in
+are. It also runs on macOS and Linux. What changed in each version is in
 [CHANGELOG.md](CHANGELOG.md); the design is in [PLAN.md](PLAN.md) and
 [REQUIREMENTS.md](REQUIREMENTS.md).
 
@@ -60,7 +60,7 @@ In the Fadester suite, four tools play video at adjustable speeds. Pick the one 
 | **VJster (Chrome / Edge tab)** | A YouTube tab (with quality choice) or an HTML5 `<video>` tab captured into OBS | **25% to 200% (0.25x to 2x)** default (up to **400% (4x)** if YouTube lists it; **10% to 1600% (0.1x to 16x)** with **Extended** enabled) | Changes live in place without restarting | **Fadester for OBS** (VJster dials/keys) and **Fadester Companion** |
 | **VJster OBS page** | One YouTube video (`v=`) or playlist (`list=`) in an OBS **Browser Source** | **25% to 200% (0.25x to 2x)** (OBS CEF 150 embed ceiling) | Changes live in place without restarting; speed and play/pause only (no embed quality API) | **Fadester for OBS** (VJster dials/keys) and **Fadester Companion** |
 | **Visual Sidechain: Tape Deck** | One local or network-share video file (`MP4`, `MKV`, `MOV`, `WebM`) on a dedicated OBS **Browser Source** (Windows) | **25% to 800% (0.25x to 8x)** (`100% (1x)` normal) | Changes picture and sound live in place without restarting; optional **Tape pitch** and ratio **Speed Fader** | **Fadester for OBS** (**Tape Deck** key/dial or **OBS Filter**), Midi Fadester **Speed Fader**, OBS hotkeys, `obs-websocket` (`deck_command`). *(Fadester Companion preset support is a follow-up.)* |
-| **Playlister** | Ordered playlists of local files, folders, `.m3u` / `.m3u8` / `.pls` playlists, and stream URLs in an OBS **Playlister** source (Windows & Linux; macOS experimental, not verified on hardware) | **1% to 200% (0.01x to 2x)** (`100% (1x)` normal) | Source setting only: **changing Speed restarts the playing clip from its beginning** | **Fadester for OBS** (**Playlister** transport key), OBS Media Controls, OBS hotkeys, `obs-websocket` media inputs |
+| **Playlister** | Ordered playlists of local files, folders, `.m3u` / `.m3u8` / `.pls` playlists, and stream URLs in an OBS **Playlister** source (Windows, macOS & Linux) | **1% to 200% (0.01x to 2x)** (`100% (1x)` normal) | Source setting only: **changing Speed restarts the playing clip from its beginning** | **Fadester for OBS** (**Playlister** transport key), OBS Media Controls, OBS hotkeys, `obs-websocket` media inputs |
 
 ## Status lines
 
@@ -172,9 +172,10 @@ hidden.
 
 ## Install
 
-Requires OBS Studio 33.0.0 or later on Windows x64, and OBS Studio 32.2 or later on Linux x86_64 (the OBS
-Project's Ubuntu PPA has 32.2, Arch has 33). Older OBS versions on Windows do not load this layout. After
-installing, start OBS again and follow the [Quick start](#quick-start).
+Requires OBS Studio 33.0.0 or later on Windows x64 or on macOS 13.0 or later (Apple Silicon and Intel), and OBS
+Studio 32.2 or later on Linux x86_64 (the OBS Project's Ubuntu PPA has 32.2, Arch has 33). Older OBS versions on
+Windows and macOS do not load this layout. After installing, start OBS again and follow the
+[Quick start](#quick-start).
 
 ### Windows
 
@@ -191,6 +192,25 @@ installing, start OBS again and follow the [Quick start](#quick-start).
 The DLL is unsigned. It loads with Windows' default settings, but it would be
 refused if Smart App Control or a Windows Defender Application Control policy
 for user-mode code were turned on.
+
+### macOS
+
+- **Installer:** run `obs-playlister-<version>-macos-universal.pkg`. It installs
+  `obs-playlister.plugin` into `~/Library/Application Support/obs-studio/plugins/`.
+- **By hand:** unpack `obs-playlister-<version>-macos-universal.tar.xz` and move
+  `obs-playlister.plugin` into `~/Library/Application Support/obs-studio/plugins/`.
+- One build runs on Apple Silicon and Intel Macs.
+
+> **Mac users, please read.** The macOS build is new: it is built and its tests pass automatically on every
+> change, but it has not yet been run in OBS on a real Mac, so please report what you find. The `.pkg` is not
+> signed or notarized by Apple, so macOS will refuse to open it the first time. To allow it, right-click (or
+> Control-click) the `.pkg` and choose **Open**, then **Open** again; or try to open it once, then go to
+> **System Settings → Privacy & Security** and click **Open Anyway**.
+
+On macOS, a watched folder on a network volume (SMB, NFS, AFP, WebDAV) is checked on the folder check interval, as
+macOS does not report changes made there by other machines. If a folder row says "access denied" for a folder in
+Desktop, Documents, Downloads, an external drive or a network volume, allow OBS in **System Settings → Privacy &
+Security → Files and Folders** (or **Full Disk Access**) and start OBS again.
 
 ### Linux
 
@@ -280,6 +300,15 @@ cmake --install build_x64 --config RelWithDebInfo --prefix release/RelWithDebInf
 The first configure downloads the OBS 33.0.0 source and the matching obs-deps
 into `.deps/` and builds libobs once. Manual OBS checks are listed in
 [TESTING.md](TESTING.md).
+
+On macOS 13 or later with Xcode 16 or newer and CMake 3.28 or newer, the build is a universal (arm64 and x86_64)
+Xcode project; the first configure downloads OBS and its dependencies into `.deps/` as on Windows:
+
+```
+cmake --preset macos
+cmake --build --preset macos --config RelWithDebInfo
+ctest --test-dir build_macos -C RelWithDebInfo --output-on-failure --no-tests=error
+```
 
 On Linux the build uses the installed OBS (its development files) instead:
 `obs-studio`, `cmake`, `ninja`, `simde` and libcurl's development files

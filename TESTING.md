@@ -166,7 +166,7 @@ could reach the next load.
 
 This file lists what needs OBS itself. Each item names the expected
 `[obs-playlister]` log line where there is one (REQUIREMENTS R-TST-6). OBS logs
-are in `%APPDATA%\obs-studio\logs\`. Record the date, OBS version and result
+are in `%APPDATA%\obs-studio\logs\` (macOS: `~/Library/Application Support/obs-studio/logs/`). Record the date, OBS version and result
 next to each item.
 
 ## Phase 1 (version 0.2.0)
@@ -333,6 +333,38 @@ eye:
 | U.3 | A list with a missing file, then a URL that never answers (for example `http://10.255.255.1/x.mp4`), each with a playable file after it; press Refresh after each fails | the missing file reads "could not be played: it did not start"; the URL reads the reason that matches its `[obs-playlister]` log line: "skipped, as it ended before playing" gives "it did not start", "skipped, as it did not start playing within its startup window" gives "it took too long to start" (R-UX-4) | Pending |
 | U.4 | OBS in German and in Japanese (T.1, T.2), U.1 and U.2 again | the new texts are in that language and fit their controls | Pending |
 
+## macOS (unreleased)
+
+macOS builds as one universal binary (arm64 and x86_64) and runs `ctest` on every push in CI (`macos-26`, Xcode 26;
+REQUIREMENTS section 2b). There, `test-provider-folder` drives real folders through the FSEvents watch (renames
+paired by inode, a rename chain, subfolders, a missing folder) and the shared-lock probe, `test-fold-key` checks the
+macOS key folding (upper case, NFC, backslash kept), `test-fetch` runs every fetch case against the system libcurl,
+and `test-provider-list` reads local playlists with the POSIX path rules. CI has no display and no OBS for the
+runtime harness, so nothing below has run yet: these checks are for the owner on a real Mac (R-MAC-6).
+
+Setup: a Mac with macOS 13 or later and OBS 33. Note whether it is Apple Silicon or Intel (ideally run M.1 to M.4 on
+both). Download the `.pkg` and the `.tar.xz` from the PR's macOS CI artifact or a release. A folder of two or three
+short videos of different lengths. OBS logs are in `~/Library/Application Support/obs-studio/logs/`.
+
+| # | Check | Expected | Result |
+|---|-------|----------|--------|
+| M.1 | Double-click the `.pkg` | macOS refuses it as from an unidentified developer; Control-click > Open (or System Settings > Privacy & Security > Open Anyway) lets it install; `~/Library/Application Support/obs-studio/plugins/obs-playlister.plugin` exists (R-MAC-1) | Pending |
+| M.2 | Start OBS | the log has `[obs-playlister] plugin loaded`; Tools > Plugin Manager lists Playlister (record whether it is flagged Legacy); no "damaged" or "cannot be opened" dialog for the plugin. If OBS refuses to load it, run `xattr -dr com.apple.quarantine ~/Library/Application\ Support/obs-studio/plugins/obs-playlister.plugin` and record that it was needed | Pending |
+| M.3 | Remove the plugin, unpack the `.tar.xz` and move `obs-playlister.plugin` into the plugins folder by hand; start OBS | loads as in M.2 | Pending |
+| M.4 | Add a Playlister with the video folder (in your home folder, not Desktop or Documents) as a row; Play, Next, Previous, hotkeys; hardware decoding on and off | the folder's videos play in order; the row's status line reads "1: folder - N files"; both decoding settings play | Pending |
+| M.5 | Copy a large video into the folder with Finder while the source plays | it joins once the copy has finished (the log says the probe cannot tell, so it waits for the size and time to settle); the playing video is not restarted (R-MAC-3) | Pending |
+| M.6 | In Finder, rename a video in the folder; delete another (move to Trash); in Terminal rename the playing video twice within half a second (`mv a.mp4 b.mp4; mv b.mp4 c.mp4`) | the renamed one keeps its place; the deleted one leaves; the video renamed twice keeps playing (R-DIR-8, R-MAC-2) | Pending |
+| M.7 | Rename a video changing only its case (`clip.mp4` to `Clip.mp4`) while it plays | it keeps playing and keeps its place (R-MAC-4) | Pending |
+| M.8 | A file named `.hidden.mp4`, a file hidden with `chflags hidden name.mp4`, and a hidden folder with subfolders on | all three are left out (R-MAC-2) | Pending |
+| M.9 | A folder row with subfolders on: make a new subfolder with a video in it (made elsewhere and moved in); then rename the subfolder | the video joins within about 3 s; after the rename it is still listed (R-MAC-2) | Pending |
+| M.10 | Move the watched folder to the Trash, then put it back | the row keeps its list; its status gives the reason and "showing the last list, from <time>"; it recovers within the check interval | Pending |
+| M.11 | A folder row on Desktop or in Documents, the first time | macOS asks whether OBS may access the folder. Answer Don't Allow: the row says access denied and the log line names System Settings > Privacy & Security; allow it there, restart OBS: the folder plays (R-MAC-5) | Pending |
+| M.12 | A folder on an SMB share mounted in Finder (`/Volumes/<share>`), with files added from another computer | the row status (and the log line of the mode change) say it is a network volume; new files show up within the check interval; copying a large file onto the share from another computer: it joins only once the copy has finished | Pending |
+| M.13 | While a folder row on the SMB share plays, disconnect the share (pull the network or stop the server), then close the source or quit OBS | OBS does not crash; if a call hangs, the log says "still waiting for the worker to finish a call" after 5 s and OBS goes on once macOS gives up on the share (R-MAC-3, residual risk below) | Pending |
+| M.14 | An iCloud Drive folder with a file set to "Remove Download" (cloud only) | the file is listed but not opened or downloaded by Playlister; it plays only when OBS opens it (R-DIR-5, R-MAC-2) | Pending |
+| M.15 | A local .m3u with relative names and a `file:///` line; an http(s) .m3u on a real server; a direct video URL; an HLS stream | the entries resolve next to the list; the list loads over HTTPS; the URL and the stream play | Pending |
+| M.16 | Properties and the Browse dialog; OBS in German and Japanese (as T.1, T.2) | the dialogs look and work as on Windows; the version line reads "Playlister <version>"; the text is translated and fits | Pending |
+
 ## Known residual risks
 
 - Startup is judged by media time or audio only (R-BEH-5, step 6 spike). A live stream that delivers video but whose
@@ -354,5 +386,13 @@ eye:
   on Ubuntu 24.04, with the Linux manual items L.1 to L.11 and all earlier manual items still pending.
 - Linux (R-LNX-7): a worker stuck in a call on a hung network share cannot be interrupted, so closing a source then
   waits for it; the plugin logs that it is waiting after 5 s.
+- macOS (R-MAC-3): as on Linux, a worker stuck in a call on an unreachable network volume cannot be interrupted, so
+  closing a source then waits until macOS gives up on the volume; the plugin logs that it is waiting after 5 s.
+- macOS (R-MAC-3): there is no way to ask whether another program has a file open for writing, so a file still being
+  written is held back by the stability rule (size and time unchanged across two samples 2 s apart) and by a shared
+  lock that a writer holding an exclusive lock refuses; a writer that pauses for more than 2 s mid-copy could let a
+  partial file in.
+- macOS: built and `ctest`-tested in CI only; the `.pkg` and plugin are unsigned and not notarized, and the manual
+  items M.1 to M.16 above have not run on a real Mac.
 - Linux: the runtime harness passed in OBS 32.2 on Ubuntu 24.04 (software rendering, 2026-11-01); the manual items L.1 to L.11
   above (dialogs, real desktops, network shares, Arch) have not run.
