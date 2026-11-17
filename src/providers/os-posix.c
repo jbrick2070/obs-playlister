@@ -16,10 +16,11 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-/* The providers' operating-system services on Linux (os.h, R-LNX-7). The signals are eventfds, so a wait can poll
- * them together with an inotify or libcurl descriptor. */
+/* The providers' operating-system services on Linux and macOS (os.h, R-LNX-7, R-MAC-3). The signals are eventfds on
+ * Linux and non-blocking pipes on macOS, which has no eventfd, so a wait can poll them together with an inotify,
+ * FSEvents or libcurl descriptor. */
 
-#ifndef _GNU_SOURCE
+#if !defined(_GNU_SOURCE) && !defined(__APPLE__)
 #define _GNU_SOURCE /* pthread_timedjoin_np */
 #endif
 
@@ -30,7 +31,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <poll.h>
 #include <pthread.h>
 #include <string.h>
+#ifndef __APPLE__
 #include <sys/eventfd.h>
+#endif
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -44,33 +47,97 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 /* ---- signals and waits ---- */
 
+/* fd is what a wait polls and reads; write_fd is what a set writes to: the same eventfd on Linux, the pipe's other
+ * end on macOS */
 struct pl_stop {
 	int fd; /* readable once set; never read, so it stays set */
+	int write_fd;
 };
 
 struct pl_wake {
 	int fd; /* readable while set; a wait that returns WAKE reads it */
+	int write_fd;
 };
 
-static int new_eventfd(void)
+#ifdef __APPLE__
+static bool set_flags(int fd)
 {
-	return eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	int status = fcntl(fd, F_GETFL);
+	return status >= 0 && fcntl(fd, F_SETFL, status | O_NONBLOCK) == 0 && fcntl(fd, F_SETFD, FD_CLOEXEC) == 0;
 }
 
-static void signal_fd(int fd)
+static bool new_signal_fds(int *read_fd, int *write_fd)
+{
+	int fds[2];
+	if (pipe(fds) != 0)
+		return false;
+	if (!set_flags(fds[0]) || !set_flags(fds[1])) {
+		close(fds[0]);
+		close(fds[1]);
+		return false;
+	}
+	*read_fd = fds[0];
+	*write_fd = fds[1];
+	return true;
+}
+
+static void close_signal_fds(int read_fd, int write_fd)
+{
+	close(read_fd);
+	close(write_fd);
+}
+
+static void signal_fd(int write_fd)
+{
+	char one = 1;
+	/* EAGAIN only when the pipe is full, which still leaves it set */
+	while (write(write_fd, &one, 1) < 0 && errno == EINTR)
+		;
+}
+
+static void drain_fd(int read_fd)
+{
+	char bytes[64];
+	for (;;) {
+		ssize_t got = read(read_fd, bytes, sizeof(bytes));
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got < (ssize_t)sizeof(bytes))
+			break;
+	}
+}
+#else
+static bool new_signal_fds(int *read_fd, int *write_fd)
+{
+	int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	if (fd < 0)
+		return false;
+	*read_fd = fd;
+	*write_fd = fd;
+	return true;
+}
+
+static void close_signal_fds(int read_fd, int write_fd)
+{
+	UNUSED_PARAMETER(write_fd);
+	close(read_fd);
+}
+
+static void signal_fd(int write_fd)
 {
 	uint64_t one = 1;
 	/* EAGAIN only when the counter is full, which still leaves it set */
-	while (write(fd, &one, sizeof(one)) < 0 && errno == EINTR)
+	while (write(write_fd, &one, sizeof(one)) < 0 && errno == EINTR)
 		;
 }
 
-static void drain_fd(int fd)
+static void drain_fd(int read_fd)
 {
 	uint64_t value;
-	while (read(fd, &value, sizeof(value)) < 0 && errno == EINTR)
+	while (read(read_fd, &value, sizeof(value)) < 0 && errno == EINTR)
 		;
 }
+#endif
 
 static bool fd_is_set(int fd)
 {
@@ -80,11 +147,12 @@ static bool fd_is_set(int fd)
 
 struct pl_stop *pl_stop_create(void)
 {
-	int fd = new_eventfd();
-	if (fd < 0)
+	int fd, write_fd;
+	if (!new_signal_fds(&fd, &write_fd))
 		return NULL;
 	struct pl_stop *stop = bzalloc(sizeof(*stop));
 	stop->fd = fd;
+	stop->write_fd = write_fd;
 	return stop;
 }
 
@@ -92,13 +160,13 @@ void pl_stop_destroy(struct pl_stop *stop)
 {
 	if (!stop)
 		return;
-	close(stop->fd);
+	close_signal_fds(stop->fd, stop->write_fd);
 	bfree(stop);
 }
 
 void pl_stop_set(struct pl_stop *stop)
 {
-	signal_fd(stop->fd);
+	signal_fd(stop->write_fd);
 }
 
 void pl_stop_reset(struct pl_stop *stop)
@@ -118,11 +186,12 @@ int pl_stop_fd(struct pl_stop *stop)
 
 struct pl_wake *pl_wake_create(void)
 {
-	int fd = new_eventfd();
-	if (fd < 0)
+	int fd, write_fd;
+	if (!new_signal_fds(&fd, &write_fd))
 		return NULL;
 	struct pl_wake *wake = bzalloc(sizeof(*wake));
 	wake->fd = fd;
+	wake->write_fd = write_fd;
 	return wake;
 }
 
@@ -130,13 +199,18 @@ void pl_wake_destroy(struct pl_wake *wake)
 {
 	if (!wake)
 		return;
-	close(wake->fd);
+	close_signal_fds(wake->fd, wake->write_fd);
 	bfree(wake);
 }
 
 void pl_wake_set(struct pl_wake *wake)
 {
-	signal_fd(wake->fd);
+	signal_fd(wake->write_fd);
+}
+
+void pl_wake_take(struct pl_wake *wake)
+{
+	drain_fd(wake->fd);
 }
 
 int pl_wake_fd(struct pl_wake *wake)
@@ -184,12 +258,24 @@ struct pl_thread {
 	pthread_t handle;
 	void (*main)(void *data);
 	void *data;
+#ifdef __APPLE__
+	/* macOS has no pthread_timedjoin_np: the thread says it is done, and the join waits for that with a timeout */
+	pthread_mutex_t mutex;
+	pthread_cond_t done_cond;
+	bool done;
+#endif
 };
 
 static void *thread_main(void *param)
 {
 	struct pl_thread *thread = param;
 	thread->main(thread->data);
+#ifdef __APPLE__
+	pthread_mutex_lock(&thread->mutex);
+	thread->done = true;
+	pthread_cond_broadcast(&thread->done_cond);
+	pthread_mutex_unlock(&thread->mutex);
+#endif
 	return NULL;
 }
 
@@ -198,6 +284,10 @@ struct pl_thread *pl_thread_start(void (*main)(void *data), void *data, unsigned
 	struct pl_thread *thread = bzalloc(sizeof(*thread));
 	thread->main = main;
 	thread->data = data;
+#ifdef __APPLE__
+	pthread_mutex_init(&thread->mutex, NULL);
+	pthread_cond_init(&thread->done_cond, NULL);
+#endif
 	pthread_attr_t attributes;
 	int result = pthread_attr_init(&attributes);
 	if (result == 0) {
@@ -208,6 +298,10 @@ struct pl_thread *pl_thread_start(void (*main)(void *data), void *data, unsigned
 	if (result != 0) {
 		if (error)
 			*error = (unsigned long)result;
+#ifdef __APPLE__
+		pthread_cond_destroy(&thread->done_cond);
+		pthread_mutex_destroy(&thread->mutex);
+#endif
 		bfree(thread);
 		return NULL;
 	}
@@ -222,11 +316,29 @@ void pl_thread_join(struct pl_thread *thread, const char *what)
 	struct timespec deadline;
 	clock_gettime(CLOCK_REALTIME, &deadline);
 	deadline.tv_sec += JOIN_LOG_MS / 1000;
+#ifdef __APPLE__
+	/* the same on macOS (R-MAC-3): a call blocked on an unreachable SMB, NFS or AFP volume returns only when the
+	 * volume's own timeout ends it */
+	bool timed_out = false;
+	pthread_mutex_lock(&thread->mutex);
+	while (!thread->done && !timed_out) {
+		if (pthread_cond_timedwait(&thread->done_cond, &thread->mutex, &deadline) == ETIMEDOUT)
+			timed_out = !thread->done;
+	}
+	pthread_mutex_unlock(&thread->mutex);
+	if (timed_out)
+		obs_log(LOG_WARNING, "%s: still waiting for the worker to finish a call (a hung network share?)",
+			what ? what : "worker");
+	pthread_join(thread->handle, NULL);
+	pthread_cond_destroy(&thread->done_cond);
+	pthread_mutex_destroy(&thread->mutex);
+#else
 	if (pthread_timedjoin_np(thread->handle, NULL, &deadline) == ETIMEDOUT) {
 		obs_log(LOG_WARNING, "%s: still waiting for the worker to finish a call (a hung network share?)",
 			what ? what : "worker");
 		pthread_join(thread->handle, NULL);
 	}
+#endif
 	bfree(thread);
 }
 
@@ -280,7 +392,11 @@ enum pl_file_result pl_file_get_info(const char *path, struct pl_file_info *info
 		return file_result(errno);
 	}
 	info->size = (uint64_t)status.st_size;
+#ifdef __APPLE__
+	info->write_stamp = (int64_t)status.st_mtimespec.tv_sec * 1000000000 + status.st_mtimespec.tv_nsec;
+#else
 	info->write_stamp = (int64_t)status.st_mtim.tv_sec * 1000000000 + status.st_mtim.tv_nsec;
+#endif
 	info->directory = S_ISDIR(status.st_mode);
 	return PL_FILE_OK;
 }

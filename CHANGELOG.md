@@ -6,6 +6,28 @@ version numbers are the ones in `buildspec.json`.
 
 ## [Unreleased]
 
+### Added
+
+- macOS: Playlister builds for macOS 13.0 or later as one universal binary
+  (Apple Silicon and Intel). Releases gain
+  `obs-playlister-<version>-macos-universal.pkg` (installs into
+  `~/Library/Application Support/obs-studio/plugins/`) and a `.tar.xz` with
+  the same `obs-playlister.plugin`. Both are unsigned and not notarized; README
+  says how to open them. The tests run on a macOS runner on every push; the
+  checks in OBS on a real Mac (TESTING.md, M.1 to M.16) are still to be done.
+- macOS folder rows: changes are seen through FSEvents, renames keep the
+  playing item (also a file renamed twice in a row), Finder-hidden files are
+  left out, iCloud Drive files that are not downloaded are listed but never
+  opened, and a folder on a network volume (SMB, NFS, AFP, WebDAV) is checked
+  on the folder check interval. Keys follow how macOS compares names, so a
+  rename that only changes case keeps the item.
+- macOS: "access denied" for a folder now says in the log where to allow OBS
+  (System Settings > Privacy & Security > Files and Folders).
+
+### Changed
+
+- REQUIREMENTS: decision D-5 (no macOS) is revised; macOS is section 2b.
+
 ## [0.5.1] - 2026-11-15
 
 ### Added

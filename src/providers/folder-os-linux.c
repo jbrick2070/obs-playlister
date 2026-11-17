@@ -500,9 +500,7 @@ enum pl_folder_wait pl_folder_os_wait(struct pl_folder_os *os, struct pl_stop *s
 		if (ready > 0 && (fds[0].revents & POLLIN))
 			return PL_FOLDER_WAIT_STOP;
 		if (ready > 0 && (fds[1].revents & POLLIN)) {
-			uint64_t value;
-			while (read(fds[1].fd, &value, sizeof(value)) < 0 && errno == EINTR)
-				;
+			pl_wake_take(wake);
 			return PL_FOLDER_WAIT_WAKE;
 		}
 		if (ready > 0 && (fds[2].revents & POLLIN))

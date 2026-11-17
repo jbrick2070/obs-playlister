@@ -69,6 +69,7 @@ function(_setup_obs_studio)
       -G Xcode
       "-DCMAKE_OSX_ARCHITECTURES:STRING=arm64\\;x86_64"
       "-DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}"
+      "-DCMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}"
     )
   endif()
   # gersemi: on

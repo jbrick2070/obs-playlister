@@ -335,8 +335,19 @@ struct pl_fetch *pl_fetch_open(const char *url, const struct pl_fetch_options *o
 	curl_easy_setopt(easy, CURLOPT_URL, url);
 	curl_easy_setopt(easy, CURLOPT_USERAGENT, options->user_agent);
 	/* plain http and https only, for the first request and every redirect (R-REM-1) */
-	curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https");
-	curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+	if (curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https") != CURLE_OK ||
+	    curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https") != CURLE_OK) {
+		/* a libcurl older than 7.85 (the one in macOS 13.0, R-MAC-1) has only the bit-mask options */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+		curl_easy_setopt(easy, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
+		curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+	}
 	curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(easy, CURLOPT_MAXREDIRS, (long)options->max_redirects);
 	curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, (long)options->connect_ms);

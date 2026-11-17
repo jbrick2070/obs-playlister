@@ -20,10 +20,18 @@ if(WIN32)
   # remote lists are fetched with WinHTTP, part of Windows: no new DLLs ship (R-REM-5)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp)
 else()
-  # remote lists are fetched with the system libcurl, which OBS itself links on Linux (R-LNX-6)
+  # remote lists are fetched with the system libcurl, which OBS itself links on Linux (R-LNX-6) and which every Mac has
+  # in /usr/lib (R-MAC-1): no new libraries ship
   find_package(CURL REQUIRED)
   find_package(Threads REQUIRED)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE CURL::libcurl Threads::Threads)
+endif()
+if(OS_MACOS)
+  # FSEvents (CoreServices) watches folders and CoreFoundation folds keys (R-MAC-2, R-MAC-4)
+  find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+  find_library(CORESERVICES_FRAMEWORK CoreServices REQUIRED)
+  set(_playlister_macos_frameworks "${COREFOUNDATION_FRAMEWORK}" "${CORESERVICES_FRAMEWORK}")
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${_playlister_macos_frameworks})
 endif()
 
 if(ENABLE_FRONTEND_API)
@@ -107,7 +115,7 @@ target_sources(
     src/providers/publication.h
     src/providers/publication.c
 )
-# operating-system calls, one file per platform (R-LNX-2)
+# operating-system calls, one file per platform (R-LNX-2, R-MAC-2); os-posix.c and fetch-curl.c serve Linux and macOS
 if(WIN32)
   target_sources(
     ${CMAKE_PROJECT_NAME}
@@ -116,6 +124,15 @@ if(WIN32)
       src/providers/fold-key-win.c
       src/providers/folder-os-win.c
       src/providers/os-win.c
+  )
+elseif(OS_MACOS)
+  target_sources(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE
+      src/providers/fetch-curl.c
+      src/providers/fold-key-mac.c
+      src/providers/folder-os-mac.c
+      src/providers/os-posix.c
   )
 else()
   target_sources(

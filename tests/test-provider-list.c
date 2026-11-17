@@ -386,10 +386,12 @@ static void test_local(void)
 	assert(first->initial_scan_complete && first->level == PL_STATUS_WARNING);
 	assert(says(first, "1 playlists inside the list skipped"));
 	assert(strcmp(first->entries[first->visible[0]].title, "One") == 0);
-	/* keys of local entries are folded as folder keys are (R-KEY-1, R-LNX-5) */
+	/* keys of local entries are folded as folder keys are (R-KEY-1, R-LNX-5, R-MAC-4) */
 	char *key = first->entries[first->visible[0]].key;
 #ifdef _WIN32
 	assert(strstr(key, "/A.MP4") && !strchr(key, '\\'));
+#elif defined(__APPLE__)
+	assert(strstr(key, "/A.MP4"));
 #else
 	assert(strstr(key, "/a.mp4"));
 #endif

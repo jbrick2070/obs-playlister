@@ -31,6 +31,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <windows.h>
 #else
 #include <arpa/inet.h>
+#include <signal.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -52,7 +53,11 @@ typedef int SOCKET;
 #define INVALID_SOCKET (-1)
 #define SD_SEND SHUT_WR
 #define closesocket close
+#ifdef MSG_NOSIGNAL
 #define SEND_FLAGS MSG_NOSIGNAL /* a client that closed early must not end the test with SIGPIPE */
+#else
+#define SEND_FLAGS 0 /* macOS: SIGPIPE is ignored in main instead */
+#endif
 #else
 #define SEND_FLAGS 0
 #endif
@@ -606,6 +611,7 @@ int main(void)
 	const char *proxies[] = {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"};
 	for (size_t i = 0; i < sizeof(proxies) / sizeof(proxies[0]); i++)
 		unsetenv(proxies[i]);
+	signal(SIGPIPE, SIG_IGN);
 #endif
 	long allocations = bnum_allocs();
 	build_gzip();

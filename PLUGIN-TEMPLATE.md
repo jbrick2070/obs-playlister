@@ -29,7 +29,8 @@ and the legacy install layout.
   argument (the platform lists sit in a `# gersemi: off` block so `-G`/`-A` stay next to their values);
   `-DENABLE_FRONTEND:BOOL=OFF` and `-DENABLE_SCRIPTING:BOOL=OFF`, passed on every platform, replace the ignored
   `ENABLE_UI` and the misspelled `CMAKE_ENABLE_SCRIPTING`; `CMAKE_PREFIX_PATH` is passed without literal quotes. The
-  macOS branch was converted the same way but is untested (macOS is not a target).
+  macOS branch was converted the same way; since the macOS port (REQUIREMENTS section 2b) it also passes
+  `CMAKE_OSX_SYSROOT`, and CI builds it.
 - `cmake/common/bootstrap.cmake` registers `buildspec.json` as a configure dependency, so a version bump reaches
   `data/manifest.json` and the version resource without a manual reconfigure.
 - `cmake/common/buildspec_common.cmake` dependency download: an archive left by an interrupted or failed download
@@ -40,8 +41,12 @@ and the legacy install layout.
 - Default install prefix (`cmake/windows/defaults.cmake`): `%ALLUSERSPROFILE%/obs-studio/plugins`, as in template
   commit 013ffca.
 - `CMakePresets.json`: Windows SDK `10.0.26100.0`.
-- `buildspec.json`: OBS 33.0.0 and obs-deps/Qt6 2026-10-23, Windows hashes only.
-- CI: macOS and Ubuntu jobs disabled with `if: false` and removed from the release job; ctest runs after the
+- `buildspec.json`: OBS 33.0.0 and obs-deps/Qt6 2026-10-23, Windows and macOS hashes (the macOS ones were
+  removed with D-5 and restored for the macOS port, the same values as midi-fadester's).
+- CI: macOS and Ubuntu jobs were disabled with `if: false` and removed from the release job (D-5); Ubuntu came
+  back with the Linux port (D-13) and macOS with the macOS port, whose job, `build-macos` (ctest after the build),
+  `package-macos` (a `.tar.xz` beside the `.pkg`) and `cmake/macos/` (hardened runtime on the plugin only, so the
+  test executables load the unsigned libobs; the SDK version from `xcrun`) match midi-fadester's; ctest runs after the
   build; portable zip uses the OBS 33 `plugins/<name>/` layout. The Windows runner matches the template's
   `windows-2022`; keep it (on 2026-10-24 the `windows-2025` label ran a VS 2026 image without VS 2022).
 - `.gersemirc` equals template commit 7c01742 ("CI: Remove invalid options from .gersemirc"), applied before a sync
