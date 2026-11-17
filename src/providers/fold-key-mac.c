@@ -68,9 +68,10 @@ static size_t utf8_sequence(const unsigned char *text)
 /* The text with each byte that is not valid UTF-8 replaced by U+FFFD (bmem) */
 static char *valid_utf8(const char *text)
 {
+	if (!*text)
+		return bstrdup("");
 	struct dstr result = {0};
 	dstr_reserve(&result, strlen(text) + 1);
-	dstr_copy(&result, "");
 	const unsigned char *cursor = (const unsigned char *)text;
 	while (*cursor) {
 		size_t length = utf8_sequence(cursor);
