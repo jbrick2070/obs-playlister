@@ -176,7 +176,7 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 `release/RelWithDebInfo/obs-playlister`, so the folder holds exactly
 `obs-playlister.dll`, `obs-playlister.pdb`, `data\manifest.json` and
 `data\locale\en-US.ini`. From Phase 2 on these run on the current build (the waiver in PLAN section 7), so the
-version expected in 1.1 and 1.2 is that build's (0.5.0 now).
+version expected in 1.1 and 1.2 is that build's (0.5.1 now).
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
@@ -296,7 +296,7 @@ folder of two or three short videos of different lengths.
 | L.8 | An http(s) .m3u on a real server, and a direct video URL | the list loads (HTTPS included); the video plays | Pending |
 | L.9 | A folder on a network share (NFS or SMB) | the row status (and the log line of the mode change) say it is a network file system; new files show up within the check interval | Pending |
 | L.10 | Hardware decoding on and off; the Properties dialog and the Browse dialog | both play; the dialogs look and work as on Windows | Pending |
-| L.11 | Open Properties of any Playlister (Linux, and on Windows with the next build) | the last line reads "Playlister 0.5.0" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
+| L.11 | Open Properties of any Playlister (Linux and Windows) | the last line reads "Playlister 0.5.1" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
 | L.12 | A folder row with subfolders on. Note `sysctl fs.inotify.max_queued_events`, then `sudo sysctl fs.inotify.max_queued_events=64`; in one burst create 500 files and a new subfolder in the folder, then add a video to that subfolder. Restore the sysctl afterwards | the log shows the overflow ("more changes than the buffer holds; listing it again"), and the new video joins within about 3 s, not only at the next check (R-LNX-3) | Pending |
 | L.13 | A folder row with subfolders on. Note `sysctl fs.inotify.max_user_watches`, then `sudo sysctl fs.inotify.max_user_watches=<just above the tree's folder count>`; create a new subfolder holding a video (made elsewhere and moved in). Restore the sysctl afterwards | the log says "notifications cannot be armed; rescanning instead", and the video still joins within about 3 s (the debounce plus the write-complete wait), not only at the next check (R-DIR-3) | Pending |
 
