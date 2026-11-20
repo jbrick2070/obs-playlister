@@ -61,6 +61,7 @@ struct pl_publication_status {
 	const char *message; /* NULL when there is nothing to say */
 	bool stale;          /* the last good list kept after a failure (R-BEH-3) */
 	int64_t last_ok_unix_ms;
+	size_t unfiltered_count; /* a folder: the files listed before the filter; 0 for a list */
 };
 
 enum pl_publication_result {
@@ -80,6 +81,10 @@ enum pl_publication_result pl_publication_update(struct pl_publication *publicat
 						 size_t count, const struct pl_publication_status *status,
 						 bool release);
 
+/* Publishes a PL_ROW_UNKNOWN row's answer (provider.h): a snapshot with nothing but the instance and the probe.
+ * Dropped, like any snapshot, once the publication is detached. Worker thread. */
+void pl_publication_publish_probe(struct pl_publication *publication, bool directory);
+
 /* Cuts the publication off from its receiver, from any thread: it waits for a publish call in flight (the receiver's
  * own work, never the provider's file or network calls), and no publish is made after it returns; later snapshots are
  * dropped. The caller must not hold a lock the receiver takes. For a provider whose worker is left to end by itself
@@ -88,6 +93,11 @@ void pl_publication_detach(struct pl_publication *publication);
 
 /* How many entries the kept membership adds, removes or rewrites; 0 when nothing is kept. Any thread. */
 size_t pl_publication_held_changes(struct pl_publication *publication);
+
+/* Copies the options for a provider to keep: *filter_text (bmem, freed first) becomes a copy of the filter text,
+ * "" for none, and dst's extension_filter points at it */
+void pl_container_options_copy(struct pl_container_options *dst, char **filter_text,
+			       const struct pl_container_options *src);
 
 /* A copy of entries; previous_key dropped unless keep_renames */
 struct pl_entry *pl_publication_copy_entries(const struct pl_entry *entries, size_t count, bool keep_renames);

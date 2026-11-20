@@ -130,7 +130,24 @@ static void decode_utf16(struct dstr *out, const unsigned char *s, size_t size, 
 	}
 }
 
-char *pl_list_decode(const char *data, size_t size, size_t *length)
+/* UTF-16 text that is mostly ASCII has a NUL in every other byte: 1 when those are the second bytes (little-endian),
+ * 2 when the first (big-endian), 0 when the first 4 KB show neither */
+static int utf16_by_nuls(const unsigned char *s, size_t size)
+{
+	size_t pairs = (size < 4096 ? size : 4096) / 2;
+	size_t first = 0, second = 0;
+	for (size_t i = 0; i < pairs; i++) {
+		first += s[2 * i] == 0;
+		second += s[2 * i + 1] == 0;
+	}
+	if (pairs && second * 2 > pairs && first * 8 < pairs)
+		return 1;
+	if (pairs && first * 2 > pairs && second * 8 < pairs)
+		return 2;
+	return 0;
+}
+
+char *pl_list_decode_as(const char *data, size_t size, const char *charset, pl_list_convert_fn convert, size_t *length)
 {
 	const unsigned char *s = (const unsigned char *)data;
 	struct dstr out = {0};
@@ -144,11 +161,31 @@ char *pl_list_decode(const char *data, size_t size, size_t *length)
 			s += 3;
 			size -= 3;
 		}
-		if (valid_utf8(s, size)) {
+		/* named UTF-16 by the server and looking like it: decided before the UTF-8 test, which ASCII text in
+		 * UTF-16 passes too (a NUL is a valid UTF-8 byte) and would come out of with a NUL after every letter.
+		 * The bytes decide the byte order where they show it; the name where they do not. */
+		const bool named_utf16 = charset && strncmp(charset, "utf-16", 6) == 0;
+		const int by_nuls = named_utf16 ? utf16_by_nuls(s, size) : 0;
+		const bool utf8 = !by_nuls && valid_utf8(s, size);
+		char *converted = NULL;
+		size_t converted_length = 0;
+		if (!utf8 && charset && convert && strcmp(charset, "utf-8") != 0 && !named_utf16)
+			converted = convert(charset, (const char *)s, size, &converted_length);
+		if (by_nuls) {
+			decode_utf16(&out, s, size, by_nuls == 2);
+		} else if (utf8) {
 			dstr_ensure_capacity(&out, size + 1);
 			memcpy(out.array, s, size);
 			out.len = size;
 			out.array[size] = '\0';
+		} else if (charset && (strcmp(charset, "utf-16le") == 0 || strcmp(charset, "utf-16") == 0)) {
+			/* without a BOM "utf-16" is little-endian in practice, as Windows writes it */
+			decode_utf16(&out, s, size, false);
+		} else if (charset && strcmp(charset, "utf-16be") == 0) {
+			decode_utf16(&out, s, size, true);
+		} else if (converted) {
+			*length = converted_length;
+			return converted;
 		} else {
 			for (size_t i = 0; i < size; i++) {
 				uint32_t cp = s[i];
@@ -161,6 +198,11 @@ char *pl_list_decode(const char *data, size_t size, size_t *length)
 
 	*length = out.len;
 	return out.array ? out.array : bstrdup("");
+}
+
+char *pl_list_decode(const char *data, size_t size, size_t *length)
+{
+	return pl_list_decode_as(data, size, NULL, NULL, length);
 }
 
 static bool blank(char c)

@@ -127,7 +127,7 @@ the script refuses a link folder the runner did not make.
 | 2.6 | A case-only rename; A -> B -> C with shuffle on and Hold changes until the next Play, then Apply waiting changes now; renaming and deleting the playing render | the renamed item keeps its place and shows its new name; the renames wait ("N changes waiting") and are applied at once as one renamed item while playback goes on; Windows refuses to rename or delete the playing file (the child holds it open; every run so far) and playback goes on |
 | 2.7 | Sort by name, descending, mid-play | the list follows natural order, descending; playback keeps its place |
 | 2.8 | 2,000 small text files at once, with the folder check off | a render copied in afterwards joins within 12 s (about 3 s by notification; after a run of overflows the folder is listed on the 10 s interval instead, and a dead watch would wait for the 60 s safety net); the text files are not listed. The burst can overflow the change buffer (the log says "more changes than the buffer holds" when it does); in these runs it did not, and the overflow path is covered by `test-folder-state` and by 2.11 |
-| 2.9 | A watched folder moved away, then back | "the folder went away ...; showing the last list, from <time>" as an error, the list kept; back to "2 files" when it returns |
+| 2.9 | A watched folder moved away, then back | "folder not found (deleted, drive removed or share offline); checking again every <n> s; using the list read at <time>" as an error, the list kept; back to "2 files" when it returns |
 | 2.10 | A folder the user may not read, added as a row | still a folder row (by its attributes), "access denied (permissions or security software)" as an error; the log names Win32 error 5 (the runner fails the run without that line) |
 | 2.11 | The media folder by a UNC path (`\\localhost\C$\...`) | listed, plays, and still listed 12 s later, past the folder check; the share's overflow right after the first listing is logged and listed again |
 | 2.14 | A folder listed for the first time while a render is still being copied into it (the plugin's side of OBS starting during a copy) | the admitted renders play within about 3 s; the copy is counted as being written and not listed while it grows; it joins within about 3 s once complete |
@@ -215,9 +215,9 @@ Setup as Phase 1, with the Phase 2 build. Items the runtime harness covers are n
 | 2.1 | Open Properties of a source whose list has a file, a folder and a missing file; press Esc without changing anything; then choose an item, remove it from the folder, press Play Selected File | the Status block under the playlist shows one row per line (`1: file`, `2: folder - N files`, `3: file - could not be played` once it failed), in the error color when a row failed; Esc closes Properties without asking to save; after Play Selected File the block shows the "list changed" notice in the warning color, and Refresh clears it | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.12 | Close OBS while a folder item plays; start it again | the same folder item resumes, not the folder's first item | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.13 | OBS hotkeys for Play/Pause, Restart, Stop, Next and Previous on a folder row; Next then Play/Pause at once | each acts as its button does; the load and the pause both happen; Stop never advances | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
-| 2.15 | A watched folder on a removable drive: unplug it, plug it back | "the folder went away" with the last list kept; the row recovers when the drive is back | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.15 | A watched folder on a removable drive: unplug it, plug it back | "folder not found (deleted, drive removed or share offline)" with the last list kept; the row recovers when the drive is back | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.16 | A watched folder on another machine's share; stall the share (pull its network) during a scan, then remove the source | the row shows the error and keeps its list; removing the source returns at once (otherwise record a residual risk); on a share without change notifications the log says `rescan-only` and the 10 s check still finds a new render | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
-| 2.17 | A OneDrive folder with cloud-only files as a folder row | "N cloud-only files not downloaded ..." as a warning; no download starts | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
+| 2.17 | A OneDrive folder with cloud-only files as a folder row | "N files are only in the cloud; ..." as a warning; no download starts | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.18 | A still followed by a video in a folder row | no still frame lingers into the video | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.20 | The operator's OTR scene: replace the Directory Sorter script with a folder row on the render folder, default options | the same order as the script gave (date modified, ascending); a new render joins in about 3 s; the script is no longer needed | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
 | 2.21 | A render held open for writing for a whole session (a stuck render process), then an OBS restart | the other renders play and the list resumes where it was; the held file joins once released | Pending: not run yet; the version was bumped to 0.3.0 without it (operator decision, 2026-10-25) |
@@ -251,21 +251,21 @@ An error row reads "web address - empty; <the error>": the row is listed and hol
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
-| 3.1 | A local .m3u of three files (relative names with either separator, one #EXTINF title) as a row | "1: playlist - 3 files; no dates; list order"; listed in list order and the first one plays; Select File shows the title | Passed (acceptance) |
+| 3.1 | A local .m3u of three files (relative names with either separator, one #EXTINF title) as a row | "1: playlist - 3 items"; listed in list order and the first one plays; the Play item list shows the title before the file name | Passed (acceptance) |
 | 3.2 | Edit that .m3u while it plays (add a line) | the new entry joins within the folder check interval; the playing item is not restarted | Passed (acceptance; joined after 6.7 s, playback went on) |
 | 3.3 | Delete the .m3u, then put it back | the row keeps its list and shows "playlist file not found" with the last-list time; it recovers when the file is back | Passed (acceptance) |
 | 3.4 | A local .pls with File2 before File1, and a VLC-style .m3u (file:/// lines) | entries in File order; the file: entries are listed as the files on disk and play | Passed (acceptance) |
-| 3.5 | /fixtures/vlc.m3u from the server as a row | "1: playlist - 1 file; ...; 2 lines could not be used": a list on a server may not name files on this computer, so only its radio stream entry stays | Passed (acceptance) |
+| 3.5 | /fixtures/vlc.m3u from the server as a row | "1: playlist - 1 item; ...; 2 lines could not be used": a list on a server may not name files on this computer, so only its radio stream entry stays | Passed (acceptance) |
 | 3.6 | /extensionless-m3u and /extensionless-pls as rows | "web address"; read as M3U and PLS by Content-Type | Passed (acceptance) |
 | 3.7 | A direct MP4 URL without an extension, served with Content-Type video/mp4 | plays at once; the plugin makes one request and closes it after the headers, then the child fetches the media itself | Passed (acceptance; playing 3.5 s after the source was made, the plugin's request ended after 64-128 KB were read for it, of a 50 MB file) |
 | 3.8 | A live HLS URL (.m3u8) and an internet radio stream URL | each plays as one entry; the HLS row is not fetched again on the interval | Pending (manual, needs the internet) |
-| 3.9 | A podcast RSS feed | "web address - ...; a podcast feed: feeds come in a later version" | Passed (acceptance, a local feed); a public feed is pending |
+| 3.9 | A podcast RSS feed | "web address - ...; a podcast feed (not supported)" | Passed (acceptance, a local feed); a public feed is pending |
 | 3.10 | A refused port, a name that does not resolve, /status/429, /html; a served list that answers 429 after a good fetch | each row shows its error ("could not be reached", "server name could not be found", "HTTP 429", "a web page ...") and nothing plays from it; the 429 after a good fetch keeps the last list and playback goes on | Passed (acceptance) |
 | 3.11 | /gzip-at-cap and /gzip-over-cap | at the cap the list loads (empty: the body is comments); over it, "the list is over 16 MB" | Passed (acceptance) |
 | 3.12 | /redirect/5 and /redirect/6 | five redirects load the list; six show "too many redirects" | Passed (acceptance) |
-| 3.13 | /hang as a row; then /hang again, removed after 5 s | "timed out" after about 30 s (the receive timeout: the server takes the request and never answers; the 60 s deadline is for a body that keeps trickling, covered by `test-fetch`); removing the source returns at once and OBS stays responsive | Passed (acceptance; timed out after 31-34 s, removal took 0 ms, next tick after 0.1 s) |
+| 3.13 | /hang as a row; then /hang again, removed after 5 s | "the server did not answer in time" after about 30 s (the receive timeout: the server takes the request and never answers; the 60 s deadline is for a body that keeps trickling, covered by `test-fetch`); removing the source returns at once and OBS stays responsive | Passed (acceptance; timed out after 31-34 s, removal took 0 ms, next tick after 0.1 s) |
 | 3.14 | "Time between web list checks" changed to 30 s while a served list plays, then the list edited on disk | the interval change does not restart playback; the change appears within 30 s (plus the fetch) | Passed (acceptance; appeared after 25.6 s) |
-| 3.15 | Hold changes until the next Play on, with a playlist row whose file is edited during playback | "1 change waiting" until Apply waiting changes now, which adds it without a restart | Passed (acceptance) |
+| 3.15 | Freeze the list during playback on, with a playlist row whose file is edited during playback | "1 change waiting" until Apply waiting changes, which adds it without a restart | Passed (acceptance) |
 | 3.16 | An HTTPS playlist on a real server, and one with an expired or self-signed certificate | the first loads; the second shows "secure connection failed" | Pending (manual) |
 | 3.17 | The Browse dialog | a Playlists group lists .m3u, .m3u8 and .pls files | Pending (manual) |
 | 3.18 | Studio Mode on: add a second Playlister to the preview scene, with other videos than the first; then a Playlister to a scene that is not shown (R-UP-81, 0.4.1) | each is selected as a box of its own video's size (the canvas size before it ever played), whose handles can be dragged to move and resize it, not a tiny box at the top left; after a transition it plays in that box. The harness checks the sizes; this checks how OBS draws them | Pending (manual) |
@@ -293,7 +293,7 @@ folder of two or three short videos of different lengths.
 | L.3 | Copy a large video into the folder while the source plays | it joins once the copy has finished; the playing video is not restarted | Pending |
 | L.4 | Rename a video in the folder; delete another; rename the playing video twice within half a second (`mv a.mp4 b.mp4; mv b.mp4 c.mp4`) | the renamed one keeps its place; the deleted one leaves; playback goes on; the video renamed twice keeps playing (R-DIR-8) | Pending |
 | L.5 | A hidden file (`.name.mp4`) and a hidden folder with subfolders on | both are left out | Pending |
-| L.6 | Move the watched folder away, then back | the row keeps its list; its status gives the reason and "showing the last list, from <time>"; it recovers within the check interval | Pending |
+| L.6 | Move the watched folder away, then back | the row keeps its list; its status gives the reason and "using the list read at <time>"; it recovers within the check interval | Pending |
 | L.7 | A local .m3u with relative names (one with a colon, such as `Show:Ep1.mp4`) and a `file:///` line | the entries resolve next to the list, the name with a colon too; the `file:` line plays the file it names | Pending |
 | L.8 | An http(s) .m3u on a real server, and a direct video URL | the list loads (HTTPS included); the video plays | Pending |
 | L.9 | A folder on a network share (NFS or SMB) | the row status (and the log line of the mode change) say it is a network file system; new files show up within the check interval | Pending |
@@ -330,10 +330,54 @@ eye:
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
-| U.1 | Add a new Playlister source; look at Status before adding anything | "The list is empty. Press + next to Playlist to add files, a folder, a playlist file or a web address." (R-UX-1) | Pending |
+| U.1 | Add a new Playlister source; look at Status before adding anything | "Nothing to play yet. Press + at the right of Playlist, then Add Files, Add Directory (a folder) or Add Path/URL (a web address)." (R-UX-1, R-UX-15) | Pending |
 | U.2 | Properties of any source, from top to bottom | the Refresh button (no longer Refresh Filename) with the line about Status, Current File and Select File under it; the hover help of Current File and of A restart plays; the warning under Speed in full; the hotkeys line above the version line; the folder group's new labels; every long text wraps inside the window (R-UX-2, R-UX-3, R-UX-5, R-UX-6, R-UX-7) | Pending |
-| U.3 | A list with a missing file, then a URL that never answers (for example `http://10.255.255.1/x.mp4`), each with a playable file after it; press Refresh after each fails | the missing file reads "could not be played: it did not start"; the URL reads the reason that matches its `[obs-playlister]` log line: "skipped, as it ended before playing" gives "it did not start", "skipped, as it did not start playing within its startup window" gives "it took too long to start" (R-UX-4) | Pending |
+| U.3 | A list with a missing file, then a URL that never answers (for example `http://10.255.255.1/x.mp4`), each with a playable file after it; press Refresh after each fails | the missing file reads "file <name> - could not be played (missing, moved, or not a format OBS can play); skipped"; the URL reads the reason that matches its `[obs-playlister]` log line: "skipped, as it ended before playing" gives "could not be played (...)", "skipped, as it did not start playing within its startup window" gives "took too long to start (slow drive or address); skipped" (R-UX-4, R-UX-15) | Pending |
 | U.4 | OBS in German and in Japanese (T.1, T.2), U.1 and U.2 again | the new texts are in that language and fit their controls | Pending |
+
+## Second pass (2026-11-20)
+
+REQUIREMENTS section 11c. The labels of Properties changed, so the older tables on this page use names that are
+gone: "Visibility behavior" is **When not in Program**, "A restart plays" is **Restart goes to**, "Current File" is
+**Now playing**, "Select File" and "Play Selected File" are **Play item** and **Play now**, "Hold changes until the
+next Play" is **Freeze the list during playback**, "Apply waiting changes now" is **Apply waiting changes**, "Sort
+by" and "Descending" are **Order**, "Files to play" is **Play**, "File types to play" is **File types**, and
+everything but the Playlist, Status, Loop, Shuffle, Now playing, Next and Play item is behind **Show advanced
+options**. A playlist or web address row counts "items". The status texts quoted in the older tables were brought
+up to the current wording on 2026-11-20; a result marked "Passed" there was passed with the wording of its day.
+
+`ctest` covers: the Content-Type parser and the character sets (`test-url`, `test-parse-m3u`, `test-fold-key`,
+`test-provider-list`, the last also on Linux now), credentials with and without redirects, the refused redirect
+and the environment's proxy against the test's own server (`test-fetch`),
+a row of unknown kind (`test-provider-folder`), the empty File types field (`test-filter`, `test-row-kind`) and
+Italian (`check-locale-files`). The three Lua scripts in `tests/obs/` were changed to the new texts and the new
+window but have not been run since: the first run will show whether a text or a wait is off. Nothing in this
+section was run inside OBS.
+
+| # | Check | Expected | Result |
+|---|-------|----------|--------|
+| S.1 | Add a new Playlister source in a scene that is in Program; look at the window | Top to bottom: "Changes here go live at once.", Playlist, Status ("Nothing to play yet. Press + at the right of Playlist, ..."), Refresh, Loop playlist, Shuffle, Now playing, Next, Play item, Play now, Show advanced options, the hotkeys line, "Playlister 0.5.2". Nothing else | Pending |
+| S.2 | Press + at the right of Playlist, Add Files, pick two videos | Status changes at once, without Refresh, to two lines "1: new; press Refresh for its status" and "2: new; ..."; the first video plays; after Refresh: "1: file", "2: file", Now playing "1: <path>", Next "2: <path>" | Pending |
+| S.3 | Tick Show advanced options; untick it | The advanced options appear under the box and go away again; with Freeze the list during playback off there is no Apply waiting changes button, with it on there is | Pending |
+| S.4 | Studio Mode on. Add a Playlister to the Preview scene, add a file, press OK. Open Properties again | Nothing plays in Preview. Status ends with "Waiting: plays when its scene is in Program." Fade the scene to Program: it plays, and after Refresh the line is gone | Pending |
+| S.5 | Order: choose each of the six entries with a folder row of files with different dates | The Play item list (after Refresh) is in that order. Close and open OBS: the choice is kept. In the scene collection JSON `sort_key` and `sort_descending` hold it | Pending |
+| S.6 | Empty the File types field with a folder row | The folder keeps playing its video, audio and image files | Pending |
+| S.7 | A folder that holds only `.txt` files; an empty folder; a folder with files only in a subfolder, Include subfolders off | "no files of the types to play (see File types)"; "no files here yet; files in subfolders need Include subfolders" for the other two | Pending |
+| S.8 | A file row whose file was deleted, with a playable file after it; Refresh | "1: file <name> - could not be played (missing, moved, or not a format OBS can play); skipped" | Pending |
+| S.9 | A folder row; rename the folder on disk; Refresh | "folder not found (deleted, drive removed or share offline); checking again every 10 s; using the list read at <time>". Rename it back: the row recovers within the interval | Pending |
+| S.10 | Add a folder row and a file with an unusual extension (for example `.mts`) while another item plays | The picture does not stutter; both rows read "reading" for an instant at most and then "folder - N files" and "file" | Pending |
+| S.11 | Stop the source. In Properties add a row by Add Path/URL with a local path to a video whose extension is not in File types, as the only row | Nothing starts by itself; Play starts it | Pending |
+| S.12 | With obs-websocket on (Tools > WebSocket Server Settings) and a client such as obs-websocket-js: `CallVendorRequest` with vendorName `obs-playlister`, requestType `get_now_next`, no data | `sources` lists every Playlister with `playing`, `next`, `state`, `status`, `row`, `item`, `items`. Press Next in OBS: one `VendorEvent` `now_next_changed` arrives with the new names. The OBS log has "obs-websocket vendor obs-playlister: request get_now_next, event now_next_changed" at start | Pending |
+| S.13 | Shuffle on, three files, press Refresh | Next reads "chosen when it starts (Shuffle is on)"; the event has `next` empty and `next_decided` false. Press Previous, Refresh: Next names the item that follows | Pending |
+| S.14 | Bind the Next hotkey; switch to a scene without the source (not in Preview either); press it | Nothing moves; the OBS log has "hotkey Next ignored: '<name>' is not shown (...)" | Pending |
+| S.15 | A web address row for a list served as `text/plain; charset=windows-1251` with Cyrillic file names | The names are right in the Play item list | Pending |
+| S.16 | A web address row with a user name and password in it, against a server that asks for Basic authentication (answers 401 without them), on Windows and on a Mac: directly; with the http address redirecting to https on the same host; with a redirect to another host | Directly the list loads on both. After the redirects the row reads "the server answered HTTP 401" on both: the user name and password are not sent to another scheme, port or host | Pending |
+| S.16b | `http_proxy` set to a working proxy before OBS starts, on Windows and on a Mac or Linux, with a web address row for an http list | The proxy's log shows the list being fetched through it; with the list's host in `no_proxy` it is fetched directly | Pending |
+| S.16c | A folder row for a path on a USB drive that is not plugged in, typed with Add Path/URL; then plug the drive in and change any setting of the source (for example tick and untick Shuffle) | First "file ... could not be played"; after the change the row becomes "folder - N files" and plays | Pending |
+| S.17 | Mac or Linux with libcurl 7.87 or later: point DNS at an address that does not answer, add a web address row, quit OBS within two seconds | OBS quits at once | Pending |
+| S.18 | OBS in Italian (Settings > General > Language, restart) | Every text of the window, the status lines and the hotkey names are Italian; nothing is cut off | Pending |
+| S.19 | OBS in German and in Russian: the whole window, advanced options shown | No label is cut off at 1080p with 150 % scaling | Pending |
+| S.20 | Run `tests/obs/run-harness.ps1` on Windows | Every check passes; `HARNESS DONE checks=` names the same number run and expected | Pending |
 
 ## macOS (0.5.2)
 
@@ -361,7 +405,7 @@ short videos of different lengths. OBS logs are in `~/Library/Application Suppor
 | M.7 | Rename a video changing only its case (`clip.mp4` to `Clip.mp4`) while it plays | it keeps playing and keeps its place (R-MAC-4) | Pending |
 | M.8 | A file named `.hidden.mp4`, a file hidden with `chflags hidden name.mp4`, and a hidden folder with subfolders on | all three are left out (R-MAC-2) | Pending |
 | M.9 | A folder row with subfolders on: make a new subfolder with a video in it (made elsewhere and moved in); then rename the subfolder | the video joins within about 3 s; after the rename it is still listed (R-MAC-2) | Pending |
-| M.10 | Move the watched folder to the Trash, then put it back | the row keeps its list; its status gives the reason and "showing the last list, from <time>"; it recovers within the check interval | Pending |
+| M.10 | Move the watched folder to the Trash, then put it back | the row keeps its list; its status gives the reason and "using the list read at <time>"; it recovers within the check interval | Pending |
 | M.11 | A folder row on Desktop or in Documents, the first time | macOS asks whether OBS may access the folder. Answer Don't Allow: the row says access denied and the log line names System Settings > Privacy & Security; allow it there, restart OBS: the folder plays (R-MAC-5) | Pending |
 | M.12 | A folder on an SMB share mounted in Finder (`/Volumes/<share>`), with files added from another computer | the row status (and the log line of the mode change) say it is a network volume; new files show up within the check interval; copying a large file onto the share from another computer: it joins only once the copy has finished | Pending |
 | M.13 | While a folder row on the SMB share plays, disconnect the share (pull the network or stop the server), then close the source or quit OBS | OBS does not crash; if a call hangs, the log says "still waiting for the worker to finish a call" after 5 s and OBS goes on once macOS gives up on the share (R-MAC-3, residual risk below) | Pending |

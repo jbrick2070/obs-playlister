@@ -59,6 +59,7 @@ struct route {
 	enum pl_fetch_result result; /* what open returns */
 	uint32_t status;
 	const char *type;
+	const char *charset;   /* NULL: the server names none */
 	const char *final_url; /* NULL: the URL itself */
 	const char *body;
 	bool hang;         /* open waits for the stop event */
@@ -148,6 +149,7 @@ static struct pl_fetch *stub_open(const char *url, const struct pl_fetch_options
 	fetch->route = route;
 	fetch->info.status = route->status;
 	fetch->info.content_type = route->type ? bstrdup(route->type) : NULL;
+	fetch->info.charset = route->charset ? bstrdup(route->charset) : NULL;
 	fetch->info.final_url = bstrdup(route->final_url ? route->final_url : url);
 	*result = route->result;
 	pthread_mutex_unlock(&routes_mutex);
@@ -178,6 +180,7 @@ static enum pl_fetch_result stub_read(struct pl_fetch *fetch, size_t limit, bool
 static void stub_close(struct pl_fetch *fetch)
 {
 	bfree(fetch->info.content_type);
+	bfree(fetch->info.charset);
 	bfree(fetch->info.final_url);
 	bfree(fetch);
 	os_atomic_dec_long(&fetches_open);
@@ -429,13 +432,14 @@ static void test_local(void)
 	provider = start(PL_ROW_PLAYLIST, pls, &options, &inbox);
 	dstr_printf(&expected, "%s" SEP "one.mp3|%s" SEP "two.mp3", folder, folder);
 	const struct pl_snapshot *dated = wait_for(&inbox, 0, shows, expected.array, "the PLS file");
-	assert(dated->level == PL_STATUS_OK && says(dated, "no dates; list order"));
+	/* that date order is list order here is not worth a note on every playlist with the default options */
+	assert(dated->level == PL_STATUS_OK && !dated->status_message);
 	options.mode = PL_MODE_NEWEST_ONLY;
 	since = inbox_count(&inbox);
 	pl_provider_set_options(provider, &options);
 	dstr_printf(&expected, "%s" SEP "two.mp3", folder);
 	const struct pl_snapshot *newest = wait_for(&inbox, since, shows, expected.array, "newest only on a PLS");
-	assert(newest->level == PL_STATUS_WARNING && says(newest, "newest means last in the list"));
+	assert(newest->level == PL_STATUS_WARNING && says(newest, "the last entries count as newest"));
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
 
@@ -657,7 +661,7 @@ static void test_classification(void)
 	struct {
 		const char *url, *type, *body, *message;
 	} errors[] = {
-		{"https://pod.example.com/feed", "application/rss+xml", "<rss/>", "feeds come in a later version"},
+		{"https://pod.example.com/feed", "application/rss+xml", "<rss/>", "a podcast feed (not supported)"},
 		{"https://pod.example.com/page", "text/html", "<!doctype html><html></html>", "a web page"},
 		{"https://pod.example.com/blob", "application/octet-stream", "\x01\x02",
 		 "content type application/octet"},
@@ -675,6 +679,27 @@ static void test_classification(void)
 		inbox_free(&inbox);
 	}
 
+	/* R-REM-1: a list that is not UTF-8 is read in the character set its server names (here Windows-1251, "Pesnya"
+	 * in Cyrillic), by the operating system's own tables; the same bytes without a name are Windows-1252 */
+	const char *cyrillic = "https://lists.example.com/cyrillic.m3u";
+	route = add_route(cyrillic, PL_FETCH_OK, 200, "audio/x-mpegurl", NULL, "\xCF\xE5\xF1\xED\xFF.mp3\n");
+	pthread_mutex_lock(&routes_mutex);
+	route->charset = "windows-1251";
+	pthread_mutex_unlock(&routes_mutex);
+	inbox_init(&inbox);
+	provider = start(PL_ROW_PLAYLIST, cyrillic, &options, &inbox);
+	wait_for(&inbox, 0, shows, "https://lists.example.com/%D0%9F%D0%B5%D1%81%D0%BD%D1%8F.mp3",
+		 "a list in the server's character set");
+	pthread_mutex_lock(&routes_mutex);
+	route->charset = NULL;
+	pthread_mutex_unlock(&routes_mutex);
+	size_t since = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	wait_for(&inbox, since, shows, "https://lists.example.com/%C3%8F%C3%A5%C3%B1%C3%AD%C3%BF.mp3",
+		 "the same bytes with no character set named");
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+
 	/* a list URL that later answers with a web page keeps its list rather than reading the page as links */
 	const char *list = "https://lists.example.com/later.m3u";
 	route = add_route(list, PL_FETCH_OK, 200, "audio/x-mpegurl", NULL, "a.mp3\n");
@@ -685,7 +710,7 @@ static void test_classification(void)
 	route->type = "text/html";
 	route->body = "<html><a href=\"x.mp3\">x</a></html>";
 	pthread_mutex_unlock(&routes_mutex);
-	size_t since = inbox_count(&inbox);
+	since = inbox_count(&inbox);
 	pl_provider_refresh_now(provider);
 	const struct pl_snapshot *page = wait_for(&inbox, since, is_error_stale, "web page instead of the list", list);
 	assert(page->count == 1);

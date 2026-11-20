@@ -83,7 +83,7 @@ void pl_parse_pls(struct pl_list_result *result, const char *data, size_t size, 
 	pl_list_builder_init(&builder, source, result);
 
 	size_t text_length = 0;
-	char *text = pl_list_decode(data, size, &text_length);
+	char *text = pl_list_decode_as(data, size, source->charset, source->convert, &text_length);
 	const char *cursor = text;
 	const char *end = text + text_length;
 

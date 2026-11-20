@@ -28,6 +28,10 @@ enum pl_row_kind {
 	PL_ROW_FOLDER,   /* listed as a folder */
 	PL_ROW_PLAYLIST, /* an .m3u, .m3u8 or .pls file or http(s) URL, read by the list provider */
 	PL_ROW_REMOTE,   /* any other http(s) URL: its first response says what it is */
+	/* a local path whose kind only the disk can tell (file or folder), not asked yet: pl_classify_row never gives
+	 * this. The source uses it for a row it must not ask about on the graphics thread; a worker asks, and the row is
+	 * classified again when the answer is there (provider.h). */
+	PL_ROW_UNKNOWN,
 };
 
 /* Whether path is an existing directory: the only disk access classification makes */

@@ -23,6 +23,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "fetch.h"
 #include "os.h"
 
+#include "core/url.h"
+
+#include <stdlib.h>
 #include <string.h>
 #include <util/bmem.h>
 #include <util/dstr.h>
@@ -168,6 +171,12 @@ static enum pl_fetch_result failure(struct pl_fetch *fetch, DWORD error, bool in
 		return PL_FETCH_TLS_ERROR;
 	if (error == ERROR_WINHTTP_REDIRECT_FAILED && (uint32_t)fetch->redirects >= fetch->max_redirects)
 		return PL_FETCH_TOO_MANY_REDIRECTS;
+	/* below the limit WinHTTP refuses a redirect only for where it leads: from https to http (the redirect policy
+	 * set in start), or to a scheme that is not http(s), which it may also report as a scheme it does not know.
+	 * The address the fetch was opened with never gives that code: start refuses such a one itself, as an invalid
+	 * address, before WinHTTP sees it. */
+	if (error == ERROR_WINHTTP_REDIRECT_FAILED || error == ERROR_WINHTTP_UNRECOGNIZED_SCHEME)
+		fetch->info.failure = PL_FETCH_FAILURE_REDIRECT_REFUSED;
 	return in_body ? PL_FETCH_TRUNCATED : PL_FETCH_NETWORK_ERROR;
 }
 
@@ -219,31 +228,6 @@ static char *query_text(HINTERNET request, DWORD query)
 	return text;
 }
 
-/* "Audio/X-MpegURL; charset=utf-8" -> "audio/x-mpegurl" */
-static char *normalize_content_type(char *text)
-{
-	if (!text)
-		return NULL;
-	text[strcspn(text, ";")] = '\0';
-	char *start = text;
-	while (*start == ' ' || *start == '\t')
-		start++;
-	size_t length = strlen(start);
-	while (length && (start[length - 1] == ' ' || start[length - 1] == '\t'))
-		length--;
-	char *type = bstrdup_n(start, length);
-	for (char *c = type; *c; c++) {
-		if (*c >= 'A' && *c <= 'Z')
-			*c = (char)(*c - 'A' + 'a');
-	}
-	bfree(text);
-	if (!*type) {
-		bfree(type);
-		return NULL;
-	}
-	return type;
-}
-
 static void read_headers(struct pl_fetch *fetch)
 {
 	struct pl_fetch_info *info = &fetch->info;
@@ -253,7 +237,9 @@ static void read_headers(struct pl_fetch *fetch)
 				WINHTTP_HEADER_NAME_BY_INDEX, &status, &bytes, WINHTTP_NO_HEADER_INDEX))
 		info->status = status;
 
-	info->content_type = normalize_content_type(query_text(fetch->request, WINHTTP_QUERY_CONTENT_TYPE));
+	char *type = query_text(fetch->request, WINHTTP_QUERY_CONTENT_TYPE);
+	pl_content_type_split(type, &info->content_type, &info->charset);
+	bfree(type);
 
 	char *length = query_text(fetch->request, WINHTTP_QUERY_CONTENT_LENGTH);
 	if (length && *length) {
@@ -302,6 +288,282 @@ static bool track(struct pl_fetch *fetch, HINTERNET handle)
 	return false;
 }
 
+/* One environment variable as UTF-8 (bmem), or NULL when it is not set or empty. Windows' own call, so a name is
+ * found in any case, as the system compares them. */
+static char *environment(const wchar_t *name)
+{
+	wchar_t value[2048];
+	DWORD length = GetEnvironmentVariableW(name, value, (DWORD)(sizeof(value) / sizeof(value[0])));
+	if (!length || length >= sizeof(value) / sizeof(value[0]))
+		return NULL;
+	char *text = NULL;
+	os_wcs_to_utf8_ptr(value, 0, &text);
+	return text;
+}
+
+/* One entry of no_proxy, read: a host name, an IPv4 address or an IPv6 address (bare, "fd00::5", or in brackets,
+ * "[fd00::5]"), with or without a port after it (after the brackets for IPv6: more than one colon without brackets
+ * is an address, not a port). A leading "*" or "." is dropped: "example.com", ".example.com" and "*.example.com" all
+ * name the host and every host below it. */
+struct no_proxy_entry {
+	bool all; /* a lone "*": every host */
+	const char *host;
+	size_t host_length;
+	bool has_port;
+	unsigned port;
+};
+
+/* False for what cannot be read as such: nothing, an address range (10.0.0.0/8), a port that is no number up to
+ * 65535 */
+static bool read_no_proxy_entry(const char *entry, size_t length, struct no_proxy_entry *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (length == 1 && entry[0] == '*') {
+		out->all = true;
+		return true;
+	}
+	if (length && entry[0] == '*') {
+		entry++;
+		length--;
+	}
+	if (length && entry[0] == '.') {
+		entry++;
+		length--;
+	}
+	if (!length || memchr(entry, '/', length))
+		return false;
+
+	const char *port = NULL;
+	size_t port_length = 0;
+	if (entry[0] == '[') {
+		const char *close = memchr(entry, ']', length);
+		if (!close)
+			return false;
+		out->host = entry + 1;
+		out->host_length = (size_t)(close - entry) - 1;
+		size_t rest = length - (size_t)(close + 1 - entry);
+		if (rest && close[1] != ':')
+			return false;
+		if (rest) {
+			port = close + 2;
+			port_length = rest - 1;
+			out->has_port = true;
+		}
+	} else {
+		size_t colons = 0;
+		const char *colon = NULL;
+		for (size_t i = 0; i < length; i++) {
+			if (entry[i] == ':') {
+				colons++;
+				colon = entry + i;
+			}
+		}
+		out->host = entry;
+		out->host_length = colons == 1 ? (size_t)(colon - entry) : length;
+		if (colons == 1) {
+			port = colon + 1;
+			port_length = length - out->host_length - 1;
+			out->has_port = true;
+		}
+	}
+	if (out->has_port) {
+		/* at most five digits, so the number cannot run over */
+		if (!port_length || port_length > 5)
+			return false;
+		for (size_t i = 0; i < port_length; i++) {
+			if (port[i] < '0' || port[i] > '9')
+				return false;
+			out->port = out->port * 10 + (unsigned)(port[i] - '0');
+		}
+		if (out->port > 65535)
+			return false;
+	}
+	return out->host_length > 0;
+}
+
+/* Whether no_proxy names the host and port, as FFmpeg and libcurl read it: entries separated by commas or spaces,
+ * "*" for every host, an entry for the host itself and every host below it, and an entry with a port for that port
+ * only. host may be an IPv6 address in the brackets an address writes it in. */
+static bool host_in_no_proxy(const char *no_proxy, const char *host, unsigned port)
+{
+	size_t host_length = strlen(host);
+	if (host_length >= 2 && host[0] == '[' && host[host_length - 1] == ']') {
+		host++;
+		host_length -= 2;
+	}
+	const char *c = no_proxy;
+	while (*c) {
+		c += strspn(c, ", \t");
+		size_t length = strcspn(c, ", \t");
+		struct no_proxy_entry entry;
+		bool read = read_no_proxy_entry(c, length, &entry);
+		c += length;
+		if (!read)
+			continue;
+		if (entry.all)
+			return true;
+		if ((entry.has_port && entry.port != port) || entry.host_length > host_length)
+			continue;
+		const char *tail = host + host_length - entry.host_length;
+		if (astrcmpi_n(tail, entry.host, entry.host_length) == 0 && (tail == host || tail[-1] == '.'))
+			return true;
+	}
+	return false;
+}
+
+/* Whether no_proxy has a lone "*": no host is asked through a proxy */
+static bool no_proxy_names_all(const char *no_proxy)
+{
+	const char *c = no_proxy ? no_proxy : "";
+	while (*c) {
+		c += strspn(c, ", \t");
+		size_t length = strcspn(c, ", \t");
+		if (length == 1 && c[0] == '*')
+			return true;
+		c += length;
+	}
+	return false;
+}
+
+/* A proxy variable's value as the "host:port" WinHTTP takes (bmem), or NULL when it is not set or is not a plain
+ * http proxy without a user name */
+static char *plain_proxy(const wchar_t *name)
+{
+	char *value = environment(name);
+	if (!value)
+		return NULL;
+	const char *address = value;
+	if (astrcmpi_n(address, "http://", 7) == 0)
+		address += 7;
+	size_t length = strcspn(address, "/");
+	char *plain = NULL;
+	if (length && !strstr(address, "://") && !memchr(address, '@', length))
+		plain = bstrdup_n(address, length);
+	bfree(value);
+	return plain;
+}
+
+/* no_proxy as WinHTTP's bypass list: entries separated by ";", each host name as itself and as "*.host" (WinHTTP
+ * matches a name exactly unless it has a wildcard), an IPv6 address in the brackets an address writes it in. Its
+ * entries are hosts; nothing documents one with a port. So an entry with a port is weighed here, against the port of
+ * the address the fetch was opened with: it joins the list, without its port, when that is the port, and is left
+ * out otherwise. An address range is left out: WinHTTP has no such entry. A lone "*" never comes here (proxy_choice
+ * asks no proxy at all then). (An address on this computer, 127.0.0.1 or localhost, WinHTTP asks directly whatever
+ * the list says.) NULL when there is nothing to bypass. bmem. */
+static wchar_t *bypass_list(const char *no_proxy, unsigned port)
+{
+	struct dstr list = {0};
+	const char *c = no_proxy ? no_proxy : "";
+	while (*c) {
+		c += strspn(c, ", \t");
+		size_t length = strcspn(c, ", \t");
+		struct no_proxy_entry entry;
+		bool read = read_no_proxy_entry(c, length, &entry);
+		c += length;
+		if (!read || entry.all || (entry.has_port && entry.port != port))
+			continue;
+		if (list.len)
+			dstr_cat(&list, ";");
+		if (memchr(entry.host, ':', entry.host_length)) {
+			dstr_cat(&list, "[");
+			dstr_ncat(&list, entry.host, entry.host_length);
+			dstr_cat(&list, "]");
+		} else {
+			dstr_ncat(&list, entry.host, entry.host_length);
+			dstr_cat(&list, ";*.");
+			dstr_ncat(&list, entry.host, entry.host_length);
+		}
+	}
+	wchar_t *wide = list.len ? to_wide(list.array) : NULL;
+	dstr_free(&list);
+	return wide;
+}
+
+/* fetch.h: how the session reaches its servers. With a proxy named in the environment: WinHTTP's proxy list, one
+ * proxy for each scheme that has one ("http=host:port;https=host:port"), and no_proxy as the bypass list, so every
+ * address of a redirect chain goes by its own scheme and host, as with libcurl; a scheme without a proxy is asked
+ * directly. With none named: the system's proxy settings, as before, unless no_proxy names this first address's
+ * host, which the user wants asked directly (the system's settings have a bypass list of their own for the rest).
+ * Returns the access type; *proxies and *bypass are bmem or NULL. */
+static DWORD proxy_choice(const wchar_t *wide_host, unsigned port, wchar_t **proxies, wchar_t **bypass)
+{
+	*proxies = NULL;
+	*bypass = NULL;
+	char *all = plain_proxy(L"all_proxy");
+	char *http = plain_proxy(L"http_proxy");
+	char *https = plain_proxy(L"https_proxy");
+	char *no_proxy = environment(L"no_proxy");
+	DWORD access = WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY;
+	const char *for_http = http ? http : all;
+	const char *for_https = https ? https : all;
+	if (no_proxy_names_all(no_proxy)) {
+		/* a lone "*": no proxy for any address, the environment's or the system's, said in WinHTTP's own way
+		 * rather than as a bypass entry */
+		access = WINHTTP_ACCESS_TYPE_NO_PROXY;
+	} else if (for_http || for_https) {
+		struct dstr list = {0};
+		if (for_http)
+			dstr_printf(&list, "http=%s", for_http);
+		if (for_https)
+			dstr_catf(&list, "%shttps=%s", list.len ? ";" : "", for_https);
+		*proxies = to_wide(list.array);
+		dstr_free(&list);
+		*bypass = bypass_list(no_proxy, port);
+		access = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+	} else if (no_proxy) {
+		char *host = NULL;
+		os_wcs_to_utf8_ptr(wide_host, 0, &host);
+		if (host && host_in_no_proxy(no_proxy, host, port))
+			access = WINHTTP_ACCESS_TYPE_NO_PROXY;
+		bfree(host);
+	}
+	bfree(all);
+	bfree(http);
+	bfree(https);
+	bfree(no_proxy);
+	return access;
+}
+
+/* fetch.h: the address the fetch ended at carries the given address's user name and password while it is on the
+ * origin they were given for, as with libcurl (pl_url_carry_credentials): a list's entries resolve against it */
+static void carry_credentials(struct pl_fetch *fetch, const char *url)
+{
+	if (!fetch->info.final_url)
+		return;
+	char *carried = pl_url_carry_credentials(url, fetch->info.final_url);
+	bfree(fetch->info.final_url);
+	fetch->info.final_url = carried;
+}
+
+/* Sends the request and waits for the response's headers */
+static enum pl_fetch_result exchange(struct pl_fetch *fetch)
+{
+	if (!WinHttpSendRequest(fetch->request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0,
+				(DWORD_PTR)fetch))
+		return failure(fetch, GetLastError(), false);
+	enum pl_fetch_result result = wait_for(fetch, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE, false);
+	if (result != PL_FETCH_OK)
+		return result;
+	if (!WinHttpReceiveResponse(fetch->request, NULL))
+		return failure(fetch, GetLastError(), false);
+	return wait_for(fetch, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE, false);
+}
+
+/* A user name or password out of a URL: its "%XX" sequences decoded, as libcurl decodes them (bmem) */
+static wchar_t *url_part(const wchar_t *text, DWORD length)
+{
+	wchar_t *raw = bzalloc(((size_t)length + 1) * sizeof(wchar_t));
+	memcpy(raw, text, (size_t)length * sizeof(wchar_t));
+	char *utf8 = NULL;
+	os_wcs_to_utf8_ptr(raw, 0, &utf8);
+	bfree(raw);
+	char *decoded = pl_url_percent_decode(utf8 ? utf8 : "");
+	bfree(utf8);
+	wchar_t *wide = to_wide(decoded);
+	bfree(decoded);
+	return wide;
+}
+
 static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const struct pl_fetch_options *options)
 {
 	wchar_t *wide_url = to_wide(url);
@@ -314,6 +576,8 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 	parts.dwHostNameLength = (DWORD)-1;
 	parts.dwUrlPathLength = (DWORD)-1;
 	parts.dwExtraInfoLength = (DWORD)-1;
+	parts.dwUserNameLength = (DWORD)-1;
+	parts.dwPasswordLength = (DWORD)-1;
 	if (!WinHttpCrackUrl(wide_url, 0, 0, &parts) || !parts.dwHostNameLength ||
 	    (parts.nScheme != INTERNET_SCHEME_HTTP && parts.nScheme != INTERNET_SCHEME_HTTPS)) {
 		bfree(wide_url);
@@ -337,12 +601,22 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 	}
 	bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
 	INTERNET_PORT port = parts.nPort;
+	/* fetch.h: a user name and password in the address go to that server as Basic authentication */
+	wchar_t *user = parts.dwUserNameLength ? url_part(parts.lpszUserName, parts.dwUserNameLength) : NULL;
+	wchar_t *password = user ? url_part(parts.lpszPassword, parts.dwPasswordLength) : NULL;
 	bfree(wide_url);
 
 	enum pl_fetch_result result = PL_FETCH_OK;
 	wchar_t *agent = to_wide(options->user_agent ? options->user_agent : "obs-playlister");
-	fetch->session = WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
-				     WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+	/* fetch.h: the proxy the environment names, as the player of the items reads it; with none named, the system's
+	 * own proxy settings, as before */
+	wchar_t *proxies = NULL;
+	wchar_t *bypass = NULL;
+	DWORD access = proxy_choice(host, port, &proxies, &bypass);
+	fetch->session = WinHttpOpen(agent, access, proxies ? proxies : WINHTTP_NO_PROXY_NAME,
+				     bypass ? bypass : WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+	bfree(proxies);
+	bfree(bypass);
 	bfree(agent);
 	DWORD flags = WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_REDIRECT |
 		      WINHTTP_CALLBACK_FLAG_HANDLES;
@@ -372,31 +646,54 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 
 	DWORD redirects = fetch->max_redirects;
 	DWORD decompression = WINHTTP_DECOMPRESSION_FLAG_ALL;
+	/* fetch.h: never from https to http. WinHTTP's default, set here so that it is the plugin's rule and not a
+	 * default that could change. */
+	DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
 	if (!WinHttpSetOption(fetch->request, WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS, &redirects,
 			      sizeof(redirects)) ||
+	    !WinHttpSetOption(fetch->request, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy,
+			      sizeof(redirect_policy)) ||
 	    !WinHttpSetOption(fetch->request, WINHTTP_OPTION_DECOMPRESSION, &decompression, sizeof(decompression))) {
 		result = failure(fetch, GetLastError(), false);
 		goto done;
 	}
-
-	if (!WinHttpSendRequest(fetch->request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0,
-				(DWORD_PTR)fetch)) {
+	if (user && !WinHttpSetCredentials(fetch->request, WINHTTP_AUTH_TARGET_SERVER, WINHTTP_AUTH_SCHEME_BASIC, user,
+					   password ? password : L"", NULL)) {
 		result = failure(fetch, GetLastError(), false);
 		goto done;
 	}
-	result = wait_for(fetch, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE, false);
+
+	result = exchange(fetch);
 	if (result != PL_FETCH_OK)
 		goto done;
-
-	if (!WinHttpReceiveResponse(fetch->request, NULL)) {
-		result = failure(fetch, GetLastError(), false);
-		goto done;
-	}
-	result = wait_for(fetch, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE, false);
-	if (result != PL_FETCH_OK)
-		goto done;
-
 	read_headers(fetch);
+	carry_credentials(fetch, url);
+
+	/* fetch.h: the user name and password also count after a redirect that stays with the origin they were given
+	 * for. WinHTTP sends them with the first request and drops them at every redirect, so when such a redirect
+	 * ends at a 401, the request, which now stands at the redirect's address, is sent once more with them. After
+	 * a redirect to another origin they are never sent. */
+	if (user && fetch->info.status == 401 && fetch->info.redirects > 0 && fetch->info.final_url &&
+	    pl_url_same_origin(url, fetch->info.final_url)) {
+		if (!WinHttpSetCredentials(fetch->request, WINHTTP_AUTH_TARGET_SERVER, WINHTTP_AUTH_SCHEME_BASIC, user,
+					   password ? password : L"", NULL)) {
+			result = failure(fetch, GetLastError(), false);
+			goto done;
+		}
+		bfree(fetch->info.content_type);
+		bfree(fetch->info.charset);
+		bfree(fetch->info.final_url);
+		uint32_t redirects_before = fetch->info.redirects;
+		memset(&fetch->info, 0, sizeof(fetch->info));
+		result = exchange(fetch);
+		if (result != PL_FETCH_OK)
+			goto done;
+		read_headers(fetch);
+		carry_credentials(fetch, url);
+		/* a further redirect of the second request is not followed with them either: only its own count shows */
+		if (fetch->info.redirects < redirects_before)
+			fetch->info.redirects = redirects_before;
+	}
 	/* WinHTTP hands back the redirect it would not follow; a 3xx without a Location is just a status */
 	char *location = NULL;
 	if (fetch->info.status >= 300 && fetch->info.status < 400 && fetch->info.redirects >= fetch->max_redirects)
@@ -412,6 +709,10 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 done:
 	bfree(host);
 	bfree(object);
+	bfree(user);
+	if (password)
+		SecureZeroMemory(password, wcslen(password) * sizeof(wchar_t));
+	bfree(password);
 	return result;
 }
 
@@ -504,6 +805,7 @@ void pl_fetch_close(struct pl_fetch *fetch)
 	if (fetch->all_closed)
 		CloseHandle(fetch->all_closed);
 	bfree(fetch->info.content_type);
+	bfree(fetch->info.charset);
 	bfree(fetch->info.final_url);
 	bfree(fetch);
 }

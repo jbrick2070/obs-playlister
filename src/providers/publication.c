@@ -168,6 +168,7 @@ static struct pl_snapshot *build_snapshot(struct pl_publication *publication,
 	snapshot->status_message = status->message ? bstrdup(status->message) : NULL;
 	snapshot->stale = status->stale;
 	snapshot->last_ok_unix_ms = status->last_ok_unix_ms;
+	snapshot->unfiltered_count = status->unfiltered_count;
 	snapshot->held_changes = (size_t)os_atomic_load_long(&publication->held_changes);
 	return snapshot;
 }
@@ -196,6 +197,8 @@ static char *snapshot_signature(const struct pl_snapshot *snapshot)
 		  snapshot->held_changes, (int)snapshot->level,
 		  snapshot->status_message ? snapshot->status_message : "", snapshot->stale,
 		  snapshot->initial_scan_complete);
+	/* only whether there are any: the receiver says "no files of the types to play" for an empty row with some */
+	dstr_catf(&signature, "unfiltered %d\n", snapshot->unfiltered_count > 0);
 	/* which keys are pending, not only how many: the receiver keeps its own copy (R-DIR-4, R-KEY-2); sorted, so a
 	 * change in listing order alone is no change */
 	char **pending = bmalloc((snapshot->pending_count ? snapshot->pending_count : 1) * sizeof(char *));
@@ -297,4 +300,27 @@ enum pl_publication_result pl_publication_update(struct pl_publication *publicat
 size_t pl_publication_held_changes(struct pl_publication *publication)
 {
 	return (size_t)os_atomic_load_long(&publication->held_changes);
+}
+
+void pl_container_options_copy(struct pl_container_options *dst, char **filter_text,
+			       const struct pl_container_options *src)
+{
+	*dst = *src;
+	bfree(*filter_text);
+	*filter_text = bstrdup(src->extension_filter ? src->extension_filter : "");
+	dst->extension_filter = *filter_text;
+}
+
+void pl_publication_publish_probe(struct pl_publication *publication, bool directory)
+{
+	struct pl_snapshot *snapshot = bzalloc(sizeof(*snapshot));
+	snapshot->instance_id = publication->instance_id;
+	snapshot->generation = ++publication->generation;
+	snapshot->probe = directory ? PL_PROBE_FOLDER : PL_PROBE_FILE;
+	pthread_mutex_lock(&publication->owner_mutex);
+	if (publication->detached)
+		pl_snapshot_free(snapshot);
+	else
+		publication->publish(publication->owner, snapshot);
+	pthread_mutex_unlock(&publication->owner_mutex);
 }

@@ -29,6 +29,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 /* What a container row's provider publishes (PLAN section 3.2): an immutable list built on its worker, owned by the
  * receiver from the moment it is published */
+/* What the worker of a PL_ROW_UNKNOWN row found its path to be */
+enum pl_probe {
+	PL_PROBE_NONE, /* not such a snapshot: a list, as every other provider publishes */
+	PL_PROBE_FILE, /* not an existing directory: a file, or nothing at all (the row is then a file row, as always) */
+	PL_PROBE_FOLDER, /* an existing directory */
+};
+
 struct pl_snapshot {
 	uint64_t instance_id; /* the provider instance; the source accepts only its row's registered one (R-THR-2) */
 	uint64_t generation;  /* orders snapshots within one instance only */
@@ -45,6 +52,10 @@ struct pl_snapshot {
 	int64_t last_ok_unix_ms; /* the last successful listing, 0 = never (R-BEH-3) */
 	bool stale;              /* the last good list kept after a failure (R-BEH-3) */
 	size_t held_changes; /* what the kept snapshot adds, removes or rewrites (R-DIR-11); 0 when nothing is kept */
+	/* a folder: the files its listing found before the extension filter, so an empty row can say whether the
+	 * folder is empty or only holds other file types; 0 for a list */
+	size_t unfiltered_count;
+	enum pl_probe probe; /* a PL_ROW_UNKNOWN row's answer; then nothing else above but instance_id is set */
 };
 
 /* Frees the snapshot (bmem) and everything it holds; NULL is nothing to free */
@@ -75,12 +86,18 @@ struct pl_provider;
 /* Starts a provider for a container row: a folder, a playlist (a local file or a URL) or a remote row (an http(s) URL
  * its first response classifies, R-LIST-1). Copies location, row_uuid, options and the filter string before
  * returning. The caller has already registered instance_id as the row's expected instance (R-THR-2). NULL for a file
- * row or when the worker cannot be started. */
+ * row or when the worker cannot be started.
+ *
+ * For a PL_ROW_UNKNOWN row the provider only finds out whether location is a directory, on its worker, so that the
+ * caller (the graphics thread, when a list edit is applied) never waits for a drive or a share that is slow to
+ * answer. It publishes one snapshot, whose probe says which, and is then done; it is stopped, retired and destroyed
+ * like any other. */
 struct pl_provider *pl_provider_create(enum pl_row_kind kind, const char *location, const char *row_uuid,
 				       uint64_t instance_id, const struct pl_container_options *options,
 				       pl_publish_fn publish, void *owner);
 
-/* Lists the container again now (the Properties Refresh button) */
+/* Lists the container again now, without waiting for its interval. The plugin has no caller today (the Properties
+ * Refresh button only builds Properties again from what the providers last published); the tests use it. */
 void pl_provider_refresh_now(struct pl_provider *provider);
 
 /* Filter, sort, direction, mode, N, the folder check, lock-list-at-start and the refresh interval, applied to the

@@ -158,40 +158,49 @@ static void split_uri(struct uri_parts *parts, const char *text)
 	}
 }
 
-/* RFC 3986 section 5.2.4 */
+/* The output without its last segment and the "/" before it */
+static void drop_last_segment(struct dstr *out)
+{
+	size_t at = out->len;
+	while (at > 0 && out->array[at - 1] != '/')
+		at--;
+	dstr_resize(out, at > 0 ? at - 1 : 0);
+}
+
+/* RFC 3986 section 5.2.4. The input is read with a cursor and the output searched from its end, so a path costs its
+ * length: taking each segment off the front of a buffer cost the length squared, which a playlist of long paths
+ * with thousands of segments each could turn into minutes of a worker's time. */
 static void remove_dot_segments(struct dstr *out, const char *path, size_t length)
 {
 	struct dstr input = {0};
 	dstr_ncopy(&input, path, length);
 	dstr_init(out);
 
-	while (input.len) {
-		if (strncmp(input.array, "../", 3) == 0) {
-			dstr_remove(&input, 0, 3);
-		} else if (strncmp(input.array, "./", 2) == 0) {
-			dstr_remove(&input, 0, 2);
-		} else if (strncmp(input.array, "/./", 3) == 0) {
-			dstr_remove(&input, 0, 2);
-		} else if (strcmp(input.array, "/.") == 0) {
-			dstr_copy(&input, "/");
-		} else if (strncmp(input.array, "/../", 4) == 0 || strcmp(input.array, "/..") == 0) {
-			if (input.len == 3)
-				dstr_copy(&input, "/");
-			else
-				dstr_remove(&input, 0, 3);
-			char *last = out->array ? strrchr(out->array, '/') : NULL;
-			if (last)
-				dstr_resize(out, (size_t)(last - out->array));
-			else
-				dstr_resize(out, 0);
-		} else if (strcmp(input.array, ".") == 0 || strcmp(input.array, "..") == 0) {
+	const char *in = input.array ? input.array : "";
+	while (*in) {
+		if (strncmp(in, "../", 3) == 0) {
+			in += 3;
+		} else if (strncmp(in, "./", 2) == 0) {
+			in += 2;
+		} else if (strncmp(in, "/./", 3) == 0) {
+			in += 2;
+		} else if (strcmp(in, "/.") == 0) {
+			dstr_cat_ch(out, '/');
+			break;
+		} else if (strncmp(in, "/../", 4) == 0 || strcmp(in, "/..") == 0) {
+			bool last = in[3] == '\0';
+			drop_last_segment(out);
+			if (last) {
+				dstr_cat_ch(out, '/');
+				break;
+			}
+			in += 3;
+		} else if (strcmp(in, ".") == 0 || strcmp(in, "..") == 0) {
 			break;
 		} else {
-			size_t segment = strcspn(input.array + 1, "/") + 1;
-			if (input.array[0] != '/')
-				segment = strcspn(input.array, "/");
-			dstr_ncat(out, input.array, segment);
-			dstr_remove(&input, 0, segment);
+			size_t segment = in[0] == '/' ? strcspn(in + 1, "/") + 1 : strcspn(in, "/");
+			dstr_ncat(out, in, segment);
+			in += segment;
 		}
 	}
 	dstr_free(&input);
@@ -539,4 +548,174 @@ char *pl_posix_path_resolve(const char *base_path, const char *reference)
 		dstr_resize(&out, out.len - 1);
 	dstr_free(&joined);
 	return out.array;
+}
+
+static bool header_space(char c)
+{
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static char *lowered(const char *text, size_t length)
+{
+	char *copy = bstrdup_n(text, length);
+	for (char *c = copy; *c; c++) {
+		if (*c >= 'A' && *c <= 'Z')
+			*c = (char)(*c - 'A' + 'a');
+	}
+	return copy;
+}
+
+void pl_content_type_split(const char *header, char **type, char **charset)
+{
+	*type = NULL;
+	*charset = NULL;
+	if (!header)
+		return;
+	while (header_space(*header))
+		header++;
+	size_t length = strcspn(header, ";");
+	const char *parameters = header + length;
+	while (length && header_space(header[length - 1]))
+		length--;
+	if (length)
+		*type = lowered(header, length);
+
+	/* the parameters, each "name=value" or "name=\"value\"" after a ";" */
+	while (*parameters == ';') {
+		const char *name = parameters + 1;
+		while (header_space(*name))
+			name++;
+		size_t name_length = strcspn(name, "=;");
+		parameters = name + name_length;
+		if (*parameters != '=')
+			continue;
+		const char *value = parameters + 1;
+		while (header_space(*value))
+			value++;
+		size_t value_length;
+		if (*value == '"') {
+			value++;
+			value_length = strcspn(value, "\"");
+			parameters = value + value_length;
+			parameters += strcspn(parameters, ";");
+		} else {
+			value_length = strcspn(value, ";");
+			parameters = value + value_length;
+			while (value_length && header_space(value[value_length - 1]))
+				value_length--;
+		}
+		while (name_length && header_space(name[name_length - 1]))
+			name_length--;
+		if (*charset || name_length != 7 || astrcmpi_n(name, "charset", 7) != 0)
+			continue;
+		bool plain = value_length > 0 && value_length <= 40;
+		for (size_t i = 0; plain && i < value_length; i++) {
+			char c = value[i];
+			plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+				c == '-' || c == '_' || c == '.' || c == ':' || c == '+';
+		}
+		if (plain)
+			*charset = lowered(value, value_length);
+	}
+}
+
+void pl_url_split_credentials(const char *url, char **plain, char **user, char **password)
+{
+	*user = NULL;
+	*password = NULL;
+	const char *scheme_end = strstr(url, "://");
+	const char *authority = scheme_end ? scheme_end + 3 : NULL;
+	size_t authority_length = authority ? strcspn(authority, "/?#") : 0;
+	const char *at = NULL;
+	for (size_t i = 0; i < authority_length; i++) {
+		if (authority[i] == '@')
+			at = authority + i;
+	}
+	/* no user information, or an empty one ("https://@host/"): nothing to send */
+	if (!at || at == authority) {
+		struct dstr copy = {0};
+		dstr_copy(&copy, url);
+		if (at)
+			dstr_remove(&copy, (size_t)(authority - url), 1);
+		*plain = copy.array ? copy.array : bstrdup("");
+		return;
+	}
+	size_t info_length = (size_t)(at - authority);
+	const char *colon = memchr(authority, ':', info_length);
+	size_t user_length = colon ? (size_t)(colon - authority) : info_length;
+	char *raw_user = bstrdup_n(authority, user_length);
+	char *raw_password = colon ? bstrdup_n(colon + 1, info_length - user_length - 1) : bstrdup("");
+	*user = pl_url_percent_decode(raw_user);
+	*password = pl_url_percent_decode(raw_password);
+	bfree(raw_user);
+	bfree(raw_password);
+
+	struct dstr without = {0};
+	dstr_ncopy(&without, url, (size_t)(authority - url));
+	dstr_cat(&without, at + 1);
+	*plain = without.array;
+}
+
+/* The length of an address up to the end of its host and port, or 0 without "://" */
+static size_t origin_length(const char *url)
+{
+	const char *host = strstr(url, "://");
+	return host ? (size_t)(host + 3 - url) + strcspn(host + 3, "/?#") : 0;
+}
+
+bool pl_url_same_origin(const char *a, const char *b)
+{
+	char *plain_a, *plain_b, *user, *password;
+	pl_url_split_credentials(a, &plain_a, &user, &password);
+	bfree(user);
+	bfree(password);
+	pl_url_split_credentials(b, &plain_b, &user, &password);
+	bfree(user);
+	bfree(password);
+	size_t length_a = origin_length(plain_a);
+	size_t length_b = origin_length(plain_b);
+	bool same = length_a && length_a == length_b && astrcmpi_n(plain_a, plain_b, length_a) == 0;
+	bfree(plain_a);
+	bfree(plain_b);
+	return same;
+}
+
+char *pl_url_carry_credentials(const char *given, const char *final)
+{
+	char *final_plain, *final_user, *final_password;
+	pl_url_split_credentials(final, &final_plain, &final_user, &final_password);
+	char *plain, *user, *password;
+	pl_url_split_credentials(given, &plain, &user, &password);
+	/* Newer libcurl writes the user name and password it was given apart back into the address of a relative
+	 * redirect, in its own spelling ("p%3ass" for "p%3Ass"): the same user and password are written as the given
+	 * address writes them. A final address with other ones of its own keeps them. */
+	bool same_own = final_user && user && strcmp(final_user, user) == 0 && strcmp(final_password, password) == 0;
+	bool carry = user && (!final_user || same_own) && pl_url_same_origin(given, final);
+	bfree(final_user);
+	bfree(final_password);
+	bfree(plain);
+	bfree(user);
+	bfree(password);
+	if (!carry) {
+		bfree(final_plain);
+		return bstrdup(final);
+	}
+	final = final_plain;
+
+	/* the user information as the given address writes it, "@" included: from after "://" to its last "@" before
+	 * the path */
+	const char *authority = strstr(given, "://") + 3;
+	size_t authority_length = strcspn(authority, "/?#");
+	size_t info_length = 0;
+	for (size_t i = 0; i < authority_length; i++) {
+		if (authority[i] == '@')
+			info_length = i + 1;
+	}
+	const char *final_authority = strstr(final, "://") + 3;
+	struct dstr carried = {0};
+	dstr_ncopy(&carried, final, (size_t)(final_authority - final));
+	dstr_ncat(&carried, authority, info_length);
+	dstr_cat(&carried, final_authority);
+	bfree(final_plain);
+	return carried.array;
 }

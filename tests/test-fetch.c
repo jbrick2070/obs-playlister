@@ -64,6 +64,9 @@ typedef int SOCKET;
 
 static SOCKET listener = INVALID_SOCKET;
 static uint16_t port;
+/* the same server on a second port: to a client another origin on the same host, as https is to http */
+static SOCKET second_listener = INVALID_SOCKET;
+static uint16_t second_port;
 static os_event_t *release_hangs; /* manual reset: hanging connections give up */
 static volatile long connections;
 /* the request each open connection is serving, so a connection left open can be named */
@@ -152,6 +155,45 @@ static void *serve(void *param)
 			    "Connection: close\r\n\r\n%s",
 			    strlen(body), body);
 		send_text(s, reply.array);
+	} else if (strncmp(path, "http://", 7) == 0) {
+		/* asked as a proxy is asked: the whole address in the request line */
+		send_text(s, "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nproxied");
+	} else if (strcmp(path, "/auth-needed") == 0 && !strstr(request, "\r\nAuthorization: ")) {
+		/* a server that asks for the credentials, as real ones do */
+		send_text(s, "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"test\"\r\n"
+			     "Content-Length: 0\r\nConnection: close\r\n\r\n");
+	} else if (strcmp(path, "/auth") == 0 || strcmp(path, "/auth-needed") == 0) {
+		/* the body says which credentials came with the request */
+		char sent[256] = "none";
+		const char *header = strstr(request, "\r\nAuthorization: ");
+		if (header)
+			sscanf(header + 17, "%255[^\r]", sent);
+		dstr_printf(&reply, "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
+			    strlen(sent), sent);
+		send_text(s, reply.array);
+	} else if (strncmp(path, "/auth-", 6) == 0) {
+		/* a redirect to /auth: by a relative address, by an absolute one to the same host and port, to this
+		 * server's second port, and to this server under another host name */
+		const char *where = path + 6;
+		if (strcmp(where, "relative") == 0)
+			dstr_copy(&reply, "HTTP/1.1 302 Found\r\nLocation: /auth-needed\r\n");
+		else if (strcmp(where, "same") == 0)
+			dstr_printf(&reply, "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:%u/auth-needed\r\n",
+				    port);
+		else if (strcmp(where, "port") == 0)
+			dstr_printf(&reply, "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:%u/auth-needed\r\n",
+				    second_port);
+		else
+			dstr_printf(&reply, "HTTP/1.1 302 Found\r\nLocation: http://localhost:%u/auth-needed\r\n",
+				    port);
+		dstr_cat(&reply, "Content-Length: 0\r\nConnection: close\r\n\r\n");
+		send_text(s, reply.array);
+	} else if (strcmp(path, "/to-proxied") == 0) {
+		send_text(s, "HTTP/1.1 302 Found\r\nLocation: http://lists.playlister.invalid/list.m3u\r\n"
+			     "Content-Length: 0\r\nConnection: close\r\n\r\n");
+	} else if (strcmp(path, "/to-ftp") == 0) {
+		send_text(s, "HTTP/1.1 302 Found\r\nLocation: ftp://127.0.0.1/x\r\nContent-Length: 0\r\n"
+			     "Connection: close\r\n\r\n");
 	} else if (strcmp(path, "/binary") == 0) {
 		/* UTF-16 text: every other byte is a NUL, and the body starts with one */
 		send_text(s, "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\n");
@@ -210,9 +252,9 @@ static void *serve(void *param)
 
 static void *accept_loop(void *param)
 {
-	(void)param;
+	SOCKET from = *(SOCKET *)param;
 	for (;;) {
-		SOCKET s = accept(listener, NULL, NULL);
+		SOCKET s = accept(from, NULL, NULL);
 		if (s == INVALID_SOCKET)
 			return NULL;
 		os_atomic_inc_long(&connections);
@@ -232,22 +274,32 @@ static uint16_t bound_port(SOCKET s)
 	return ntohs(address.sin_port);
 }
 
+static SOCKET listen_on_loopback(uint16_t *bound)
+{
+	SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	struct sockaddr_in address = {0};
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	assert(bind(s, (struct sockaddr *)&address, sizeof(address)) == 0);
+	assert(listen(s, 16) == 0);
+	*bound = bound_port(s);
+	return s;
+}
+
+static pthread_t second_thread;
+
 static pthread_t start_server(void)
 {
 #ifdef _WIN32
 	WSADATA wsa;
 	assert(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
 #endif
-	listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	struct sockaddr_in address = {0};
-	address.sin_family = AF_INET;
-	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	assert(bind(listener, (struct sockaddr *)&address, sizeof(address)) == 0);
-	assert(listen(listener, 16) == 0);
-	port = bound_port(listener);
+	listener = listen_on_loopback(&port);
+	second_listener = listen_on_loopback(&second_port);
 	assert(os_event_init(&release_hangs, OS_EVENT_TYPE_MANUAL) == 0);
 	pthread_t thread;
-	assert(pthread_create(&thread, NULL, accept_loop, NULL) == 0);
+	assert(pthread_create(&thread, NULL, accept_loop, &listener) == 0);
+	assert(pthread_create(&second_thread, NULL, accept_loop, &second_listener) == 0);
 	return thread;
 }
 
@@ -257,9 +309,12 @@ static void stop_server(pthread_t thread)
 #ifndef _WIN32
 	/* close alone does not wake a thread blocked in accept on Linux */
 	shutdown(listener, SHUT_RDWR);
+	shutdown(second_listener, SHUT_RDWR);
 #endif
 	closesocket(listener);
+	closesocket(second_listener);
 	pthread_join(thread, NULL);
+	pthread_join(second_thread, NULL);
 	for (int i = 0; i < 200 && os_atomic_load_long(&connections); i++)
 		os_sleep_ms(25);
 	if (os_atomic_load_long(&connections)) {
@@ -395,6 +450,7 @@ static void test_ok(void)
 	const struct pl_fetch_info *info = pl_fetch_get_info(fetch);
 	assert(info->status == 200);
 	assert(strcmp(info->content_type, "audio/x-mpegurl") == 0);
+	assert(info->charset && strcmp(info->charset, "utf-8") == 0);
 	assert(info->has_length && info->content_length == 14 && !info->encoded);
 	assert(strcmp(info->final_url, url("/ok")) == 0 && info->redirects == 0);
 	char *body;
@@ -411,7 +467,7 @@ static void test_ok(void)
 	close_and_check(fetch);
 
 	fetch = open_expect("/nolength", &options, PL_FETCH_OK);
-	assert(!pl_fetch_get_info(fetch)->has_length);
+	assert(!pl_fetch_get_info(fetch)->has_length && !pl_fetch_get_info(fetch)->charset);
 	assert(pl_fetch_read(fetch, 1024, false, &body, &size) == PL_FETCH_OK);
 	assert(size == 5 && strcmp(body, "hello") == 0);
 	bfree(body);
@@ -429,6 +485,204 @@ static void test_redirects(void)
 	close_and_check(fetch);
 
 	close_and_check(open_expect("/redirect/6", &options, PL_FETCH_TOO_MANY_REDIRECTS));
+
+	/* fetch.h: a redirect to something that is not http(s) is refused, and says so */
+	fetch = open_expect("/to-ftp", &options, PL_FETCH_NETWORK_ERROR);
+	assert(pl_fetch_get_info(fetch)->failure == PL_FETCH_FAILURE_REDIRECT_REFUSED);
+	close_and_check(fetch);
+}
+
+/* The body of a small response */
+static char *body_of(const char *address, enum pl_fetch_result *result)
+{
+	struct pl_fetch_options options;
+	options_for_test(&options);
+	struct pl_fetch *fetch = pl_fetch_open(address, &options, result);
+	char *body = NULL;
+	size_t size = 0;
+	if (*result == PL_FETCH_OK)
+		*result = pl_fetch_read(fetch, 1024, false, &body, &size);
+	close_and_check(fetch);
+	return body;
+}
+
+/* fetch.h: a user name and password in the address are sent to that server as Basic, percent-decoded, with the
+ * first request, and never to another host a redirect names; without them nothing is sent */
+static void test_credentials(void)
+{
+	enum pl_fetch_result result;
+	char address[256];
+	char *body = body_of(url("/auth"), &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "none") == 0);
+	bfree(body);
+
+	/* "us@er" and "p:ss" */
+	snprintf(address, sizeof(address), "http://us%%40er:p%%3Ass@127.0.0.1:%u/auth", port);
+	body = body_of(address, &result);
+	if (result != PL_FETCH_OK || strcmp(body, "Basic dXNAZXI6cDpzcw==") != 0) {
+		fprintf(stderr, "credentials: result %d, the server got \"%s\"\n", result, body ? body : "(no body)");
+		assert(false);
+	}
+	bfree(body);
+
+	/* a server that asks for them (401) gets them: directly, and after a redirect that stays with the origin they
+	 * were given for, by a relative address or an absolute one. After a redirect to another origin it never does,
+	 * and the fetch ends at its 401: another port of the same host, which stands in here for the http to https
+	 * redirect of a real server (that changes the port too, and this test has no TLS), and another host name. */
+	const struct {
+		const char *route;
+		bool sent;
+	} cases[] = {{"needed", true}, {"relative", true}, {"same", true}, {"port", false}, {"elsewhere", false}};
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		snprintf(address, sizeof(address), "http://us%%40er:p%%3Ass@127.0.0.1:%u/auth-%s", port,
+			 cases[i].route);
+		body = body_of(address, &result);
+		bool sent = result == PL_FETCH_OK && body && strcmp(body, "Basic dXNAZXI6cDpzcw==") == 0;
+		bool refused = result == PL_FETCH_HTTP_STATUS && !body;
+		if (cases[i].sent ? !sent : !refused) {
+			fprintf(stderr, "credentials, case \"%s\": result %d, the server got \"%s\"\n", cases[i].route,
+				result, body ? body : "(no body)");
+			assert(false);
+		}
+		bfree(body);
+	}
+}
+
+/* fetch.h: the address a fetch ended at has the user name and password back while it is on the origin they were
+ * given for, so the entries of a list there are asked for with them too; on another origin it has none */
+static void test_final_url_credentials(void)
+{
+	struct pl_fetch_options options;
+	options_for_test(&options);
+	char address[256];
+	char expected[256];
+	enum pl_fetch_result result;
+	const struct {
+		const char *route;
+		bool carried;
+		uint16_t *final_port;
+		const char *final_host;
+	} cases[] = {
+		{"needed", true, &port, "127.0.0.1"},     {"relative", true, &port, "127.0.0.1"},
+		{"same", true, &port, "127.0.0.1"},       {"port", false, &second_port, "127.0.0.1"},
+		{"elsewhere", false, &port, "localhost"},
+	};
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		snprintf(address, sizeof(address), "http://us%%40er:p%%3Ass@127.0.0.1:%u/auth-%s", port,
+			 cases[i].route);
+		snprintf(expected, sizeof(expected), "http://%s%s:%u/auth-needed",
+			 cases[i].carried ? "us%40er:p%3Ass@" : "", cases[i].final_host, *cases[i].final_port);
+		struct pl_fetch *fetch = pl_fetch_open(address, &options, &result);
+		const char *final_url = pl_fetch_get_info(fetch)->final_url;
+		if (!final_url || strcmp(final_url, expected) != 0) {
+			fprintf(stderr, "final address, case \"%s\": \"%s\", expected \"%s\"\n", cases[i].route,
+				final_url ? final_url : "(none)", expected);
+			assert(false);
+		}
+		close_and_check(fetch);
+	}
+}
+
+static void set_environment(const char *name, const char *value)
+{
+#ifdef _WIN32
+	_putenv_s(name, value ? value : "");
+#else
+	if (value)
+		setenv(name, value, 1);
+	else
+		unsetenv(name);
+#endif
+}
+
+/* A copy of the variable's value (malloc), or NULL when it is not set */
+static char *get_environment(const char *name)
+{
+#ifdef _WIN32
+	char *value = NULL;
+	size_t size = 0;
+	return _dupenv_s(&value, &size, name) == 0 ? value : NULL;
+#else
+	const char *value = getenv(name);
+	return value ? strdup(value) : NULL;
+#endif
+}
+
+/* fetch.h: the proxy the environment names is used, except for the hosts no_proxy names. The test's own server
+ * plays the proxy: asked for an address on a host that does not exist, it answers "proxied". */
+static void test_proxy(void)
+{
+	enum pl_fetch_result result;
+	char proxy[64];
+	snprintf(proxy, sizeof(proxy), "http://127.0.0.1:%u", port);
+	set_environment("http_proxy", proxy);
+	char *body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	if (result != PL_FETCH_OK || strcmp(body, "proxied") != 0) {
+		fprintf(stderr, "through the proxy: result %d, body \"%s\"\n", result, body ? body : "(none)");
+		assert(false);
+	}
+	bfree(body);
+
+	/* a proxy nobody listens at, and the server's host in no_proxy: asked directly */
+	set_environment("http_proxy", "http://127.0.0.1:9");
+	set_environment("no_proxy", "example.com, 127.0.0.1");
+	body = body_of(url("/nolength"), &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "hello") == 0);
+	bfree(body);
+	/* a redirect chain goes address by address: the first is asked directly (no_proxy), the address it redirects
+	 * to through the proxy, which is the test's own server again */
+	set_environment("http_proxy", proxy);
+	set_environment("no_proxy", "127.0.0.1");
+	body = body_of(url("/to-proxied"), &result);
+	if (result != PL_FETCH_OK || strcmp(body, "proxied") != 0) {
+		fprintf(stderr, "a redirect out of no_proxy: result %d, body \"%s\"\n", result, body ? body : "(none)");
+		assert(false);
+	}
+	bfree(body);
+#ifdef _WIN32
+	/* Windows' own reading of the variables (fetch-winhttp.c), with an address on a host that does not exist, as
+	 * WinHTTP never asks a proxy for an address on this computer: through the proxy the answer is "proxied",
+	 * directly the name is not found. A no_proxy entry with a port counts for that port only. */
+	set_environment("http_proxy", proxy);
+	set_environment("no_proxy", "example.com, lists.playlister.invalid:8080");
+	body = body_of("http://lists.playlister.invalid:8080/list.m3u", &result);
+	assert(result == PL_FETCH_NETWORK_ERROR && !body);
+	body = body_of("http://lists.playlister.invalid:8081/list.m3u", &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "proxied") == 0);
+	bfree(body);
+	/* a host below a named one is named too */
+	set_environment("no_proxy", "playlister.invalid");
+	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	assert(result == PL_FETCH_NETWORK_ERROR && !body);
+	/* a lone "*" names every host; a port that is no port names none, and does not run a number over */
+	set_environment("no_proxy", "example.com, *");
+	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	assert(result == PL_FETCH_NETWORK_ERROR && !body);
+	set_environment("no_proxy", "lists.playlister.invalid:99999999999999999999, lists.playlister.invalid:65536");
+	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "proxied") == 0);
+	bfree(body);
+	/* an IPv6 address in no_proxy, bare or in brackets, is an address and not a host with a port: with another
+	 * address or another port named, this one is asked through the proxy */
+	set_environment("no_proxy", "fd00::6, [fd00::5]:8081, fd00::5:8080");
+	body = body_of("http://[fd00::5]:8080/list.m3u", &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "proxied") == 0);
+	bfree(body);
+	/* only https has a proxy: an http address is asked directly; all_proxy serves the scheme that has none */
+	set_environment("http_proxy", NULL);
+	set_environment("no_proxy", NULL);
+	set_environment("https_proxy", proxy);
+	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	assert(result == PL_FETCH_NETWORK_ERROR && !body);
+	set_environment("all_proxy", proxy);
+	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "proxied") == 0);
+	bfree(body);
+	set_environment("https_proxy", NULL);
+	set_environment("all_proxy", NULL);
+#endif
+	set_environment("http_proxy", NULL);
+	set_environment("no_proxy", NULL);
 }
 
 static void test_status(void)
@@ -606,11 +860,17 @@ static void test_failures(void)
 int main(void)
 {
 	pl_test_no_crash_dialogs();
-#ifndef _WIN32
-	/* the server is on 127.0.0.1, which libcurl would send through a proxy the environment names */
-	const char *proxies[] = {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"};
+	/* the server is on 127.0.0.1, which a proxy the caller's environment names would be asked for (test_proxy sets
+	 * its own). The variables are cleared for the run, in both spellings, and put back at its end. */
+	const char *proxies[] = {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY",
+				 "all_proxy",  "ALL_PROXY",  "no_proxy",    "NO_PROXY"};
+	char *kept[sizeof(proxies) / sizeof(proxies[0])];
+	for (size_t i = 0; i < sizeof(proxies) / sizeof(proxies[0]); i++) {
+		kept[i] = get_environment(proxies[i]);
+	}
 	for (size_t i = 0; i < sizeof(proxies) / sizeof(proxies[0]); i++)
-		unsetenv(proxies[i]);
+		set_environment(proxies[i], NULL);
+#ifndef _WIN32
 	signal(SIGPIPE, SIG_IGN);
 #endif
 	long allocations = bnum_allocs();
@@ -619,6 +879,9 @@ int main(void)
 
 	test_ok();
 	test_redirects();
+	test_credentials();
+	test_final_url_credentials();
+	test_proxy();
 	test_status();
 	test_sizes();
 	test_stops();
@@ -627,6 +890,11 @@ int main(void)
 	stop_server(server);
 	bfree(gzip_body);
 	assert(bnum_allocs() == allocations);
+	for (size_t i = 0; i < sizeof(proxies) / sizeof(proxies[0]); i++) {
+		if (kept[i])
+			set_environment(proxies[i], kept[i]);
+		free(kept[i]);
+	}
 	printf("test-fetch: all passed\n");
 	return 0;
 }

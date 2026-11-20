@@ -158,6 +158,96 @@ static void test_encodings(void)
 	parse_bytes("odd utf-16", odd, sizeof(odd), "C:\\L\\x.m3u", utf16be, 1, 0, 0);
 }
 
+static int conversions;
+
+/* a stand-in for the system's tables: "x-upper" is ASCII with the high bit set on each letter */
+static char *convert_stub(const char *charset, const char *data, size_t size, size_t *length)
+{
+	conversions++;
+	if (strcmp(charset, "x-upper") != 0)
+		return NULL;
+	char *out = bmalloc(size + 1);
+	for (size_t i = 0; i < size; i++)
+		out[i] = (char)(data[i] & 0x7F);
+	out[size] = '\0';
+	*length = size;
+	return out;
+}
+
+static void expect_decoded(const char *data, size_t size, const char *charset, const char *expected)
+{
+	size_t length = 0;
+	char *text = pl_list_decode_as(data, size, charset, convert_stub, &length);
+	if (length != strlen(expected) || memcmp(text, expected, length) != 0) {
+		fprintf(stderr, "decode as %s: got \"%s\", expected \"%s\"\n", charset ? charset : "(none)", text,
+			expected);
+		assert(false);
+	}
+	bfree(text);
+}
+
+/* R-REM-1: the character set the server names is used for text that is not UTF-8, and Windows-1252 only without
+ * one, or when the system cannot convert from it */
+static void test_named_charset(void)
+{
+	const char high[] = {'a' | '\x80', '.', 'm' | '\x80', 'p', '3'};
+	conversions = 0;
+	expect_decoded(high, sizeof(high), "x-upper", "a.mp3");
+	assert(conversions == 1);
+	/* no character set: Windows-1252, where 0xE1 is a-acute and 0xED is i-acute */
+	expect_decoded(high, sizeof(high), NULL, "\xC3\xA1.\xC3\xADp3");
+	assert(conversions == 1);
+	/* one the system does not know: Windows-1252 again */
+	expect_decoded(high, sizeof(high), "x-unknown", "\xC3\xA1.\xC3\xADp3");
+	assert(conversions == 2);
+	/* valid UTF-8 stays whatever it is called, and so does a UTF-8 BOM's text; nothing is converted */
+	expect_decoded("caf\xC3\xA9", 5, "x-upper", "caf\xC3\xA9");
+	expect_decoded("\xEF\xBB\xBF"
+		       "abc",
+		       6, "x-upper", "abc");
+	/* text called UTF-8 that is not is Windows-1252, not handed to the converter */
+	expect_decoded(high, sizeof(high), "utf-8", "\xC3\xA1.\xC3\xADp3");
+	assert(conversions == 2);
+	/* UTF-16 named by the server, without a BOM, in either byte order (e-acute is not valid UTF-8 alone) */
+	const char le[] = {'\xE9', 0, 'b', 0};
+	expect_decoded(le, sizeof(le), "utf-16le",
+		       "\xC3\xA9"
+		       "b");
+	expect_decoded(le, sizeof(le), "utf-16",
+		       "\xC3\xA9"
+		       "b");
+	const char be[] = {0, '\xE9', 0, 'b'};
+	expect_decoded(be, sizeof(be), "utf-16be",
+		       "\xC3\xA9"
+		       "b");
+	/* UTF-16 of plain ASCII, which is valid UTF-8 byte for byte (a NUL after every letter): the name and the NULs
+	 * together say UTF-16, in the byte order the NULs show, whichever of the three names the server used */
+	const char ascii_le[] = {'a', 0, '.', 0, 'm', 0, 'p', 0, '3', 0, '\n', 0, 'b', 0};
+	const char ascii_be[] = {0, 'a', 0, '.', 0, 'm', 0, 'p', 0, '3', 0, '\n', 0, 'b'};
+	expect_decoded(ascii_le, sizeof(ascii_le), "utf-16le", "a.mp3\nb");
+	expect_decoded(ascii_le, sizeof(ascii_le), "utf-16", "a.mp3\nb");
+	expect_decoded(ascii_be, sizeof(ascii_be), "utf-16be", "a.mp3\nb");
+	expect_decoded(ascii_be, sizeof(ascii_be), "utf-16", "a.mp3\nb");
+	/* plain ASCII called UTF-16 stays what it is, and the NUL pattern alone, with no such name, decides nothing */
+	expect_decoded("a.mp3\nb", 7, "utf-16", "a.mp3\nb");
+	size_t kept = 0;
+	char *as_sent = pl_list_decode_as(ascii_le, sizeof(ascii_le), NULL, convert_stub, &kept);
+	assert(kept == sizeof(ascii_le) && memcmp(as_sent, ascii_le, kept) == 0);
+	bfree(as_sent);
+
+	/* a BOM wins over the name */
+	const char bom[] = {'\xFE', '\xFF', 0, 'b'};
+	expect_decoded(bom, sizeof(bom), "x-upper", "b");
+	assert(conversions == 2);
+
+	/* through the parser: the source carries the name and the converter */
+	struct pl_list_source source = {"https://example.com/l/x.m3u", NULL, NULL, "x-upper", convert_stub};
+	struct pl_list_result result;
+	pl_parse_m3u(&result, high, sizeof(high), &source);
+	assert(result.count == 1 && strcmp(result.entries[0].location, "https://example.com/l/a.mp3") == 0);
+	pl_list_result_free(&result);
+}
+
 static void test_malformed(void)
 {
 	/* a NUL inside a line makes it unusable; the lines around it still read */
@@ -335,6 +425,7 @@ int main(void)
 	test_fixtures();
 	test_line_ends();
 	test_encodings();
+	test_named_charset();
 	test_malformed();
 	test_titles();
 	test_references();

@@ -357,9 +357,22 @@ static const char *relative_of(const struct pl_folder_os *os, int wd)
 	return NULL;
 }
 
-/* Watches one folder and, with subfolders on, every folder below it that a listing would enter */
-static bool watch_tree(struct pl_folder_os *os, const char *relative)
+/* How many folder levels below the root are watched. watch_tree calls itself once per level on the workers' 256 KB
+ * stack (os-posix.c), where a tree many hundreds of levels deep would run out; no real media tree comes near this. */
+#define WATCH_DEPTH_MAX 100
+
+/* Watches one folder and, with subfolders on, every folder below it that a listing would enter. depth is how many
+ * levels below the root relative is. False when the tree cannot be watched as a whole: the caller then lets go of
+ * every watch made so far. */
+static bool watch_tree(struct pl_folder_os *os, const char *relative, unsigned depth)
 {
+	if (depth > WATCH_DEPTH_MAX) {
+		/* deeper than the watch goes: the whole folder is listed on the interval instead, as with a network
+		 * file system, so the files down there are still found */
+		os->last_error = 0;
+		os->last_note = "more than 100 folder levels deep, which is not watched";
+		return false;
+	}
 	char *path = join_path(os->root, relative);
 	uint32_t mask = (*relative ? DIR_EVENTS : ROOT_EVENTS) | IN_ONLYDIR | IN_EXCL_UNLINK;
 	int wd = inotify_add_watch(os->notify_fd, path, mask);
@@ -395,7 +408,7 @@ static bool watch_tree(struct pl_folder_os *os, const char *relative)
 				    !S_ISDIR(status.st_mode))
 					continue;
 				char *child = join_relative(relative, name);
-				ok = watch_tree(os, child);
+				ok = watch_tree(os, child, depth + 1);
 				bfree(child);
 			}
 			closedir(dir);
@@ -442,8 +455,17 @@ bool pl_folder_os_arm(struct pl_folder_os *os)
 		os->last_note = "a network file system, where changes made on other machines are not reported";
 		return false;
 	}
-	if (!watch_tree(os, ""))
+	if (!watch_tree(os, "", 0)) {
+		/* the watches made so far are given back: a tree with more folders than fs.inotify.max_user_watches
+		 * allows would otherwise hold the user's whole quota, for every other row and program, for as long as
+		 * OBS runs. Closing the descriptor removes them; an empty one takes its place, as after an open, and what
+		 * went wrong stays for pl_folder_os_error_cat. */
+		close(os->notify_fd);
+		forget_folders(os);
+		os->root_wd = -1;
+		os->notify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
 		return false;
+	}
 	os->armed = true;
 	return true;
 }

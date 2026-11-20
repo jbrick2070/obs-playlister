@@ -69,12 +69,15 @@ obs_playlister_add_test(test-modes test-modes.c "${_core}/modes.c" "${_core}/sor
 obs_playlister_add_test(test-keys test-keys.c "${_core}/keys.c" "${_core}/sort.c" "${_core}/natural.c")
 # What a row does with a new snapshot while an item plays: delete, eviction and renames (R-DIR-8)
 obs_playlister_add_test(test-merge test-merge.c "${_core}/merge.c" "${_core}/entry-list.c")
-# R-KEY-1 key folding at the Win32 boundary and on macOS (R-MAC-4); Linux keys are the text unchanged (R-LNX-5)
+# R-KEY-1 key folding at the Win32 boundary and on macOS (R-MAC-4); Linux keys are the text unchanged (R-LNX-5). And
+# the system's character sets, for a playlist a server sends in one (R-REM-10), on all three.
 if(WIN32)
   obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-win.c")
 elseif(OS_MACOS)
   obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-mac.c")
   target_link_libraries(test-fold-key PRIVATE ${_playlister_macos_frameworks})
+else()
+  obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-linux.c")
 endif()
 # The folder provider's write-complete gate and watch modes against a fake folder (R-DIR-3, R-DIR-4)
 obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")
@@ -161,10 +164,22 @@ obs_playlister_add_test(test-provider-folder test-provider-folder.c ${_provider_
 obs_playlister_add_test(test-provider-list test-provider-list.c ${_provider_sources})
 # One HTTP GET against a server inside the test on 127.0.0.1, through the platform's fetcher (R-REM-5, R-LNX-6)
 if(WIN32)
-  obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-winhttp.c" "${_providers}/os-win.c")
+  obs_playlister_add_test(
+    test-fetch
+    test-fetch.c
+    "${_providers}/fetch-winhttp.c"
+    "${_providers}/os-win.c"
+    "${_core}/url.c"
+  )
   target_link_libraries(test-fetch PRIVATE winhttp ws2_32)
 else()
-  obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-curl.c" "${_providers}/os-posix.c")
+  obs_playlister_add_test(
+    test-fetch
+    test-fetch.c
+    "${_providers}/fetch-curl.c"
+    "${_providers}/os-posix.c"
+    "${_core}/url.c"
+  )
   target_link_libraries(test-fetch PRIVATE CURL::libcurl Threads::Threads)
 endif()
 # the providers log through obs_log
@@ -211,8 +226,8 @@ add_test(
   NAME check-locale-files
   COMMAND
     "${CMAKE_COMMAND}" "-DLOCALE_DIR=${CMAKE_SOURCE_DIR}/data/locale"
-    # the eleven languages of R-I18N-3: a missing file fails
-    "-DREQUIRED_LOCALES=zh-CN,es-ES,pt-BR,ru-RU,ja-JP,de-DE,fr-FR,ko-KR,zh-TW,tr-TR,nl-NL" -P
+    # the twelve languages of R-I18N-3 beside English: a missing file fails
+    "-DREQUIRED_LOCALES=zh-CN,es-ES,pt-BR,ru-RU,ja-JP,de-DE,fr-FR,it-IT,ko-KR,zh-TW,tr-TR,nl-NL" -P
     "${CMAKE_CURRENT_SOURCE_DIR}/check-locale-files.cmake"
 )
 add_test(

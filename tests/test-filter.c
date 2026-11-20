@@ -48,16 +48,23 @@ static void test_parse_lenient(void)
 	assert(strcmp(filter.extensions[2], "webm") == 0);
 	pl_filter_free(&filter);
 
-	/* an empty filter admits nothing */
-	pl_filter_parse(&filter, "");
-	assert(filter.count == 0);
-	assert(!pl_filter_matches(&filter, "a.mp4"));
-	pl_filter_free(&filter);
-	pl_filter_parse(&filter, NULL);
-	assert(filter.count == 0);
-	pl_filter_free(&filter);
+	/* a field with no extension in it is the usual types, not nothing: an emptied field has a way back */
+	struct pl_filter usual;
+	pl_filter_parse(&usual, PL_FILTER_DEFAULT);
+	assert(usual.count == 24);
+	const char *const none[] = {"", NULL, " ,; 	", " . *. ,"};
+	for (size_t i = 0; i < sizeof(none) / sizeof(none[0]); i++) {
+		pl_filter_parse(&filter, none[i]);
+		assert(filter.count == usual.count);
+		for (size_t k = 0; k < usual.count; k++)
+			assert(strcmp(filter.extensions[k], usual.extensions[k]) == 0);
+		assert(pl_filter_matches(&filter, "a.mp4") && pl_filter_matches(&filter, "b.JPG"));
+		assert(!pl_filter_matches(&filter, "c.txt"));
+		pl_filter_free(&filter);
+	}
+	pl_filter_free(&usual);
 	pl_filter_parse(&filter, " ,; 	");
-	assert(filter.count == 0);
+	assert(filter.count == 24);
 	pl_filter_free(&filter);
 
 	/* kept as written, and never matching: only a whole last extension is compared */

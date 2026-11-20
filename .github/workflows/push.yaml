@@ -24,11 +24,46 @@ jobs:
     permissions:
       contents: read
 
+  # buildspec.json is the one source of the version in the files, the DLL and the Properties window; the tag only
+  # names the release. A tag that says another version fails here, before anything is released under it.
+  check-release-version:
+    name: Check Release Version 🏷️
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Compare The Tag With buildspec.json ☑️
+        run: |
+          : Compare The Tag With buildspec.json ☑️
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+          shopt -s extglob
+
+          case "${GITHUB_REF_NAME}" in
+            +([0-9]).+([0-9]).+([0-9]) | +([0-9]).+([0-9]).+([0-9])-@(beta|rc)*([0-9]) ) ;;
+            *)
+              echo "Tag ${GITHUB_REF_NAME} is not a release tag; nothing to compare."
+              exit 0
+              ;;
+          esac
+
+          spec_version="$(jq -r '.version' buildspec.json)"
+          tag_version="${GITHUB_REF_NAME%%-*}"
+          if [[ "${spec_version}" != "${tag_version}" ]]; then
+            echo "::error file=buildspec.json::Tag ${GITHUB_REF_NAME} names version ${tag_version}, but buildspec.json says ${spec_version}. Set the version in buildspec.json first, then tag that commit."
+            exit 1
+          fi
+          echo "Tag ${GITHUB_REF_NAME} matches buildspec.json (${spec_version})."
+
   create-release:
     name: Create Release 🛫
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
-    needs: build-project
+    needs: [build-project, check-release-version]
     defaults:
       run:
         shell: bash
@@ -55,7 +90,7 @@ jobs:
           esac
 
       - name: Download Build Artifacts 📥
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: fromJSON(steps.check.outputs.validTag)
         id: download
 

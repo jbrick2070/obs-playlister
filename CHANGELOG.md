@@ -6,7 +6,70 @@ version numbers are the ones in `buildspec.json`.
 
 ## [Unreleased]
 
-Fixes from the code review of 2026-11-20.
+Fixes from the code review of 2026-11-20, the changes from the review of the Properties window of the same day, and
+Italian.
+
+### Added
+
+- Italian (`it-IT`), the thirteenth language. Like the others it is an AI draft that no native speaker has checked.
+- What plays now and what comes next can be read without opening Properties. Playlister registers the
+  obs-websocket vendor `obs-playlister` with the request `get_now_next` and the event `now_next_changed`, for a
+  controller such as a Stream Deck key; the same is the proc `get_now_next` and the signal `playlister_now_next`
+  on the source. They carry the names of the playing and the next item, whether the next one is decided (with
+  Shuffle on it is chosen only when it starts), the state, the worst row status and the item counts; never a
+  path. README, "For controllers and scripts", has the fields. The Stream Deck plugin does not show them yet.
+- Properties: a **Next** line under **Now playing**.
+- Status says "Waiting: plays when its scene is in Program." for a source that has items and is not on air, as a
+  new source in a Studio Mode Preview scene is.
+- A hotkey pressed while the source is not shown leaves a line in the OBS log.
+
+### Changed
+
+- The Properties window opens on what most people need, in this order: that changes go live at once, the
+  Playlist, its Status with Refresh right under it, Loop playlist, Shuffle, Now playing, Next, Play item and
+  Play now. Everything else is behind **Show advanced options**. No setting changed its name or its meaning, so
+  saved scenes behave as before.
+- Status follows the Playlist as it is edited: it no longer says the list is empty after the first file was
+  added. A row added a moment ago reads "new; press Refresh for its status".
+- Words. "Visibility behavior" is **When not in Program**, with "Stop; start again when it returns", "Stop; play
+  the next item when it returns", "Pause; continue when it returns" and "Keep playing". "A restart plays" is
+  **Restart goes to**. "Current File" is **Now playing**; "Select File" and "Play Selected File" are **Play item**
+  and **Play now**. "Hold changes until the next Play" is **Freeze the list during playback**, and its button,
+  **Apply waiting changes**, is there only while the list is frozen. "Files to play" is **Play**; "File types to
+  play" is **File types**. One thing that plays is an "item" everywhere; a playlist or web address row counts
+  items, a folder files. The kind "URL" reads "web address". Labels are in sentence case.
+- **Order** is one list (Name A to Z, Name Z to A, Oldest first, Newest first, As listed, As listed reversed) in
+  place of "Sort by" and "Descending". The default stays Oldest first, and `sort_key` and `sort_descending`
+  stay the saved settings, so scenes and scripts are untouched.
+- An empty **File types** field means all the usual video, audio and image types. It used to make folders play
+  nothing, with no way back short of resetting every setting.
+- The Play item list shows the name first and the folder after it ("2-14: clip-14.mp4 (D:/shows/loops)"), and a
+  playlist entry's own title before its file name.
+- A file or web address row that failed names its file, the likely cause and what happened: "could not be played
+  (missing, moved, or not a format OBS can play); skipped". A missing folder and a list that cannot be read say
+  when Playlister tries again: "checking again every 10 s". A folder with nothing to play says why: no files
+  yet, files only in subfolders with Include subfolders off, or no files of the types to play. A row that is not
+  read after 5 seconds says the drive is slow to answer.
+- A playlist file no longer says "no dates; list order" with the default options. The note stays, reworded,
+  where it matters: when only the newest entries play.
+- The warning under Speed is about Speed only ("Changing Speed restarts the item that is playing."); that every
+  change goes live is said at the top of the window.
+- Web lists: both the Windows and the Mac and Linux fetchers now refuse a redirect from https to http and say so,
+  and send a user name and password in the address to that server, and after a redirect only to the same scheme,
+  host and port. Before, Windows dropped the user name and password, and Mac and Linux followed https to http.
+  Entries such a list names by a relative address get the user name and password too while the list itself
+  came from the server they were given for, and not after a redirect to another.
+- Web lists behind a proxy: Windows now also uses the proxy the environment names (`http_proxy`, `https_proxy`,
+  `all_proxy`, with `no_proxy`), as Mac and Linux did and do; with none named it uses the system's proxy settings,
+  as before. OBS's media source, which plays the items, reads `http_proxy` and `no_proxy`.
+- A web list that is not UTF-8 is read in the character set its server names. Windows-1252 is used when the server
+  names none, names one this computer cannot convert from, or sends text that is not valid in the one it names.
+- README: Install comes right after the Quick start with one download per system first; where Playlister comes
+  from and the feature list are at the end; the table of four players is a link to START-HERE.md.
+- CI: a release tag whose version is not the one in `buildspec.json` fails the release; the GitHub actions are
+  pinned to commits.
+- The five strings that no code used (`NetworkCaching`, `AudioTrack`, `SubtitleEnabled`, `SubtitleTrack`,
+  `VoskFilter`) are gone from every language file.
 
 ### Fixed
 
@@ -19,10 +82,27 @@ Fixes from the code review of 2026-11-20.
   per-file checks as soon as it is asked to stop (it used to finish them,
   about 100 ms per remaining file on Windows), and every row's reader is asked
   to stop before any is waited for. On macOS and Linux a call on a share that
-  has hung can still not be interrupted. Not changed: a row whose path was
-  just typed or changed is still looked at once on OBS's video thread to see
-  whether it is a folder, so a new path on a stalled share can still hold the
-  picture for that look.
+  has hung can still not be interrupted.
+- A row whose path was just added or changed is no longer looked at on OBS's
+  video thread to see whether it is a folder. A path on a drive that is
+  spinning up or on a stalled share could hold the picture for that look. A
+  background thread looks instead; the row reads "reading" for that moment.
+  A path that was not a folder when it was looked at (a drive that was not
+  connected, a share that was offline) is looked at again, in the
+  background, at every later change of the source's settings, as before: it
+  becomes a folder row when its drive is back.
+- Mac and Linux: quitting, or removing a web address row, no longer waits for
+  a name lookup that is not answered (a dead DNS server), with libcurl 7.87
+  or later. With an older libcurl it still waits until the system's resolver
+  gives up.
+- Linux: a folder tree with more subfolders than the system lets one user
+  watch no longer keeps every watch it made before it gave up, which left
+  none for other rows and programs. A tree more than 100 levels deep is
+  listed on the folder check instead of watched.
+- A hotkey pressed in the moment a source is being removed can no longer
+  reach the source after it was freed.
+- A web playlist whose entries are very long addresses with thousands of
+  `/` and `../` parts no longer keeps a background thread busy for minutes.
 - A playlist is limited to 100,000 entries, and so is a folder. A list of
   millions of lines, from a web address or a local file, could ask for
   gigabytes of memory and take OBS down. The row's status says how many
@@ -53,7 +133,7 @@ Fixes from the code review of 2026-11-20.
 - Lock list at start: holding back a change in a list of tens of thousands of
   entries no longer costs about a second on every update.
 
-### Changed
+### Changed (tests)
 
 - The Linux harness (`tests/obs/run-harness.sh`) fails when OBS has to be
   ended on exit, when OBS reports a memory leak, and when a check the script

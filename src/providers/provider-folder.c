@@ -601,13 +601,21 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 			break;
 		case MISSING_LOST:
 			dstr_copy(message, pl_text("RowError.FolderGone",
-						   "the folder went away (deleted, share offline or drive removed)"));
+						   "folder not found (deleted, drive removed or share offline)"));
 			break;
 		default:
 			dstr_copy(message, pl_text("RowError.FolderNotFound", "folder not found, or not a folder"));
 			break;
 		}
 		status->stale = p->listed;
+		/* what happens next (R-UX-4): a missing folder is opened again on the folder check, and every 10 s with the
+		 * check off (core/folder-state.c) */
+		char seconds[24];
+		snprintf(seconds, sizeof(seconds), "%u",
+			 p->options.folder_check_enabled ? p->options.folder_check_interval_s : 10u);
+		dstr_cat(message, "; ");
+		pl_text_cat(message, pl_text("RowStatus.CheckingAgain", "checking again every %1 s"),
+			    (const char *[]){seconds}, 1);
 	}
 	char number[24];
 	size_t denied = pl_gate_denied_count(&p->gate);
@@ -627,7 +635,7 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 		snprintf(number, sizeof(number), "%zu", p->cloud_count);
 		pl_text_cat(message,
 			    pl_text("RowWarning.CloudOnly",
-				    "%1 cloud-only files not downloaded; mark the folder Always keep on this device"),
+				    "%1 files are only in the cloud; set the folder to always stay on this computer"),
 			    (const char *[]){number}, 1);
 	}
 	if (p->over_limit) {
@@ -644,6 +652,7 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 	status->level = level;
 	status->message = message->array;
 	status->last_ok_unix_ms = p->last_ok_unix_ms;
+	status->unfiltered_count = p->files.num;
 }
 
 static void free_pending(struct darray *array)
@@ -683,18 +692,10 @@ static void update_publication(struct pl_folder_provider *p, bool release)
 
 /* ---- requests ---- */
 
-static void copy_options(struct pl_container_options *dst, char **filter_text, const struct pl_container_options *src)
-{
-	*dst = *src;
-	bfree(*filter_text);
-	*filter_text = bstrdup(src->extension_filter ? src->extension_filter : "");
-	dst->extension_filter = *filter_text;
-}
-
 static void apply_options(struct pl_folder_provider *p, const struct pl_container_options *options)
 {
 	bool filter_changed = strcmp(options->extension_filter, p->filter_text) != 0;
-	copy_options(&p->options, &p->filter_text, options);
+	pl_container_options_copy(&p->options, &p->filter_text, options);
 	p->options.include_subfolders = p->include_subfolders;
 	pl_watch_set_interval(&p->watch, p->options.folder_check_enabled, p->options.folder_check_interval_s,
 			      mono_now());
@@ -717,7 +718,7 @@ static void take_requests(struct pl_folder_provider *p, bool *release)
 	bool refresh = p->refresh_requested;
 	*release = p->release_requested;
 	if (options_changed)
-		copy_options(&options, &filter_text, &p->requested);
+		pl_container_options_copy(&options, &filter_text, &p->requested);
 	p->options_changed = false;
 	p->refresh_requested = false;
 	p->release_requested = false;
@@ -825,8 +826,8 @@ struct pl_folder_provider *pl_folder_provider_create(const char *location, const
 	pl_publication_init(&p->publication, instance_id, publish, owner);
 	p->include_subfolders = options->include_subfolders;
 	pthread_mutex_init_value(&p->request_mutex);
-	copy_options(&p->requested, &p->requested_filter, options);
-	copy_options(&p->options, &p->filter_text, options);
+	pl_container_options_copy(&p->requested, &p->requested_filter, options);
+	pl_container_options_copy(&p->options, &p->filter_text, options);
 	pl_filter_parse(&p->filter, p->filter_text);
 	pl_gate_init(&p->gate);
 	pl_gate_set_stop(&p->gate, gate_stopping, p);
@@ -865,7 +866,7 @@ void pl_folder_provider_refresh_now(struct pl_folder_provider *provider)
 void pl_folder_provider_set_options(struct pl_folder_provider *provider, const struct pl_container_options *options)
 {
 	pthread_mutex_lock(&provider->request_mutex);
-	copy_options(&provider->requested, &provider->requested_filter, options);
+	pl_container_options_copy(&provider->requested, &provider->requested_filter, options);
 	provider->options_changed = true;
 	pthread_mutex_unlock(&provider->request_mutex);
 	pl_wake_set(provider->wake);

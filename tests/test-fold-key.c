@@ -43,6 +43,12 @@ int main(void)
 	pl_test_no_crash_dialogs();
 
 	long allocations = bnum_allocs();
+#ifdef __linux__
+	/* R-LNX-5: Linux file systems tell names apart by case and by every byte, so the key is the text as it is */
+	expect_fold("Clip.mp4", "Clip.mp4");
+	expect_fold("Sub\\Episode 2.MKV", "Sub\\Episode 2.MKV");
+	expect_fold("caf\xc3\xa9.mp4", "caf\xc3\xa9.mp4");
+#else
 	expect_fold("clip.mp4", "CLIP.MP4");
 #ifdef _WIN32
 	expect_fold("Sub\\Episode 2.MKV", "SUB/EPISODE 2.MKV");
@@ -66,8 +72,22 @@ int main(void)
 		    "b.mp4",
 		    "A\xef\xbf\xbd"
 		    "B.MP4");
+#endif
 	expect_fold("", "");
 	assert(pl_fold_key(NULL) == NULL);
+
+	/* R-REM-1: a playlist in the character set its server names. Windows-1251: "Pesnya" in Cyrillic. */
+	size_t length = 0;
+	char *text = pl_charset_to_utf8("windows-1251", "\xCF\xE5\xF1\xED\xFF", 5, &length);
+	assert(text && length == 10 && strcmp(text, "\xD0\x9F\xD0\xB5\xD1\x81\xD0\xBD\xD1\x8F") == 0);
+	bfree(text);
+	/* Shift_JIS: the two katakana "te" and "su" */
+	text = pl_charset_to_utf8("shift_jis", "\x83\x65\x83\x58", 4, &length);
+	assert(text && length == 6 && strcmp(text, "\xE3\x83\x86\xE3\x82\xB9") == 0);
+	bfree(text);
+	/* a name the system does not have, and bytes that are not valid in the set: no text */
+	assert(!pl_charset_to_utf8("x-no-such-charset", "abc", 3, &length));
+	assert(!pl_charset_to_utf8("shift_jis", "\x83", 1, &length));
 	assert(bnum_allocs() == allocations);
 	printf("key folding tests: passed\n");
 	return 0;

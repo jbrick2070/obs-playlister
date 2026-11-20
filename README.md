@@ -11,189 +11,52 @@ playing.
 
 ## Quick start
 
-1. Install Playlister (see [Install](#install) below). Start OBS again.
-2. In OBS, under **Sources**, press **+** and choose **Playlister**. Give it a
-   name and press **OK**.
-3. In the window that opens, press **+** next to **Playlist**.
-4. Choose **Add Files** for video, audio, image or playlist files. Choose
-   **Add Directory** for a folder: Playlister plays its files and follows
-   changes in it. Choose **Add Path/URL** for a web address.
-5. Press **OK**. When the scene is live (in Program), the first item plays. The
-   others follow in order.
+1. Install Playlister (see [Install](#install), just below) and start OBS again.
+2. In OBS, under **Sources**, press **+**, choose **Playlister** and press
+   **OK**.
+3. In the window that opens, press **+** at the right of **Playlist**. Choose
+   **Add Files** (video, audio, images or a playlist file), **Add Directory**
+   (a folder; new files in it are added by themselves) or **Add Path/URL** (a
+   web address). Press **OK**.
 
-No setting has to be changed: Loop Playlist is on, folders are watched, and
+It plays, one item after another, as soon as its scene is in Program. In
+Studio Mode a new source sits in the Preview scene and waits there: **Status**
+says "Waiting: plays when its scene is in Program." until you fade or cut that
+scene to Program.
+
+No setting has to be changed: the playlist loops, folders are watched, and
 Playlister finds out by itself whether a row is a file, a folder, a playlist
 file or a web address.
 
-Playlister is a third-party plugin for OBS Studio. It is not made, endorsed or
-supported by the OBS Project. Before 0.3.1 its name began with "OBS"; its
-plugin files, source ID and this repository keep the identifier
-`obs-playlister`, so existing scenes, settings and hotkeys carry over.
-
-**If you use Media Playlist Source or the Directory Sorter for OBS script (both
-by Ian Rodriguez, CodeYan01 on GitHub), this is the one tool that does both
-jobs.** Playlister is a fork of
-[Media Playlist Source](https://github.com/CodeYan01/media-playlist-source), and
-its watched folders take over what the
-[Directory Sorter for OBS](https://github.com/CodeYan01/directory_sorter_for_obs)
-script did for a playlist: sorted folders that update themselves (by date
-modified, oldest first, by default), with no Stop needed. That part is written
-from scratch, and folders play in Playlister itself (the script could also
-fill a VLC Video Source or an Image Slideshow). Playlister is its
-own source type and installs next to Media Playlist Source without either one
-replacing the other; existing Media Playlist Source sources are left as they
-are. It also runs on macOS and Linux. What changed in each version is in
-[CHANGELOG.md](CHANGELOG.md); the design is in [PLAN.md](PLAN.md) and
-[REQUIREMENTS.md](REQUIREMENTS.md).
-
-**Bonus: no Python runtime needed.** The Directory Sorter script runs in OBS's
-Python scripting, which needs a matching Python installed and set in
-Tools > Scripts > Python Settings. Playlister is a native plugin, so there
-is nothing else to install or configure.
-
-## Which video player when
-
-In the Fadester suite, four tools play video at adjustable speeds. Pick the one that matches your source and whether you need live speed changes during playback:
-
-| Player | What it plays | Speed range (both units) | Live speed behavior | Surface controls |
-| :--- | :--- | :--- | :--- | :--- |
-| **VJster (Chrome / Edge tab)** | A YouTube tab (with quality choice) or an HTML5 `<video>` tab captured into OBS | **25% to 200% (0.25x to 2x)** default (up to **400% (4x)** if YouTube lists it; **10% to 1600% (0.1x to 16x)** with **Extended** enabled) | Changes live in place without restarting | **Fadester for OBS** (VJster dials/keys) and **Fadester Companion** |
-| **VJster OBS page** | One YouTube video (`v=`) or playlist (`list=`) in an OBS **Browser Source** | **25% to 200% (0.25x to 2x)** (OBS CEF 150 embed ceiling) | Changes live in place without restarting; speed and play/pause only (no embed quality API) | **Fadester for OBS** (VJster dials/keys) and **Fadester Companion** |
-| **Visual Sidechain: Tape Deck** (in [Midi Fadester](https://github.com/jbrick2070/midi-fadester) 0.9.0 or later) | One local or network-share video file (`MP4`, `MKV`, `MOV`, `WebM`) on a dedicated OBS **Browser Source** (Windows and macOS) | **25% to 800% (0.25x to 8x)** (`100% (1x)` normal) | Changes picture and sound live in place without restarting; optional **Tape pitch** and ratio **Speed Fader** | **Fadester for OBS** (**Tape Deck** key/dial or **OBS Filter**), Midi Fadester **Speed Fader**, OBS hotkeys, `obs-websocket` (`deck_command`). *(Fadester Companion preset support is a follow-up.)* |
-| **Playlister** | Ordered playlists of local files, folders, `.m3u` / `.m3u8` / `.pls` playlists, and stream URLs in an OBS **Playlister** source (Windows, macOS & Linux) | **1% to 200% (0.01x to 2x)** (`100% (1x)` normal) | Source setting only: **changing Speed restarts the playing clip from its beginning** | **Fadester for OBS** (**Playlister** transport key), OBS Media Controls, OBS hotkeys, `obs-websocket` media inputs |
-
-## Status lines
-
-Under the playlist, **Status** has one line for each row of the list: its
-number, its kind and how it is doing. For example:
-
-```
-1: folder - 12 files
-2: file
-3: file - could not be played: it did not start
-4: web address - scanning
-```
-
-- The kinds are **file**, **URL** (a stream or media address that plays
-  directly), **folder**, **playlist** (an .m3u, .m3u8 or .pls list) and
-  **web address** (an http or https address that Playlister reads to find out
-  whether it is a list).
-- A folder, playlist or web address row says `scanning` until it is first
-  read, then `empty`, `12 files`, or `5 of 40 files` when only the newest files
-  play. It can add: `waiting for 2 files to finish writing`, `3 changes waiting`
-  (see Hold changes until the next Play below), `1 file could not be played`,
-  an error such as `folder not found, or not a folder`, and
-  `showing the last list, from <date and time>` when the list cannot be read
-  now and Playlister keeps playing the last good one.
-- A file or URL row that failed says why: `it did not start` (it ended before
-  anything played) or `it took too long to start` (nothing played within
-  5 seconds, or 15 seconds for a URL or a file on a network share). Playlister
-  skips it and plays the next item.
-- When nothing in the list can play, a last line says so and playback stops.
-  Fix or remove the failing rows, or press Play in the OBS media controls to
-  try them again.
-- With no rows, Status tells you to press **+** next to Playlist.
-- Status is shown as a warning or an error when one of its lines needs
-  attention.
-
-Status, Current File and Select File do not update by themselves. Press
-**Refresh** (or open the window again) to see what is happening now. The OBS
-log shows each change as it happens.
-
-## Options
-
-Every change in the Properties window takes effect at once, also while you are
-live. Changing Speed or hardware decoding starts the playing clip again from its
-beginning. Removing or changing the row that plays starts another clip.
-
-- **Loop Playlist** (on): after the last item, start again at the first.
-- **Shuffle** (off): play in a random order. Adding or removing items does not
-  shuffle again.
-- **Visibility behavior**: what happens when the source is hidden and shown
-  again. By default it stops when not visible and restarts when visible.
-- **A restart plays**: what Restart plays, the current file again from its
-  beginning (default) or the first file in the list. With the default
-  Visibility behavior this also decides what plays each time the source is
-  shown again.
-- **Use hardware decoding when available** (on): decode on the graphics card.
-- **Close file when inactive** (off): close the file while the source is not
-  shown on the stream or recording.
-- **Playlist**: the rows. Press **+** to add files, a folder or a web address.
-- **Folder and playlist options**, shared by every folder, playlist and web
-  address row of the source:
-  - **Include subfolders** (off).
-  - **File types to play**: file extensions, separated by spaces. Folder rows
-    play only these.
-  - **Sort by** (Date modified, Name or Folder order) and **Descending**
-    (off). By default the oldest file plays first.
-  - **Files to play**: All files, Newest file only, or The newest files, with
-    **How many newest files** (5).
-  - **Still image duration** (10 s): how long a still image stays on screen.
-  - **Check folders again on a timer** (on) and **Time between folder checks**
-    (10 s): new files also arrive where the system does not report changes,
-    such as some network shares. Playlist files on this computer are read again on
-    the same timer when they change.
-  - **Time between web list checks** (300 s): how often a list on the web is
-    downloaded again.
-  - **Hold changes until the next Play** (off): when on, changes found in
-    folders and playlists wait until the next Play or Restart, or until you
-    press **Apply waiting changes now**. They also join when the source is
-    shown again, if its Visibility behavior restarts it or plays the next
-    item.
-- **Current File** and **Refresh**: what was playing when the window opened or
-  when Refresh was last pressed.
-- **Select File** and **Play Selected File**: jump to any item of the list.
-- **Speed** (100% / 1x, range 1% to 200% / 0.01x to 2x): playback speed. Changing Speed starts the playing clip again from its beginning.
-
-## Hotkeys
-
-Hotkeys: set them in OBS Settings, Hotkeys, under the name of this source. They
-work only while the source is shown.
-
-Each Playlister source has Play/Pause, Restart, Stop, Next and Previous.
-"Shown" means visible anywhere in OBS: in Program, in the Studio Mode preview,
-in a projector, or in the source's own Properties window. So a hotkey that
-works while the Properties window is open does nothing once the source is
-hidden.
-
-## Features (from Media Playlist Source)
-
-- Edit the playlist without restarting the video, even if files are reordered.
-- Most settings can be changed while a clip plays. Changing Speed or hardware
-  decoding starts the clip again from its beginning.
-- Remembers the current file, so it plays again when OBS restarts.
-- Play a chosen file or folder item from the list.
-- Shuffle (based on VLC 4's implementation): adding or removing items does not
-  reshuffle, Previous still works after you pick a file, and it reshuffles at
-  the end of a pass without losing history.
-- Shows the current file in the Properties window.
-- A restart plays the current file again, or the first file in the list.
-- Uses hardware (GPU) decoding when available, on by default.
-
 ## Install
 
-Requires OBS Studio 33.0.0 or later on Windows x64 or on macOS 13.0 or later (Apple Silicon and Intel), and OBS
-Studio 32.2 or later on Linux x86_64 (the OBS Project's Ubuntu PPA has 32.2, Arch has 33). Older OBS versions on
-Windows and macOS do not load this layout. After installing, start OBS again and follow the
-[Quick start](#quick-start).
+Needs OBS Studio 33.0.0 or later on Windows x64 or on macOS 13.0 or later (Apple Silicon and Intel), and OBS
+Studio 32.2 or later on Linux x86_64 (the OBS Project's Ubuntu PPA has 32.2, Arch has 33). After installing, start
+OBS again and follow the [Quick start](#quick-start).
 
-### Windows
+- **Windows:** download and run the installer (`.exe`). It is not code-signed, so Windows shows "Windows
+  protected your PC": press **More info**, then **Run anyway**.
+- **macOS:** download the `.pkg`. It is not signed by Apple, so macOS refuses it the first time: right-click (or
+  Control-click) the `.pkg`, choose **Open**, then **Open** again.
+- **Ubuntu 24.04:** install the `.deb` from the release page.
+
+### Other ways to install
+
+#### Windows
 
 - **Zip:** unzip so that you get
   `C:\ProgramData\obs-studio\plugins\obs-playlister\obs-playlister.dll` and
   `C:\ProgramData\obs-studio\plugins\obs-playlister\data\`. Copying into
-  ProgramData may need administrator rights.
+  ProgramData may need administrator rights. The zip installs without the
+  "Windows protected your PC" prompt.
 - **Portable OBS:** unzip the portable zip into the OBS folder, giving
   `<OBS folder>\plugins\obs-playlister\`.
-- **Installer:** run the `.exe`. It is not code-signed, so Windows SmartScreen
-  shows "Windows protected your PC / Unknown publisher"; choose
-  **More info, then Run anyway**. The zip installs without that prompt.
 
 The DLL is unsigned. It loads with Windows' default settings, but it would be
 refused if Smart App Control or a Windows Defender Application Control policy
 for user-mode code were turned on.
 
-### macOS
+#### macOS
 
 - **Installer:** run `obs-playlister-<version>-macos-universal.pkg`. It installs
   `obs-playlister.plugin` into `~/Library/Application Support/obs-studio/plugins/`.
@@ -203,7 +66,7 @@ for user-mode code were turned on.
 
 > **Mac users, please read.** The macOS build is new: it is built and its tests pass automatically on every
 > change. On 2026-11-17 it was installed in OBS 33.0.1 on an Apple Silicon Mac (M6, macOS 27.3) and checked: it
-> loads, its vendor requests answer, a Playlister source is created, and OBS quits with 0 memory leaks. The full
+> loads, a Playlister source is created, and OBS quits with 0 memory leaks. The full
 > hands-on test is still to come, so please report what you find. The `.pkg` is not
 > signed or notarized by Apple, so macOS will refuse to open it the first time. To allow it, right-click (or
 > Control-click) the `.pkg` and choose **Open**, then **Open** again; or try to open it once, then go to
@@ -214,7 +77,7 @@ macOS does not report changes made there by other machines. If a folder row says
 Desktop, Documents, Downloads, an external drive or a network volume, allow OBS in **System Settings → Privacy &
 Security → Files and Folders** (or **Full Disk Access**) and start OBS again.
 
-### Linux
+#### Linux
 
 - **Arch Linux:** build the package from
   [packaging/arch/PKGBUILD](packaging/arch/PKGBUILD) against Arch's own
@@ -240,36 +103,263 @@ On Linux, a watched folder on a network drive (NFS, SMB, CIFS) or a FUSE file
 system is checked on the folder check interval, as Linux does not report
 changes made there by other machines.
 
+## Status lines
+
+Under the playlist, **Status** has one line for each row of the list: its
+number, its kind and how it is doing. For example:
+
+```
+1: folder - 12 files
+2: file
+3: file clip-07.mp4 - could not be played (missing, moved, or not a format OBS can play); skipped
+4: web address - reading
+```
+
+- The kinds are **file**, **folder**, **playlist** (an .m3u, .m3u8 or .pls
+  list) and **web address**.
+- A folder says `reading` until it is first read (and, after 5 seconds, that
+  the drive is slow to answer), then how many files it plays: `12 files`, or
+  `5 of 40 files` when only the newest play. A playlist or web address counts
+  `items`. A row with nothing to play says why: `no files yet; new files are
+  added as they arrive`, `no files here yet; files in subfolders need Include
+  subfolders`, or `no files of the types to play (see File types)`.
+- It can add: `waiting for 2 files to finish writing`, `3 changes waiting`
+  (see Freeze the list during playback below), `1 file could not be played`,
+  and an error with what happens next, such as `folder not found, or not a
+  folder; checking again every 10 s`. When the list cannot be read now,
+  Playlister keeps playing the last good one and says
+  `using the list read at <date and time>`.
+- A file or web address that failed is named, with the likely cause:
+  `could not be played (missing, moved, or not a format OBS can play)` when it
+  ended before anything played, or `took too long to start (slow drive or
+  address)` when nothing played within 5 seconds (15 seconds for an address or
+  a file on a network share). Playlister skips it and plays the next item.
+  Nothing is drawn over the picture.
+- When nothing in the list can play, a last line says so and playback stops.
+  Fix the rows marked above it, or select the source and press Play in the
+  source toolbar under the preview to try again.
+- `Waiting: plays when its scene is in Program.` means the list is fine and
+  the source is simply not on air.
+- With no rows, Status tells you to press **+** at the right of Playlist.
+- Status is shown as a warning or an error when one of its lines needs
+  attention.
+
+Status follows the list as you edit it; a row added a moment ago says `new;
+press Refresh for its status`. What plays is not pushed into the open window:
+press **Refresh**, right under Status, to update Status, Now playing, Next and
+the Play item list.
+
+The OBS log shows each change as it happens: **Help > Log Files > View Current
+Log**, lines starting with `[obs-playlister]`.
+
+## Options
+
+Changes in the Properties window go live at once; there is no Cancel that
+protects the output. Changing Speed or hardware decoding restarts the item
+that is playing. Removing or changing the row that plays starts another item.
+
+The window opens on what most people need:
+
+- **Playlist**: the rows. Press **+** to add files, a folder or a web address.
+- **Status** and **Refresh**: see [Status lines](#status-lines).
+- **Loop playlist** (on): after the last item, start again at the first.
+- **Shuffle** (off): play in a random order. Adding or removing items does not
+  shuffle again.
+- **Now playing** and **Next**: what plays, and what follows it. With Shuffle
+  on, the next item is chosen only when it starts, so Next says so.
+- **Play item** and **Play now**: jump to any item of the list.
+
+Tick **Show advanced options** for the rest:
+
+- **When not in Program**: what the source does while its scene is not on air
+  or the source is hidden in it. By default it stops and starts again when it
+  returns. The other choices: play the next item when it returns, pause and
+  continue, or keep playing.
+- **Restart goes to**: the start of the current item (default) or the first
+  item in the list. With the default above this also decides what plays each
+  time the source returns to Program.
+- **Use hardware decoding when available** (on): decode on the graphics card.
+- **Close the file when not in Program** (off): so the file can be replaced
+  meanwhile.
+- **Folders and playlist files**, shared by every folder, playlist and web
+  address row of the source:
+  - **Include subfolders** (off).
+  - **File types**: file extensions, separated by spaces. Folders play only
+    these. An empty field means all the usual video, audio and image types.
+  - **Order**: Name (A to Z or Z to A), Oldest first (default), Newest first,
+    or As listed. Oldest first is by the date a file was last changed, as the
+    Directory Sorter script played a folder; a playlist file has no dates and
+    plays in its own order.
+  - **Play**: All files, Only the newest file, or Only the newest files, with
+    **How many** (5).
+  - **Still image duration** (10 s): how long a still image stays on screen.
+  - **Check folders again on a timer** (on) and **Time between folder checks**
+    (10 s): new files also arrive where the system does not report changes,
+    such as some network shares. Playlist files on this computer are read
+    again on the same timer when they change.
+  - **Time between web list checks** (300 s): how often a list on the web is
+    downloaded again.
+  - **Freeze the list during playback** (off): when on, new, changed and
+    removed files wait until the next Play or Restart, or until you press
+    **Apply waiting changes**. They also join when the source returns to
+    Program, if it is set to start again or to play the next item.
+- **Speed** (100% / 1x, range 1% to 200% / 0.01x to 2x): playback speed.
+  Changing Speed restarts the item that is playing.
+
+Web lists: a list address may carry a user name and password
+(`https://user:password@host/list.m3u`). They are sent to that server, and
+after a redirect only if it stays with the same scheme, host and port; never
+to another host, nor from http to https. A redirect from https to http is
+refused. A list that is not UTF-8 is read in the character set its server
+names; it is read as Windows-1252 when the server names none, or names one
+this computer cannot convert from, or the text is not valid in the one it
+names.
+
+Behind a proxy: Playlister uses the proxy the environment names (`http_proxy`
+for http addresses, `https_proxy` for https, `all_proxy` for either that has
+none of its own, and `no_proxy` for hosts to reach directly), for each address
+of a redirect chain by itself. With none named, Windows uses the system's
+proxy settings (but reaches a host named in `no_proxy` directly) and macOS and
+Linux use none. On Windows `no_proxy` takes host names and addresses (IPv6 bare or in
+brackets), with or without a port, and `*` for every host (a port is compared with the list address's own, not with one a redirect
+leads to); address ranges such as `10.0.0.0/8` are not supported there. The items of a list are
+played by OBS's own media source (FFmpeg), which looks at `http_proxy` and
+`no_proxy` only, so set those for the items to play as well.
+
+## Hotkeys
+
+Hotkeys: OBS **Settings > Hotkeys**, under this source's name. They work only
+while the source is shown.
+
+Each Playlister source has Play/Pause, Restart, Stop, Next and Previous.
+"Shown" means visible anywhere in OBS: in Program, in the Studio Mode Preview,
+in a projector, or in the source's own Properties window, as with OBS's own
+Media Source. A press while the source is not shown does nothing and leaves a
+line in the OBS log. The buttons of the source toolbar and a controller work
+on a hidden source too.
+
 ## Languages
 
 Playlister follows the language OBS runs in (Settings > General > Language;
 OBS needs a restart to change it). Besides English it speaks Simplified
 Chinese, Spanish, Brazilian Portuguese, Russian, Japanese, German, French,
-Korean, Traditional Chinese, Turkish and Dutch. Where OBS itself already translates
+Italian, Korean, Traditional Chinese, Turkish and Dutch. Where OBS itself already translates
 a string, Playlister starts from OBS's own translation. The rest was drafted
-by an AI model (Claude), and every file was reviewed by a second one (Gemini),
-whose corrections were taken; no native speaker has checked it yet. If something reads wrong in your language, please open an
+by an AI model (Claude), and the texts up to 0.5.2 were reviewed by a second one
+(Gemini), whose corrections were taken; the Italian file and the texts changed
+since have had no second review. No native speaker has checked any of it yet. If something reads wrong in your language, please open an
 issue or a pull request: the files are in `data/locale/`, one per language,
 and `en-US.ini` is the English source.
 
 ## Limitations
 
-- The Properties window shows the current file, but it cannot update by itself
-  when a video ends, because that can crash OBS while the window is open.
-  Reopen the window or press Refresh.
+- The Properties window shows what plays now and next, but it cannot update
+  by itself when an item ends, because that can crash OBS while the window is
+  open. Press Refresh or reopen the window. A controller can show it live (see
+  For controllers and scripts).
+- With Shuffle on, the next item is not known before it starts.
 - No audio track or subtitle selection.
 - Folders play in this source only. The Directory Sorter script could also
   fill a VLC Video Source or an Image Slideshow; Playlister does not.
 - Windows will not rename or delete a file while it plays (OBS holds it open);
   do that after it has played.
 
-## For developers
+## Where Playlister comes from
 
-The source id is `obs_playlister_source`. To see the setting keys, use
-[obs_data_get_json](https://docs.obsproject.com/reference-settings#c.obs_data_get_json)
-on the source's settings or look at the scene collection JSON.
+Playlister is a third-party plugin for OBS Studio. It is not made, endorsed or
+supported by the OBS Project. Before 0.3.1 its name began with "OBS"; its
+plugin files, source ID and this repository keep the identifier
+`obs-playlister`, so existing scenes, settings and hotkeys carry over.
 
-To select a file from a script or another plugin:
+**If you use Media Playlist Source or the Directory Sorter for OBS script (both
+by Ian Rodriguez, CodeYan01 on GitHub), this is the one tool that does both
+jobs.** Playlister is a fork of
+[Media Playlist Source](https://github.com/CodeYan01/media-playlist-source), and
+its watched folders take over what the
+[Directory Sorter for OBS](https://github.com/CodeYan01/directory_sorter_for_obs)
+script did for a playlist: sorted folders that update themselves (by date
+modified, oldest first, by default), with no Stop needed. That part is written
+from scratch, and folders play in Playlister itself (the script could also
+fill a VLC Video Source or an Image Slideshow). Playlister is its
+own source type and installs next to Media Playlist Source without either one
+replacing the other; existing Media Playlist Source sources are left as they
+are. It is a native plugin, so unlike the script it needs no Python. It also
+runs on macOS and Linux. What changed in each version is in
+[CHANGELOG.md](CHANGELOG.md); the design is in [PLAN.md](PLAN.md) and
+[REQUIREMENTS.md](REQUIREMENTS.md).
+
+From Media Playlist Source it keeps: editing the playlist without restarting
+the video, even if rows are reordered; remembering the current item across an
+OBS restart; playing a chosen item; and the shuffle based on VLC 4's (adding
+or removing items does not reshuffle, Previous still works after you pick an
+item, and it reshuffles at the end of a pass without losing history).
+
+In the Fadester suite four tools play video at adjustable speeds; which one to
+use when is in
+[START-HERE.md](https://github.com/jbrick2070/streamdeck-fadester/blob/main/docs/START-HERE.md).
+Playlister is the one for ordered lists of files, folders, playlists and
+stream addresses; its Speed is a setting that restarts the item, not a live
+control.
+
+## For controllers and scripts
+
+What plays now and what comes next can be read without the Properties window,
+so a controller key can show it. Only names are published, never paths.
+
+### obs-websocket
+
+Playlister registers the vendor **`obs-playlister`** with obs-websocket (which
+ships with OBS). Where obs-websocket is absent or off, nothing is registered.
+
+Request `get_now_next`, sent as obs-websocket's `CallVendorRequest` with
+`vendorName` `obs-playlister` and `requestType` `get_now_next`:
+
+| Request field | Type | Meaning |
+| :--- | :--- | :--- |
+| `source_uuid` | string, optional | The Playlister source to ask, by its UUID |
+| `source` | string, optional | The same by its name; used when `source_uuid` is absent |
+
+With one of the two, the response has `found` (bool: whether that is a
+Playlister source) and, when it is, the fields below. With neither, the
+response has `sources`: an array with these fields for every Playlister source.
+
+| Response field | Type | Meaning |
+| :--- | :--- | :--- |
+| `source` | string | The source's name |
+| `source_uuid` | string | The source's UUID |
+| `playing` | string | The name of the item that is loaded: a playlist entry's title, else the file name, else the last part of the address. Empty when nothing is loaded |
+| `next` | string | The name of the item that follows; while nothing plays, the item Play starts. Empty when nothing follows or it is not decided |
+| `next_decided` | bool | False when Shuffle is on and the next item is chosen only when it starts |
+| `state` | string | `playing`, `paused`, `stopped`, `ended`, `opening`, `error` or `none` |
+| `status` | string | The worst of the Status lines: `ok`, `warning` or `error` |
+| `row` | number | The playing item's row in the Playlist, from 1; 0 when nothing is loaded |
+| `item` | number | Its place within a folder or playlist row, from 1; 0 for a file row |
+| `items` | number | How many items the whole list has to play |
+
+Event `now_next_changed` (obs-websocket's `VendorEvent`, `vendorName`
+`obs-playlister`, `eventType` `now_next_changed`): sent when `playing`, `next`,
+`next_decided` or `status` of a source changes. Its `eventData` has the same
+fields as the response for one source. Play, pause and stop alone send no
+event; obs-websocket's own media events and `GetMediaInputStatus` report those.
+
+### In OBS (scripts and plugins)
+
+The same reading is a proc on the source:
+
+```c
+proc_handler_t *ph = obs_source_get_proc_handler(source);
+calldata_t cd = {0};
+proc_handler_call(ph, "get_now_next", &cd);
+const char *playing = calldata_string(&cd, "playing"); /* also: next, state, status */
+bool next_decided = calldata_bool(&cd, "next_decided");
+long long row = calldata_int(&cd, "row"); /* also: item, items */
+calldata_free(&cd);
+```
+
+and a signal on the source's signal handler when it changes:
+`void playlister_now_next(ptr source, string playing, string next, bool next_decided, string status)`.
+
+To select an item from a script or another plugin:
 
 ```c
 proc_handler_t *ph = obs_source_get_proc_handler(source);
@@ -286,6 +376,12 @@ calldata_free(&cd);
 - `folder_item_index`: 0-based item in the folder at `media_index`. If it is
   past the end of the folder, item 0 is played. It is ignored for rows that are
   not folders.
+
+The source id is `obs_playlister_source`. To see the setting keys, use
+[obs_data_get_json](https://docs.obsproject.com/reference-settings#c.obs_data_get_json)
+on the source's settings or look at the scene collection JSON. The order of a
+folder is saved as `sort_key` (0 date, 1 name, 2 as listed) and
+`sort_descending`; the Order list of Properties follows them.
 
 ## Building
 

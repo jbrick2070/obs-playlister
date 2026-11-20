@@ -100,8 +100,11 @@ enum pl_folder_wait pl_folder_os_wait(struct pl_folder_os *os, struct pl_stop *s
 				      uint32_t timeout_ms);
 
 enum pl_folder_note {
-	PL_FOLDER_NOTE_NONE,     /* nothing has completed yet */
-	PL_FOLDER_NOTE_CHANGES,  /* changes; their renames were given to the callback; the watch is no longer armed */
+	PL_FOLDER_NOTE_NONE, /* nothing has completed yet */
+	/* changes; their renames were given to the callback. On Windows the watch is no longer armed (one call reports
+	 * one batch); on Linux and macOS it stays armed unless folders were added, moved or removed, which need new
+	 * watches. Either way the caller arms again, which does nothing to a watch still armed. */
+	PL_FOLDER_NOTE_CHANGES,
 	PL_FOLDER_NOTE_OVERFLOW, /* more changes than could be told; the watch is no longer armed */
 	PL_FOLDER_NOTE_ABORTED,  /* the call was cancelled by someone else; the watch is no longer armed */
 	PL_FOLDER_NOTE_LOST,     /* the folder went away; the watch is no longer armed */

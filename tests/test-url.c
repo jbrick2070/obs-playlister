@@ -22,7 +22,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <util/bmem.h>
+#include <util/dstr.h>
+#include <util/platform.h>
 
 #include "test-common.h"
 
@@ -155,6 +158,37 @@ static void test_resolve(void)
 		    "https://cdn.example.com/z.mp3");
 }
 
+/* P-02: a reference of thousands of segments is resolved in the time its length takes. 16,000 "a/" then 15,999 "../"
+ * leave one "a/"; taking segments off the front of a buffer made this cost seconds. */
+static void test_resolve_long(void)
+{
+	struct dstr reference = {0};
+	for (int i = 0; i < 16000; i++)
+		dstr_cat(&reference, "a/");
+	for (int i = 0; i < 15999; i++)
+		dstr_cat(&reference, "../");
+	dstr_cat(&reference, "x.mp3");
+	uint64_t start = os_gettime_ns();
+	for (int i = 0; i < 20; i++) {
+		char *resolved = pl_url_resolve("http://example.com/l/list.m3u", reference.array);
+		assert(strcmp(resolved, "http://example.com/l/a/x.mp3") == 0);
+		bfree(resolved);
+	}
+	double seconds = (double)(os_gettime_ns() - start) / 1e9;
+	if (seconds >= 2.0) {
+		fprintf(stderr, "20 long references took %.2f s\n", seconds);
+		assert(false);
+	}
+	dstr_free(&reference);
+
+	/* what the cursor must not change: the ends of the RFC's cases */
+	resolve("g/..", "http://a/b/c/");
+	resolve("g/.", "http://a/b/c/g/");
+	resolve("../../../..", "http://a/");
+	resolve("/..", "http://a/");
+	resolve("/.", "http://a/");
+}
+
 static void decode(const char *text, const char *expected)
 {
 	expect_text("decode", text, pl_url_percent_decode(text), expected);
@@ -174,6 +208,106 @@ static void test_decode(void)
 static void file_url(const char *text, const char *expected)
 {
 	expect_text("file url", text, pl_url_file_to_path(text), expected);
+}
+
+static void expect_type(const char *header, const char *type, const char *charset)
+{
+	char *got_type = (char *)"unset";
+	char *got_charset = (char *)"unset";
+	pl_content_type_split(header, &got_type, &got_charset);
+	bool same = (type ? got_type && strcmp(got_type, type) == 0 : !got_type) &&
+		    (charset ? got_charset && strcmp(got_charset, charset) == 0 : !got_charset);
+	if (!same) {
+		fprintf(stderr, "content type \"%s\": got \"%s\" and \"%s\"\n", header ? header : "(null)",
+			got_type ? got_type : "(null)", got_charset ? got_charset : "(null)");
+		assert(false);
+	}
+	bfree(got_type);
+	bfree(got_charset);
+}
+
+/* R-REM-1: the media type, and the character set the server names for the body */
+static void test_content_type(void)
+{
+	expect_type(NULL, NULL, NULL);
+	expect_type("", NULL, NULL);
+	expect_type("audio/x-mpegurl", "audio/x-mpegurl", NULL);
+	expect_type("Audio/X-MpegURL; charset=UTF-8", "audio/x-mpegurl", "utf-8");
+	expect_type(" \ttext/plain\t ;  Charset = \"Windows-1251\" ; q=1", "text/plain", "windows-1251");
+	expect_type("text/plain;charset=\"Windows-1251\"", "text/plain", "windows-1251");
+	expect_type("text/plain; format=flowed; charset=Shift_JIS ; x=y", "text/plain", "shift_jis");
+	/* the first one counts; a name that is not plain is none */
+	expect_type("text/plain; charset=koi8-r; charset=utf-8", "text/plain", "koi8-r");
+	expect_type("text/plain; charset=../../etc", "text/plain", NULL);
+	expect_type("text/plain; charset=", "text/plain", NULL);
+	expect_type("text/plain; charset", "text/plain", NULL);
+	expect_type("; charset=utf-8", NULL, "utf-8");
+	expect_type("text/plain; charset=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "text/plain", NULL);
+}
+
+static void expect_split(const char *url, const char *plain, const char *user, const char *password)
+{
+	char *got_plain, *got_user, *got_password;
+	pl_url_split_credentials(url, &got_plain, &got_user, &got_password);
+	bool same = strcmp(got_plain, plain) == 0 && (user ? got_user && strcmp(got_user, user) == 0 : !got_user) &&
+		    (password ? got_password && strcmp(got_password, password) == 0 : !got_password);
+	if (!same) {
+		fprintf(stderr, "split of \"%s\": \"%s\", \"%s\", \"%s\"\n", url, got_plain,
+			got_user ? got_user : "(null)", got_password ? got_password : "(null)");
+		assert(false);
+	}
+	bfree(got_plain);
+	bfree(got_user);
+	bfree(got_password);
+}
+
+/* R-REM-9: the user name and password leave the address, so the fetcher can keep them from other hosts */
+static void test_split_credentials(void)
+{
+	expect_split("https://host/list.m3u", "https://host/list.m3u", NULL, NULL);
+	expect_split("https://user:pw@host/list.m3u?x=1", "https://host/list.m3u?x=1", "user", "pw");
+	expect_split("http://us%40er:p%3Ass@127.0.0.1:8080/a", "http://127.0.0.1:8080/a", "us@er", "p:ss");
+	expect_split("https://user@host", "https://host", "user", "");
+	expect_split("https://user:@host/", "https://host/", "user", "");
+	expect_split("https://a:b:c@host/", "https://host/", "a", "b:c");
+	/* the last "@" before the path ends the user information; one in the path or the query is not one */
+	expect_split("https://a@b:pw@host/x", "https://host/x", "a@b", "pw");
+	expect_split("https://host/x@y?z=@", "https://host/x@y?z=@", NULL, NULL);
+	expect_split("https://@host/x", "https://host/x", NULL, NULL);
+	expect_split("no scheme@here", "no scheme@here", NULL, NULL);
+	expect_split("", "", NULL, NULL);
+}
+
+static void expect_carried(const char *given, const char *final, const char *expected)
+{
+	expect_text("carry credentials", final, pl_url_carry_credentials(given, final), expected);
+}
+
+/* R-REM-9: the address a fetch ended at gets the given address's user name and password back only on the same
+ * scheme, host and port */
+static void test_carry_credentials(void)
+{
+	assert(pl_url_same_origin("http://u:p@Host:80/a?x", "HTTP://host:80/b#c"));
+	assert(!pl_url_same_origin("http://host/a", "https://host/a"));
+	assert(!pl_url_same_origin("http://host/a", "http://host:8080/a"));
+	assert(!pl_url_same_origin("http://host/a", "http://host.example/a"));
+	assert(!pl_url_same_origin("no scheme", "no scheme"));
+
+	expect_carried("https://us%40er:p%3Ass@host/list", "https://host/lists/2026.m3u",
+		       "https://us%40er:p%3Ass@host/lists/2026.m3u");
+	expect_carried("https://user@host:8443/list", "https://HOST:8443/x", "https://user@HOST:8443/x");
+	/* another scheme, port or host: never */
+	expect_carried("http://user:pw@host/list", "https://host/list", "https://host/list");
+	expect_carried("https://user:pw@host/list", "https://host:8443/list", "https://host:8443/list");
+	expect_carried("https://user:pw@host/list", "https://cdn.host/list", "https://cdn.host/list");
+	/* nothing to carry, or the final address has its own */
+	expect_carried("https://host/list", "https://host/x", "https://host/x");
+	expect_carried("https://user:pw@host/list", "https://other:pw2@host/x", "https://other:pw2@host/x");
+	expect_carried("https://user:pw@host/list", "https://user:pw@host/list", "https://user:pw@host/list");
+	/* the same ones in libcurl's spelling, as it writes them after a relative redirect: the given spelling */
+	expect_carried("http://us%40er:p%3Ass@127.0.0.1:8080/auth", "http://us%40er:p%3ass@127.0.0.1:8080/auth-needed",
+		       "http://us%40er:p%3Ass@127.0.0.1:8080/auth-needed");
+	expect_carried("https://user:pw@host/list", "https://user:p%77@host/x", "https://user:pw@host/x");
 }
 
 static void test_file_url(void)
@@ -264,7 +398,11 @@ int main(void)
 	test_extension();
 	test_redacted();
 	test_resolve();
+	test_resolve_long();
 	test_decode();
+	test_content_type();
+	test_split_credentials();
+	test_carry_credentials();
 	test_file_url();
 	test_path();
 	test_posix();

@@ -50,7 +50,7 @@ void pl_list_provider_request_stop(struct pl_list_provider *provider);
 void pl_list_provider_detach(struct pl_list_provider *provider);
 void pl_list_provider_destroy(struct pl_list_provider *provider);
 
-/* The fetch functions list providers call (fetch.h): WinHTTP's, or a test's stand-in */
+/* The fetch functions list providers call (fetch.h): the platform's, or a test's stand-in */
 struct pl_list_fetch_api {
 	struct pl_fetch *(*open)(const char *url, const struct pl_fetch_options *options, enum pl_fetch_result *result);
 	const struct pl_fetch_info *(*get_info)(const struct pl_fetch *fetch);
@@ -59,5 +59,5 @@ struct pl_list_fetch_api {
 };
 
 /* For the tests, before any list provider exists: the functions every list provider uses from now on; NULL goes back
- * to WinHTTP */
+ * to the platform's */
 void pl_list_provider_use_fetch_api(const struct pl_list_fetch_api *api);

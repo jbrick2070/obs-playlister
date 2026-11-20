@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/threading.h>
 
 #include "os.h"
+#include "publication.h"
 
 void pl_snapshot_free(struct pl_snapshot *snapshot)
 {
@@ -38,11 +39,69 @@ void pl_snapshot_free(struct pl_snapshot *snapshot)
 	bfree(snapshot);
 }
 
-/* ---- the two kinds behind one interface ---- */
+/* ---- a row whose kind is not known yet (PL_ROW_UNKNOWN) ---- */
+
+/* Asks the disk, on a worker of its own, whether the row's path is a directory, and publishes the answer once. The
+ * question can take as long as a drive that is spinning up or a share that has gone quiet takes to answer, which is
+ * why the source does not ask it on the graphics thread. On Windows the join cancels the call (os.h). */
+struct pl_probe_provider {
+	char *location;
+	struct pl_publication publication; /* for the instance, the receiver and the cut-off (detach) */
+	struct pl_stop *stop;
+	struct pl_thread *thread;
+};
+
+static void probe_main(void *data)
+{
+	struct pl_probe_provider *p = data;
+	os_set_thread_name("obs-playlister: row kind");
+	if (pl_stop_is_set(p->stop))
+		return;
+	bool directory = pl_folder_is_directory(p->location);
+	/* an answer that came because the call was cancelled is none */
+	if (!pl_stop_is_set(p->stop))
+		pl_publication_publish_probe(&p->publication, directory);
+}
+
+static void probe_free(struct pl_probe_provider *p)
+{
+	pl_stop_destroy(p->stop);
+	pl_publication_free(&p->publication);
+	bfree(p->location);
+	bfree(p);
+}
+
+static struct pl_probe_provider *probe_create(const char *location, uint64_t instance_id, pl_publish_fn publish,
+					      void *owner)
+{
+	if (!location || !publish)
+		return NULL;
+	struct pl_probe_provider *p = bzalloc(sizeof(*p));
+	p->location = bstrdup(location);
+	pl_publication_init(&p->publication, instance_id, publish, owner);
+	p->stop = pl_stop_create();
+	if (p->stop)
+		p->thread = pl_thread_start(probe_main, p, NULL);
+	if (!p->thread) {
+		probe_free(p);
+		return NULL;
+	}
+	return p;
+}
+
+static void probe_destroy(struct pl_probe_provider *p)
+{
+	pl_stop_set(p->stop);
+	pl_thread_join(p->thread, p->location);
+	probe_free(p);
+}
+
+/* ---- the kinds behind one interface ---- */
 
 struct pl_provider {
 	struct pl_folder_provider *folder;
 	struct pl_list_provider *list;
+	struct pl_probe_provider *probe;
 };
 
 struct pl_provider *pl_provider_create(enum pl_row_kind kind, const char *location, const char *row_uuid,
@@ -54,18 +113,21 @@ struct pl_provider *pl_provider_create(enum pl_row_kind kind, const char *locati
 		provider->folder = pl_folder_provider_create(location, row_uuid, instance_id, options, publish, owner);
 	else if (kind == PL_ROW_PLAYLIST || kind == PL_ROW_REMOTE)
 		provider->list = pl_list_provider_create(kind, location, instance_id, options, publish, owner);
-	if (!provider->folder && !provider->list) {
+	else if (kind == PL_ROW_UNKNOWN)
+		provider->probe = probe_create(location, instance_id, publish, owner);
+	if (!provider->folder && !provider->list && !provider->probe) {
 		bfree(provider);
 		return NULL;
 	}
 	return provider;
 }
 
+/* a row of unknown kind has no list: nothing to list again, no options, nothing kept */
 void pl_provider_refresh_now(struct pl_provider *provider)
 {
 	if (provider->folder)
 		pl_folder_provider_refresh_now(provider->folder);
-	else
+	else if (provider->list)
 		pl_list_provider_refresh_now(provider->list);
 }
 
@@ -73,7 +135,7 @@ void pl_provider_set_options(struct pl_provider *provider, const struct pl_conta
 {
 	if (provider->folder)
 		pl_folder_provider_set_options(provider->folder, options);
-	else
+	else if (provider->list)
 		pl_list_provider_set_options(provider->list, options);
 }
 
@@ -81,14 +143,15 @@ void pl_provider_release_held(struct pl_provider *provider)
 {
 	if (provider->folder)
 		pl_folder_provider_release_held(provider->folder);
-	else
+	else if (provider->list)
 		pl_list_provider_release_held(provider->list);
 }
 
 size_t pl_provider_held_changes(struct pl_provider *provider)
 {
-	return provider->folder ? pl_folder_provider_held_changes(provider->folder)
-				: pl_list_provider_held_changes(provider->list);
+	if (provider->folder)
+		return pl_folder_provider_held_changes(provider->folder);
+	return provider->list ? pl_list_provider_held_changes(provider->list) : 0;
 }
 
 void pl_provider_destroy(struct pl_provider *provider)
@@ -97,8 +160,10 @@ void pl_provider_destroy(struct pl_provider *provider)
 		return;
 	if (provider->folder)
 		pl_folder_provider_destroy(provider->folder);
-	else
+	else if (provider->list)
 		pl_list_provider_destroy(provider->list);
+	else
+		probe_destroy(provider->probe);
 	bfree(provider);
 }
 
@@ -108,8 +173,10 @@ void pl_provider_request_stop(struct pl_provider *provider)
 		return;
 	if (provider->folder)
 		pl_folder_provider_request_stop(provider->folder);
-	else
+	else if (provider->list)
 		pl_list_provider_request_stop(provider->list);
+	else
+		pl_stop_set(provider->probe->stop);
 }
 
 /* ---- retired providers (R-THR-3) ---- */
@@ -161,8 +228,10 @@ void pl_provider_retire(struct pl_provider *provider)
 	pl_provider_request_stop(provider);
 	if (provider->folder)
 		pl_folder_provider_detach(provider->folder);
-	else
+	else if (provider->list)
 		pl_list_provider_detach(provider->list);
+	else
+		pl_publication_detach(&provider->probe->publication);
 
 	bool queued = false;
 	pthread_mutex_lock(&reaper_mutex);

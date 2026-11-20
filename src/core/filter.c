@@ -60,11 +60,20 @@ static const char *extension(const char *name)
 	return dot && dot[1] ? dot + 1 : NULL;
 }
 
+static bool no_extension_in(const char *text)
+{
+	for (const char *c = text; *c; c++) {
+		if (!is_separator(*c) && *c != '.' && *c != '*')
+			return false;
+	}
+	return true;
+}
+
 void pl_filter_parse(struct pl_filter *filter, const char *text)
 {
 	DARRAY(char *) extensions;
 	da_init(extensions);
-	const char *c = text ? text : "";
+	const char *c = text && !no_extension_in(text) ? text : PL_FILTER_DEFAULT;
 
 	while (*c) {
 		while (is_separator(*c))

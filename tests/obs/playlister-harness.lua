@@ -263,6 +263,13 @@ local function status_block()
 end
 
 -- checks the status block's text and info type
+-- a failed file row names its file (R-UX-4): the last part of the path
+local function base_name(path)
+	return path:match("[^/\\]+$") or path
+end
+-- ... and says the likely cause and what happened
+local NOT_PLAYED = " - could not be played (missing, moved, or not a format OBS can play); skipped"
+
 local function check_status(name, expected_text, expected_type)
 	local text, info_type = status_block()
 	check(name, text == expected_text and info_type == expected_type, text:gsub("\n", " | ") .. " (type " ..
@@ -272,7 +279,7 @@ end
 -- a stale choice is reported in the status block instead of played (R-UP-20), as the open Properties shows it right
 -- after Play Selected
 local function reports_stale_choice()
-	return mark.status_after_click:find("list changed", 1, true) ~= nil and mark.status_type_after_click == 1
+	return mark.status_after_click:find("no longer in the list", 1, true) ~= nil and mark.status_type_after_click == 1
 end
 
 -- no setting holds the status block (a setting written while Properties builds itself makes it ask to save changes)
@@ -305,30 +312,43 @@ local function folder_options_problem()
 	end
 	-- as opened, before any change: obs_source_properties applied the source's settings
 	local opened_problem = nil
-	if visible("newest_count") or not enabled("folder_check_interval_s") or not enabled("apply_waiting_changes") then
+	if visible("newest_count") or not enabled("folder_check_interval_s") or not visible("apply_waiting_changes") then
 		opened_problem = "as opened, N, the interval or the Apply button does not follow the source's settings"
+	end
+	-- R-UX-10: the advanced options are hidden until "Show advanced options" is ticked, the group as a whole
+	for _, name in ipairs({ "visibility_behavior", "restart_behavior", "hw_decode", "close_when_inactive",
+		"folder_options", "speed_percent", "speed_warning" }) do
+		if not opened_problem and visible(name) then
+			opened_problem = "as opened, " .. name .. " is shown without Show advanced options"
+		end
+	end
+	for _, name in ipairs({ "live_note", "playlist", "row_status", "refresh_filename", "loop", "shuffle",
+		"current_file_name", "next_file_name", "select_file", "play_selected", "show_advanced", "hotkeys_hint",
+		"plugin_version" }) do
+		if not opened_problem and not visible(name) then
+			opened_problem = "as opened, " .. name .. " is not shown"
+		end
 	end
 	local group = obs.obs_properties_get(props, "folder_options")
 	local content = group and obs.obs_property_group_content(group)
 	local problem = nil
 	if not content then
 		problem = "no folder_options group"
-	elseif obs.obs_property_description(group) ~= "Folder and playlist options" then
+	elseif obs.obs_property_description(group) ~= "Folders and playlist files" then
 		problem = "group label " .. obs.obs_property_description(group)
 	end
 	-- the labels of R-UX-7
 	local labels = {
 		include_subfolders = "Include subfolders",
-		extension_filter = "File types to play",
-		sort_key = "Sort by",
-		sort_descending = "Descending",
-		container_mode = "Files to play",
-		newest_count = "How many newest files",
+		extension_filter = "File types",
+		order = "Order",
+		container_mode = "Play",
+		newest_count = "How many",
 		still_duration_s = "Still image duration",
 		folder_check_enabled = "Check folders again on a timer",
 		folder_check_interval_s = "Time between folder checks",
-		lock_list_at_start = "Hold changes until the next Play",
-		apply_waiting_changes = "Apply waiting changes now",
+		lock_list_at_start = "Freeze the list during playback",
+		apply_waiting_changes = "Apply waiting changes",
 	}
 	for name, label in pairs(labels) do
 		local property = content and obs.obs_properties_get(content, name)
@@ -359,8 +379,8 @@ local function folder_options_problem()
 		end
 	end
 	local filter = obs.obs_property_editable_list_filter(obs.obs_properties_get(props, "playlist")) or ""
-	if not problem and (not filter:find("Still Images (*.jpg *.jpeg *.png *.webp *.bmp);;", 1, true) or
-		not filter:find("*.flac *.jpg *.jpeg *.png *.webp *.bmp);;Video Files", 1, true)) then
+	if not problem and (not filter:find("Still images (*.jpg *.jpeg *.png *.webp *.bmp);;", 1, true) or
+		not filter:find("*.flac *.jpg *.jpeg *.png *.webp *.bmp);;Video files", 1, true)) then
 		problem = "the Browse filter has no still images: " .. filter
 	end
 	problem = problem or opened_problem
@@ -372,7 +392,7 @@ local function folder_options_problem()
 		obs.obs_data_set_bool(data, "lock_list_at_start", lock_on)
 		obs.obs_properties_apply_settings(props, data)
 		obs.obs_data_release(data)
-		return visible("newest_count"), enabled("folder_check_interval_s"), enabled("apply_waiting_changes")
+		return visible("newest_count"), enabled("folder_check_interval_s"), visible("apply_waiting_changes")
 	end
 	if not problem then
 		local newest_n_visible, interval_when_check_on, apply_when_lock_off = shown(2, true, false)
@@ -639,8 +659,8 @@ step("nothing chosen", 1000, 1000, nil, function()
 	play_selected("1")
 	check("play selected with a position from before Phase 2 is reported, not played", media_next_count == before and
 		reports_stale_choice() and dur() == D[3], mark.status_after_click .. ", " .. status())
-	check_status("a stale choice is a warning in the status block", "1: file\n2: file\n3: file\nThe list changed " ..
-		"since this item was listed. Press Refresh and choose it again.", 1)
+	check_status("a stale choice is a warning in the status block", "1: file\n2: file\n3: file\nThat item is no " ..
+		"longer in the list. Press Refresh and choose again.", 1)
 	before = media_next_count
 	play_selected("row-1:0:")
 	check("play selected with item 1 chosen raises media_next once", media_next_count == before + 1,
@@ -686,7 +706,8 @@ step("empty current folder", 1000, 15000, function() return st() == PLAYING and 
 	local entries = select_file_entries()
 	check("select file lists the two files after No File Selected, not the empty folder", entries == 3,
 		"entries=" .. entries)
-	check_status("the status block shows the empty folder row", "1: folder - empty\n2: file\n3: file", 0)
+	check_status("the status block shows the empty folder row", "1: folder - no files here yet; files in subfolders " ..
+		"need Include subfolders\n2: file\n3: file", 0)
 	obs.obs_source_media_next(src)
 end)
 
@@ -1261,7 +1282,7 @@ step("absent folder passed over", 1000, 15000, function() return st() == PLAYING
 		status())
 	check("the absent folder keeps its saved kind", row_kind("gone") == "folder " .. MISSING_FOLDER, row_kind("gone"))
 	check_status("the status block shows the missing folder as an error",
-		"1: folder - folder not found, or not a folder\n2: file", 2)
+		"1: folder - folder not found, or not a folder; checking again every 10 s\n2: file", 2)
 	local uuid = row_uuid(1)
 	check("a row saved without a uuid is given one", uuid ~= "" and uuid ~= "gone", uuid)
 	check("select file lists the file row only, by its new uuid", select_file_values() == "0 " .. uuid .. ":0:",
@@ -1286,8 +1307,8 @@ step("failing rows skipped", 500, 15000, function() return dur() == D[1] and st(
 		status())
 	-- both end at once, so the reason is that they did not start (R-UX-4), not their startup window
 	check_status("the status block shows the failed rows as errors, with why",
-		"1: file - could not be played: it did not start\n2: file - could not be played: it did not start\n" ..
-		"3: file", 2)
+		"1: file " .. base_name(MISSING_FILE) .. NOT_PLAYED .. "\n2: file " .. base_name(CORRUPT_FILE) .. NOT_PLAYED ..
+		"\n3: file", 2)
 	remove_source()
 end)
 
@@ -1302,9 +1323,9 @@ end)
 
 step("everything failed", 3000, 3000, nil, function()
 	check("a list where nothing plays stops instead of cycling", st() == STOPPED, status())
-	check_status("the status block says why playback stopped", "1: file - could not be played: it did not start\n" ..
-		"2: file - could not be played: it did not start\nPlayback stopped: nothing in the list can be played. " ..
-		"Fix or remove the failing rows. Or press Play in the OBS media controls to try them again.", 2)
+	check_status("the status block says why playback stopped", "1: file " .. base_name(MISSING_FILE) .. NOT_PLAYED ..
+		"\n2: file " .. base_name(CORRUPT_FILE) .. NOT_PLAYED .. "\nNothing in the list can be played. Fix the rows " ..
+		"marked above, or select the source and press Play in the source toolbar under the preview to try again.", 2)
 	obs.obs_source_media_play_pause(src, false)
 end)
 

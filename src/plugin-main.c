@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "core/random.h"
 #include "core/text.h"
+#include "obs/vendor.h"
 #include "providers/provider.h"
 
 #ifdef TEST_SHUFFLER
@@ -105,8 +106,15 @@ bool obs_module_load(void)
 	return true;
 }
 
+/* R-UX-11: every module has loaded, so obs-websocket has published its vendor interface if it is there */
+void obs_module_post_load(void)
+{
+	pl_vendor_load();
+}
+
 void obs_module_unload(void)
 {
+	pl_vendor_unload();
 	/* both done already in obs_module_free_locale, which OBS calls first; again here so the unload does not depend
 	 * on that order. After it a provider retired late is joined by its caller (pl_provider_reaper_shutdown). */
 	pl_provider_reaper_shutdown();
