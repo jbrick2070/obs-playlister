@@ -152,6 +152,25 @@ static void *serve(void *param)
 			    "Connection: close\r\n\r\n%s",
 			    strlen(body), body);
 		send_text(s, reply.array);
+	} else if (strcmp(path, "/auth") == 0) {
+		/* the body says which credentials came with the request */
+		char sent[256] = "none";
+		const char *header = strstr(request, "\r\nAuthorization: ");
+		if (header)
+			sscanf(header + 17, "%255[^\r]", sent);
+		dstr_printf(&reply, "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
+			    strlen(sent), sent);
+		send_text(s, reply.array);
+	} else if (strcmp(path, "/auth-elsewhere") == 0) {
+		/* the same server under another host name */
+		dstr_printf(&reply,
+			    "HTTP/1.1 302 Found\r\nLocation: http://localhost:%u/auth\r\nContent-Length: 0\r\n"
+			    "Connection: close\r\n\r\n",
+			    port);
+		send_text(s, reply.array);
+	} else if (strcmp(path, "/to-ftp") == 0) {
+		send_text(s, "HTTP/1.1 302 Found\r\nLocation: ftp://127.0.0.1/x\r\nContent-Length: 0\r\n"
+			     "Connection: close\r\n\r\n");
 	} else if (strcmp(path, "/binary") == 0) {
 		/* UTF-16 text: every other byte is a NUL, and the body starts with one */
 		send_text(s, "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\n");
@@ -395,6 +414,7 @@ static void test_ok(void)
 	const struct pl_fetch_info *info = pl_fetch_get_info(fetch);
 	assert(info->status == 200);
 	assert(strcmp(info->content_type, "audio/x-mpegurl") == 0);
+	assert(info->charset && strcmp(info->charset, "utf-8") == 0);
 	assert(info->has_length && info->content_length == 14 && !info->encoded);
 	assert(strcmp(info->final_url, url("/ok")) == 0 && info->redirects == 0);
 	char *body;
@@ -411,7 +431,7 @@ static void test_ok(void)
 	close_and_check(fetch);
 
 	fetch = open_expect("/nolength", &options, PL_FETCH_OK);
-	assert(!pl_fetch_get_info(fetch)->has_length);
+	assert(!pl_fetch_get_info(fetch)->has_length && !pl_fetch_get_info(fetch)->charset);
 	assert(pl_fetch_read(fetch, 1024, false, &body, &size) == PL_FETCH_OK);
 	assert(size == 5 && strcmp(body, "hello") == 0);
 	bfree(body);
@@ -429,6 +449,54 @@ static void test_redirects(void)
 	close_and_check(fetch);
 
 	close_and_check(open_expect("/redirect/6", &options, PL_FETCH_TOO_MANY_REDIRECTS));
+
+	/* fetch.h: a redirect to something that is not http(s) is refused, and says so */
+	fetch = open_expect("/to-ftp", &options, PL_FETCH_NETWORK_ERROR);
+	assert(pl_fetch_get_info(fetch)->failure == PL_FETCH_FAILURE_REDIRECT_REFUSED);
+	close_and_check(fetch);
+}
+
+/* The body of a small response */
+static char *body_of(const char *address, enum pl_fetch_result *result)
+{
+	struct pl_fetch_options options;
+	options_for_test(&options);
+	struct pl_fetch *fetch = pl_fetch_open(address, &options, result);
+	char *body = NULL;
+	size_t size = 0;
+	if (*result == PL_FETCH_OK)
+		*result = pl_fetch_read(fetch, 1024, false, &body, &size);
+	close_and_check(fetch);
+	return body;
+}
+
+/* fetch.h: a user name and password in the address are sent to that server as Basic, percent-decoded, with the
+ * first request, and never to another host a redirect names; without them nothing is sent */
+static void test_credentials(void)
+{
+	enum pl_fetch_result result;
+	char address[256];
+	char *body = body_of(url("/auth"), &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "none") == 0);
+	bfree(body);
+
+	/* "us@er" and "p:ss" */
+	snprintf(address, sizeof(address), "http://us%%40er:p%%3Ass@127.0.0.1:%u/auth", port);
+	body = body_of(address, &result);
+	if (result != PL_FETCH_OK || strcmp(body, "Basic dXNAZXI6cDpzcw==") != 0) {
+		fprintf(stderr, "credentials: result %d, the server got \"%s\"\n", result, body ? body : "(no body)");
+		assert(false);
+	}
+	bfree(body);
+
+	snprintf(address, sizeof(address), "http://us%%40er:p%%3Ass@127.0.0.1:%u/auth-elsewhere", port);
+	body = body_of(address, &result);
+	if (result != PL_FETCH_OK || strcmp(body, "none") != 0) {
+		fprintf(stderr, "credentials after a redirect to another host: result %d, the server got \"%s\"\n",
+			result, body ? body : "(no body)");
+		assert(false);
+	}
+	bfree(body);
 }
 
 static void test_status(void)
@@ -607,10 +675,11 @@ int main(void)
 {
 	pl_test_no_crash_dialogs();
 #ifndef _WIN32
-	/* the server is on 127.0.0.1, which libcurl would send through a proxy the environment names */
+	/* fetch.h: no proxy is used, also none the environment names. A proxy on a port nobody listens on would fail
+	 * every request below if it were. */
 	const char *proxies[] = {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"};
 	for (size_t i = 0; i < sizeof(proxies) / sizeof(proxies[0]); i++)
-		unsetenv(proxies[i]);
+		setenv(proxies[i], "http://127.0.0.1:9/", 1);
 	signal(SIGPIPE, SIG_IGN);
 #endif
 	long allocations = bnum_allocs();
@@ -619,6 +688,7 @@ int main(void)
 
 	test_ok();
 	test_redirects();
+	test_credentials();
 	test_status();
 	test_sizes();
 	test_stops();

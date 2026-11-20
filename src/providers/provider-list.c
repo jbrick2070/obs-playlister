@@ -45,12 +45,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #define LIST_CAP (16 * 1024 * 1024) /* R-REM-5: list bodies only */
 #define SNIFF_BYTES (64 * 1024)     /* R-LIST-1 step 4 */
 
-static const struct pl_list_fetch_api winhttp_api = {pl_fetch_open, pl_fetch_get_info, pl_fetch_read, pl_fetch_close};
-static const struct pl_list_fetch_api *fetch_api = &winhttp_api;
+/* the platform's fetcher (fetch.h): WinHTTP on Windows, libcurl elsewhere */
+static const struct pl_list_fetch_api platform_api = {pl_fetch_open, pl_fetch_get_info, pl_fetch_read, pl_fetch_close};
+static const struct pl_list_fetch_api *fetch_api = &platform_api;
 
 void pl_list_provider_use_fetch_api(const struct pl_list_fetch_api *api)
 {
-	fetch_api = api ? api : &winhttp_api;
+	fetch_api = api ? api : &platform_api;
 }
 
 enum list_format {
@@ -169,10 +170,12 @@ static void take_list(struct pl_list_provider *p, struct pl_list_result *result)
 	p->last_ok_unix_ms = pl_utc_now_ms();
 }
 
+/* charset: what the server called the body's character set, NULL for a local file or when it named none; text
+ * that is not UTF-8 is then read in that set, and only without one as Windows-1252 (R-REM-1) */
 static void parse(struct pl_list_result *result, enum list_format format, const char *data, size_t size,
-		  const char *base)
+		  const char *base, const char *charset)
 {
-	struct pl_list_source source = {base, entry_key, NULL};
+	struct pl_list_source source = {base, entry_key, NULL, charset, pl_charset_to_utf8};
 	if (format == FORMAT_PLS)
 		pl_parse_pls(result, data, size, &source);
 	else
@@ -272,7 +275,7 @@ static void read_local(struct pl_list_provider *p)
 	p->empty_seen = false;
 
 	struct pl_list_result list;
-	parse(&list, format_of(p->location), data, got, p->location);
+	parse(&list, format_of(p->location), data, got, p->location, NULL);
 	bfree(data);
 	take_list(p, &list);
 	/* a file that changed size during the read is read again next time */
@@ -320,6 +323,11 @@ static void fetch_error(struct pl_list_provider *p, enum pl_fetch_result result,
 			dstr_copy(&message, pl_text("RowError.NotWebAddress", "not a valid http(s) address"));
 		else if (info->failure == PL_FETCH_FAILURE_ACCESS_DENIED)
 			dstr_copy(&message, pl_text(PL_ACCESS_DENIED_KEY, PL_ACCESS_DENIED_TEXT));
+		else if (info->failure == PL_FETCH_FAILURE_REDIRECT_REFUSED)
+			dstr_copy(&message,
+				  pl_text("RowError.RedirectRefused",
+					  "redirect refused (from https to http, or to an address that is not "
+					  "http)"));
 		else {
 			snprintf(number, sizeof(number), "%u", info->error);
 			pl_text_cat(&message, pl_text("RowError.NetworkErrorCode", "network error (%1 error %2)"),
@@ -450,7 +458,7 @@ static void fetch_list(struct pl_list_provider *p, const char *url, enum list_fo
 			fetch_error(p, result, info);
 	} else {
 		struct pl_list_result list;
-		parse(&list, format, body ? body : "", size, info->final_url ? info->final_url : url);
+		parse(&list, format, body ? body : "", size, info->final_url ? info->final_url : url, info->charset);
 		take_parsed(p, &list);
 	}
 	bfree(body);
@@ -515,8 +523,8 @@ static void classify_remote(struct pl_list_provider *p)
 		p->format = kind == RESPONSE_PLS ? FORMAT_PLS : FORMAT_M3U;
 		if (complete) {
 			struct pl_list_result list;
-			parse(&list, p->format, body ? body : "", size,
-			      info->final_url ? info->final_url : p->location);
+			parse(&list, p->format, body ? body : "", size, info->final_url ? info->final_url : p->location,
+			      info->charset);
 			take_parsed(p, &list);
 		} else {
 			/* the sniff read only the first part: the whole list is fetched once more */
@@ -711,14 +719,6 @@ static void update_publication(struct pl_list_provider *p, bool release)
 
 /* ---- requests ---- */
 
-static void copy_options(struct pl_container_options *dst, char **filter_text, const struct pl_container_options *src)
-{
-	*dst = *src;
-	bfree(*filter_text);
-	*filter_text = bstrdup(src->extension_filter ? src->extension_filter : "");
-	dst->extension_filter = *filter_text;
-}
-
 static void take_requests(struct pl_list_provider *p, bool *release, bool *refresh_now)
 {
 	struct pl_container_options options = {0};
@@ -728,7 +728,7 @@ static void take_requests(struct pl_list_provider *p, bool *release, bool *refre
 	*refresh_now = p->refresh_requested;
 	*release = p->release_requested;
 	if (options_changed)
-		copy_options(&options, &filter_text, &p->requested);
+		pl_container_options_copy(&options, &filter_text, &p->requested);
 	p->options_changed = false;
 	p->refresh_requested = false;
 	p->release_requested = false;
@@ -736,7 +736,7 @@ static void take_requests(struct pl_list_provider *p, bool *release, bool *refre
 
 	if (options_changed) {
 		bool filter_changed = strcmp(options.extension_filter, p->filter_text) != 0;
-		copy_options(&p->options, &p->filter_text, &options);
+		pl_container_options_copy(&p->options, &p->filter_text, &options);
 		if (filter_changed) {
 			pl_filter_free(&p->filter);
 			pl_filter_parse(&p->filter, p->filter_text);
@@ -814,8 +814,8 @@ struct pl_list_provider *pl_list_provider_create(enum pl_row_kind kind, const ch
 	snprintf(p->agent, sizeof(p->agent), "obs-playlister/%s", PLUGIN_VERSION);
 	pl_publication_init(&p->publication, instance_id, publish, owner);
 	pthread_mutex_init_value(&p->request_mutex);
-	copy_options(&p->requested, &p->requested_filter, options);
-	copy_options(&p->options, &p->filter_text, options);
+	pl_container_options_copy(&p->requested, &p->requested_filter, options);
+	pl_container_options_copy(&p->options, &p->filter_text, options);
 	pl_filter_parse(&p->filter, p->filter_text);
 
 	p->stop = pl_stop_create();
@@ -848,7 +848,7 @@ void pl_list_provider_refresh_now(struct pl_list_provider *provider)
 void pl_list_provider_set_options(struct pl_list_provider *provider, const struct pl_container_options *options)
 {
 	pthread_mutex_lock(&provider->request_mutex);
-	copy_options(&provider->requested, &provider->requested_filter, options);
+	pl_container_options_copy(&provider->requested, &provider->requested_filter, options);
 	provider->options_changed = true;
 	pthread_mutex_unlock(&provider->request_mutex);
 	pl_wake_set(provider->wake);

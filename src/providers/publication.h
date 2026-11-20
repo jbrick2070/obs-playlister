@@ -89,5 +89,10 @@ void pl_publication_detach(struct pl_publication *publication);
 /* How many entries the kept membership adds, removes or rewrites; 0 when nothing is kept. Any thread. */
 size_t pl_publication_held_changes(struct pl_publication *publication);
 
+/* Copies the options for a provider to keep: *filter_text (bmem, freed first) becomes a copy of the filter text,
+ * "" for none, and dst's extension_filter points at it */
+void pl_container_options_copy(struct pl_container_options *dst, char **filter_text,
+			       const struct pl_container_options *src);
+
 /* A copy of entries; previous_key dropped unless keep_renames */
 struct pl_entry *pl_publication_copy_entries(const struct pl_entry *entries, size_t count, bool keep_renames);

@@ -68,3 +68,9 @@ char *pl_url_file_to_posix_path(const char *text);
  * stands alone, anything else is relative to base_path's folder. Repeated "/" collapse, "." and ".." are resolved
  * (never above "/"), and a backslash is an ordinary character. */
 char *pl_posix_path_resolve(const char *base_path, const char *reference);
+
+/* A Content-Type header value in its two parts (R-REM-1, R-REM-5): the media type lower-cased, without parameters,
+ * and its charset parameter lower-cased, without quotes. Each is NULL when the header has none; a charset holding
+ * anything but letters, digits, "-", "_", ".", ":" and "+", or longer than 40 characters, counts as none.
+ * "Audio/X-MpegURL; charset=UTF-8" gives "audio/x-mpegurl" and "utf-8". header may be NULL. */
+void pl_content_type_split(const char *header, char **type, char **charset);

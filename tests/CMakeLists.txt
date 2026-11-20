@@ -161,10 +161,22 @@ obs_playlister_add_test(test-provider-folder test-provider-folder.c ${_provider_
 obs_playlister_add_test(test-provider-list test-provider-list.c ${_provider_sources})
 # One HTTP GET against a server inside the test on 127.0.0.1, through the platform's fetcher (R-REM-5, R-LNX-6)
 if(WIN32)
-  obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-winhttp.c" "${_providers}/os-win.c")
+  obs_playlister_add_test(
+    test-fetch
+    test-fetch.c
+    "${_providers}/fetch-winhttp.c"
+    "${_providers}/os-win.c"
+    "${_core}/url.c"
+  )
   target_link_libraries(test-fetch PRIVATE winhttp ws2_32)
 else()
-  obs_playlister_add_test(test-fetch test-fetch.c "${_providers}/fetch-curl.c" "${_providers}/os-posix.c")
+  obs_playlister_add_test(
+    test-fetch
+    test-fetch.c
+    "${_providers}/fetch-curl.c"
+    "${_providers}/os-posix.c"
+    "${_core}/url.c"
+  )
   target_link_libraries(test-fetch PRIVATE CURL::libcurl Threads::Threads)
 endif()
 # the providers log through obs_log

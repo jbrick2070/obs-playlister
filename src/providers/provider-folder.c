@@ -683,18 +683,10 @@ static void update_publication(struct pl_folder_provider *p, bool release)
 
 /* ---- requests ---- */
 
-static void copy_options(struct pl_container_options *dst, char **filter_text, const struct pl_container_options *src)
-{
-	*dst = *src;
-	bfree(*filter_text);
-	*filter_text = bstrdup(src->extension_filter ? src->extension_filter : "");
-	dst->extension_filter = *filter_text;
-}
-
 static void apply_options(struct pl_folder_provider *p, const struct pl_container_options *options)
 {
 	bool filter_changed = strcmp(options->extension_filter, p->filter_text) != 0;
-	copy_options(&p->options, &p->filter_text, options);
+	pl_container_options_copy(&p->options, &p->filter_text, options);
 	p->options.include_subfolders = p->include_subfolders;
 	pl_watch_set_interval(&p->watch, p->options.folder_check_enabled, p->options.folder_check_interval_s,
 			      mono_now());
@@ -717,7 +709,7 @@ static void take_requests(struct pl_folder_provider *p, bool *release)
 	bool refresh = p->refresh_requested;
 	*release = p->release_requested;
 	if (options_changed)
-		copy_options(&options, &filter_text, &p->requested);
+		pl_container_options_copy(&options, &filter_text, &p->requested);
 	p->options_changed = false;
 	p->refresh_requested = false;
 	p->release_requested = false;
@@ -825,8 +817,8 @@ struct pl_folder_provider *pl_folder_provider_create(const char *location, const
 	pl_publication_init(&p->publication, instance_id, publish, owner);
 	p->include_subfolders = options->include_subfolders;
 	pthread_mutex_init_value(&p->request_mutex);
-	copy_options(&p->requested, &p->requested_filter, options);
-	copy_options(&p->options, &p->filter_text, options);
+	pl_container_options_copy(&p->requested, &p->requested_filter, options);
+	pl_container_options_copy(&p->options, &p->filter_text, options);
 	pl_filter_parse(&p->filter, p->filter_text);
 	pl_gate_init(&p->gate);
 	pl_gate_set_stop(&p->gate, gate_stopping, p);
@@ -865,7 +857,7 @@ void pl_folder_provider_refresh_now(struct pl_folder_provider *provider)
 void pl_folder_provider_set_options(struct pl_folder_provider *provider, const struct pl_container_options *options)
 {
 	pthread_mutex_lock(&provider->request_mutex);
-	copy_options(&provider->requested, &provider->requested_filter, options);
+	pl_container_options_copy(&provider->requested, &provider->requested_filter, options);
 	provider->options_changed = true;
 	pthread_mutex_unlock(&provider->request_mutex);
 	pl_wake_set(provider->wake);

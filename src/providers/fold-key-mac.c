@@ -113,3 +113,29 @@ char *pl_fold_key(const char *text)
 	bfree(valid);
 	return result;
 }
+
+char *pl_charset_to_utf8(const char *charset, const char *data, size_t size, size_t *length)
+{
+	CFStringRef name = CFStringCreateWithCString(kCFAllocatorDefault, charset, kCFStringEncodingASCII);
+	if (!name)
+		return NULL;
+	CFStringEncoding encoding = CFStringConvertIANACharSetNameToEncoding(name);
+	CFRelease(name);
+	if (encoding == kCFStringEncodingInvalidId)
+		return NULL;
+	/* NULL when the bytes are not valid in that character set */
+	CFStringRef text =
+		CFStringCreateWithBytes(kCFAllocatorDefault, (const UInt8 *)data, (CFIndex)size, encoding, false);
+	if (!text)
+		return NULL;
+	CFRange all = CFRangeMake(0, CFStringGetLength(text));
+	CFIndex needed = 0;
+	CFStringGetBytes(text, all, kCFStringEncodingUTF8, 0, false, NULL, 0, &needed);
+	char *out = bmalloc((size_t)needed + 1);
+	CFIndex used = 0;
+	CFStringGetBytes(text, all, kCFStringEncodingUTF8, 0, false, (UInt8 *)out, needed, &used);
+	CFRelease(text);
+	out[used] = '\0';
+	*length = (size_t)used;
+	return out;
+}

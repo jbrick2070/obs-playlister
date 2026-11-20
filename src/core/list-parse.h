@@ -34,10 +34,18 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * at the Win32 boundary; NULL as the function makes the key the location itself. */
 typedef char *(*pl_list_key_fn)(const char *location, void *context);
 
+/* Text in a named character set as UTF-8 (bmem, *length bytes plus a NUL), or NULL when it cannot be converted. The
+ * list provider passes the operating system's converter (providers/fold-key.h). */
+typedef char *(*pl_list_convert_fn)(const char *charset, const char *data, size_t size, size_t *length);
+
 struct pl_list_source {
 	const char *base; /* the playlist's own location: an absolute local path, or the final URL after redirects */
 	pl_list_key_fn key;
 	void *key_context;
+	/* the character set the server named for the body (lower case), and what converts from it; NULL for a local
+	 * file, for a response without one, and in tests */
+	const char *charset;
+	pl_list_convert_fn convert;
 };
 
 struct pl_list_result {
@@ -52,9 +60,14 @@ struct pl_list_result {
 void pl_list_result_free(struct pl_list_result *result);
 
 /* The body as UTF-8: a UTF-8 BOM is dropped; a UTF-16 BOM (either byte order) converts; text that is valid UTF-8
- * stays; anything else is read as Windows-1252, the code page older Windows players wrote .m3u files in. Returns a
- * bmem buffer of *length bytes plus a terminating NUL; NULs inside the text are kept (the line reader reports
- * them). */
+ * stays, whatever the server called it (plain ASCII is the same in every character set a playlist comes in, and
+ * servers that label UTF-8 as something else are common). Text that is not: UTF-16 without a BOM when charset says
+ * "utf-16", "utf-16le" or "utf-16be"; else converted from charset by convert when both are given and the conversion
+ * succeeds; else, and always without a charset, read as Windows-1252, the code page older Windows players wrote .m3u
+ * files in. Returns a bmem buffer of *length bytes plus a terminating NUL; NULs inside the text are kept (the line
+ * reader reports them). */
+char *pl_list_decode_as(const char *data, size_t size, const char *charset, pl_list_convert_fn convert, size_t *length);
+/* The same with no character set named */
 char *pl_list_decode(const char *data, size_t size, size_t *length);
 
 /* The next line from *cursor (LF, CRLF or a lone CR ends it), with spaces and tabs trimmed at both ends; false at

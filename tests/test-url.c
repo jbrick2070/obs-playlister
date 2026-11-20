@@ -176,6 +176,41 @@ static void file_url(const char *text, const char *expected)
 	expect_text("file url", text, pl_url_file_to_path(text), expected);
 }
 
+static void expect_type(const char *header, const char *type, const char *charset)
+{
+	char *got_type = (char *)"unset";
+	char *got_charset = (char *)"unset";
+	pl_content_type_split(header, &got_type, &got_charset);
+	bool same = (type ? got_type && strcmp(got_type, type) == 0 : !got_type) &&
+		    (charset ? got_charset && strcmp(got_charset, charset) == 0 : !got_charset);
+	if (!same) {
+		fprintf(stderr, "content type \"%s\": got \"%s\" and \"%s\"\n", header ? header : "(null)",
+			got_type ? got_type : "(null)", got_charset ? got_charset : "(null)");
+		assert(false);
+	}
+	bfree(got_type);
+	bfree(got_charset);
+}
+
+/* R-REM-1: the media type, and the character set the server names for the body */
+static void test_content_type(void)
+{
+	expect_type(NULL, NULL, NULL);
+	expect_type("", NULL, NULL);
+	expect_type("audio/x-mpegurl", "audio/x-mpegurl", NULL);
+	expect_type("Audio/X-MpegURL; charset=UTF-8", "audio/x-mpegurl", "utf-8");
+	expect_type(" \ttext/plain\t ;  Charset = \"Windows-1251\" ; q=1", "text/plain", "windows-1251");
+	expect_type("text/plain;charset=\"Windows-1251\"", "text/plain", "windows-1251");
+	expect_type("text/plain; format=flowed; charset=Shift_JIS ; x=y", "text/plain", "shift_jis");
+	/* the first one counts; a name that is not plain is none */
+	expect_type("text/plain; charset=koi8-r; charset=utf-8", "text/plain", "koi8-r");
+	expect_type("text/plain; charset=../../etc", "text/plain", NULL);
+	expect_type("text/plain; charset=", "text/plain", NULL);
+	expect_type("text/plain; charset", "text/plain", NULL);
+	expect_type("; charset=utf-8", NULL, "utf-8");
+	expect_type("text/plain; charset=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "text/plain", NULL);
+}
+
 static void test_file_url(void)
 {
 	file_url("file:///C:/a%20b.mp3", "C:\\a b.mp3");
@@ -265,6 +300,7 @@ int main(void)
 	test_redacted();
 	test_resolve();
 	test_decode();
+	test_content_type();
 	test_file_url();
 	test_path();
 	test_posix();

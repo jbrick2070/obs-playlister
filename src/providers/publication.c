@@ -298,3 +298,12 @@ size_t pl_publication_held_changes(struct pl_publication *publication)
 {
 	return (size_t)os_atomic_load_long(&publication->held_changes);
 }
+
+void pl_container_options_copy(struct pl_container_options *dst, char **filter_text,
+			       const struct pl_container_options *src)
+{
+	*dst = *src;
+	bfree(*filter_text);
+	*filter_text = bstrdup(src->extension_filter ? src->extension_filter : "");
+	dst->extension_filter = *filter_text;
+}

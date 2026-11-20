@@ -24,15 +24,24 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 /* One HTTP(S) GET (R-REM-5), in two phases: pl_fetch_open waits for the headers; then the caller closes at once (a
  * direct media URL is never downloaded), reads a bounded prefix (to sniff) or reads the body up to a cap. Every call
- * blocks the calling worker, which alone owns the fetch, and returns early when the stop event is set or the overall
- * deadline passes. pl_fetch_close returns only after WinHTTP has closed every handle, so no WinHTTP callback reaches
- * the plugin afterwards. */
+ * blocks the calling worker, which alone owns the fetch, and returns early when the stop is set or the overall
+ * deadline passes. pl_fetch_close returns only when no callback of the backend can reach the plugin any more.
+ *
+ * Two backends, one behaviour (fetch-winhttp.c on Windows, fetch-curl.c with libcurl on Linux and macOS):
+ * - http and https only, for the address and for every redirect, at most max_redirects of them. A redirect from
+ *   https to http is refused: a list asked for over a secure connection is never taken from an open one.
+ * - A user name and password in the address (https://user:password@host/list.m3u) are sent to that server as HTTP
+ *   Basic authentication, with the first request. They are not sent on to another host a redirect names.
+ * - No proxy: neither the system's proxy settings nor the proxy environment variables are used. The items of a list
+ *   are played by OBS's media source, which uses no proxy either, so a list fetched through one would name items
+ *   that cannot play.
+ * - Certificates are checked, always. */
 
 /* Each fetch ends in exactly one of these (R-REM-5) */
 enum pl_fetch_result {
 	PL_FETCH_OK,
 	PL_FETCH_CANCELLED,          /* the stop event */
-	PL_FETCH_TIMEOUT,            /* a WinHTTP timeout or the overall deadline */
+	PL_FETCH_TIMEOUT,            /* a timeout of the backend or the overall deadline */
 	PL_FETCH_TLS_ERROR,          /* a certificate or secure channel error */
 	PL_FETCH_TOO_MANY_REDIRECTS, /* more than max_redirects */
 	PL_FETCH_HTTP_STATUS,        /* a status outside 200-299; pl_fetch_info has it */
@@ -54,6 +63,7 @@ enum pl_fetch_failure {
 	PL_FETCH_FAILURE_CANNOT_CONNECT,
 	PL_FETCH_FAILURE_BAD_URL,
 	PL_FETCH_FAILURE_ACCESS_DENIED,
+	PL_FETCH_FAILURE_REDIRECT_REFUSED, /* a redirect from https to http, or to something that is not http(s) */
 };
 
 struct pl_stop;
@@ -73,6 +83,7 @@ void pl_fetch_default_options(struct pl_fetch_options *options);
 struct pl_fetch_info {
 	uint32_t status;    /* the final HTTP status, 0 when no response came */
 	char *content_type; /* lower-cased, parameters removed; NULL when absent */
+	char *charset;      /* the Content-Type's charset parameter, lower-cased; NULL when absent (R-REM-1) */
 	bool has_length;
 	uint64_t content_length;
 	bool encoded;    /* a Content-Encoding header came with the response */
@@ -94,9 +105,11 @@ const struct pl_fetch_info *pl_fetch_get_info(const struct pl_fetch *fetch);
  * plus a terminating NUL, or NULL when nothing was read; the caller frees it. Call it at most once. */
 enum pl_fetch_result pl_fetch_read(struct pl_fetch *fetch, size_t limit, bool prefix, char **body, size_t *size);
 
-/* Cancels whatever is pending, closes every handle and waits until WinHTTP has closed them all, then frees the
- * fetch. NULL is nothing to close. */
+/* Cancels whatever is pending and frees the fetch; NULL is nothing to close. On Windows it waits until WinHTTP has
+ * closed every handle. With libcurl it does not wait for a name lookup in flight (CURLOPT_QUICK_EXIT, libcurl 7.87
+ * and later): the lookup's thread ends by itself, inside libcurl. With an older libcurl it waits for the system's
+ * resolver to give up, which the plugin cannot shorten. */
 void pl_fetch_close(struct pl_fetch *fetch);
 
-/* How many WinHTTP status callbacks have run in this process (for the tests: none may run after pl_fetch_close) */
+/* How many callbacks of the backend have run in this process (for the tests: none may run after pl_fetch_close) */
 int64_t pl_fetch_callback_count(void);

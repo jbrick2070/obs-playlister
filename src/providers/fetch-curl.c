@@ -16,14 +16,19 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-/* One HTTP(S) GET with libcurl (fetch.h, R-LNX-6), the Linux twin of fetch-winhttp.c. The worker drives one easy
- * handle through a multi handle itself: curl_multi_poll waits on the transfer and the provider's stop descriptor
- * together, so a stop never waits for a timeout, and every libcurl callback runs inside these calls, so none can run
- * after pl_fetch_close. The headers phase pauses the transfer at the first body bytes; reading resumes it. */
+/* One HTTP(S) GET with libcurl (fetch.h, R-LNX-6), the Linux and macOS twin of fetch-winhttp.c. The worker drives one
+ * easy handle through a multi handle itself: curl_multi_poll waits on the transfer and the provider's stop descriptor
+ * together, so a stop never waits for a timeout of the transfer, and every libcurl callback runs inside these calls,
+ * so none can run after pl_fetch_close. The headers phase pauses the transfer at the first body bytes; reading
+ * resumes it.
+ *
+ * A name lookup is the one thing libcurl does on a thread of its own (getaddrinfo cannot be interrupted). The stop
+ * ends the wait for it at once, and CURLOPT_QUICK_EXIT (libcurl 7.87 and later) lets pl_fetch_close return without
+ * joining that thread, which then ends by itself inside libcurl. With an older libcurl the close waits until the
+ * system's resolver gives up. */
 
 #include "fetch.h"
 
-#include <ctype.h>
 #include <pthread.h>
 #include <string.h>
 
@@ -35,6 +40,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/threading.h>
 
 #include "os.h"
+
+#include "core/url.h"
 
 #define POLL_SLICE_MS 1000
 
@@ -56,8 +63,12 @@ struct pl_fetch {
 	struct pl_fetch_info info;
 	bool header_encoded;  /* the response whose headers are coming has a Content-Encoding */
 	bool header_location; /* ... and a Location, so libcurl follows it */
+	bool header_to_http;  /* ... which is an absolute http:// address */
+	bool header_to_https; /* ... or an absolute https:// one */
 	long header_status;
-	bool headers_done; /* the final response's headers are all in */
+	bool secure;           /* the request whose response is coming went over https */
+	bool redirect_refused; /* a redirect from https to http was refused (fetch.h) */
+	bool headers_done;     /* the final response's headers are all in */
 	bool paused;
 	bool done;
 	CURLcode done_result;
@@ -108,6 +119,8 @@ static size_t on_header(char *line, size_t size, size_t count, void *data)
 	if (length >= 5 && strncmp(line, "HTTP/", 5) == 0) {
 		fetch->header_encoded = false;
 		fetch->header_location = false;
+		fetch->header_to_http = false;
+		fetch->header_to_https = false;
 		/* "HTTP/1.1 200 OK": the digits after the first space (the line has no terminating NUL) */
 		fetch->header_status = 0;
 		size_t i = 5;
@@ -119,6 +132,11 @@ static size_t on_header(char *line, size_t size, size_t count, void *data)
 		fetch->header_encoded = true;
 	} else if (header_is(line, length, "Location")) {
 		fetch->header_location = true;
+		size_t at = strlen("Location:");
+		while (at < length && (line[at] == ' ' || line[at] == '\t'))
+			at++;
+		fetch->header_to_http = length - at >= 7 && astrcmpi_n(line + at, "http://", 7) == 0;
+		fetch->header_to_https = length - at >= 8 && astrcmpi_n(line + at, "https://", 8) == 0;
 	} else if ((length == 2 && line[0] == '\r' && line[1] == '\n') || (length == 1 && line[0] == '\n')) {
 		/* the end of a response's headers: the final one unless it is informational or a redirect libcurl
 		 * follows */
@@ -126,6 +144,14 @@ static size_t on_header(char *line, size_t size, size_t count, void *data)
 		bool followed = fetch->header_status >= 300 && fetch->header_status < 400 && fetch->header_location;
 		if (!informational && !followed)
 			fetch->headers_done = true;
+		/* fetch.h: a redirect from https to http is refused, wherever in the chain it comes, as WinHTTP's redirect
+		 * policy refuses it. A short return ends the transfer. A relative Location keeps the scheme. */
+		if (followed && fetch->secure && fetch->header_to_http) {
+			fetch->redirect_refused = true;
+			return 0;
+		}
+		if (followed && fetch->header_to_https)
+			fetch->secure = true;
 	}
 	return length;
 }
@@ -204,8 +230,6 @@ static enum pl_fetch_failure failure_kind(CURLcode code)
 	case CURLE_URL_MALFORMAT:
 	case CURLE_UNSUPPORTED_PROTOCOL:
 		return PL_FETCH_FAILURE_BAD_URL;
-	case CURLE_REMOTE_ACCESS_DENIED:
-		return PL_FETCH_FAILURE_ACCESS_DENIED;
 	default:
 		return PL_FETCH_FAILURE_OTHER;
 	}
@@ -216,6 +240,11 @@ static enum pl_fetch_result failure(struct pl_fetch *fetch, CURLcode code, bool 
 {
 	fetch->info.error = (uint32_t)code;
 	fetch->info.failure = failure_kind(code);
+	/* a redirect this code refused (https to http), or one libcurl refused for its scheme (not http or https) */
+	if (fetch->redirect_refused || (code == CURLE_UNSUPPORTED_PROTOCOL && fetch->header_location)) {
+		fetch->info.failure = PL_FETCH_FAILURE_REDIRECT_REFUSED;
+		return PL_FETCH_NETWORK_ERROR;
+	}
 	if (code == CURLE_OPERATION_TIMEDOUT)
 		return PL_FETCH_TIMEOUT;
 	if (tls_error(code))
@@ -261,25 +290,6 @@ static enum pl_fetch_result run(struct pl_fetch *fetch, bool in_body)
 	}
 }
 
-static char *normalized_type(const char *type)
-{
-	if (!type)
-		return NULL;
-	size_t length = strcspn(type, ";");
-	while (length && isspace((unsigned char)type[length - 1]))
-		length--;
-	while (length && isspace((unsigned char)*type)) {
-		type++;
-		length--;
-	}
-	if (!length)
-		return NULL;
-	char *result = bstrdup_n(type, length);
-	for (char *c = result; *c; c++)
-		*c = (char)tolower((unsigned char)*c);
-	return result;
-}
-
 /* The headers of the final response, as WinHTTP reports them: a body libcurl decompresses has no Content-Encoding
  * and no Content-Length left, since the length counted the compressed bytes */
 static void take_headers(struct pl_fetch *fetch)
@@ -291,7 +301,7 @@ static void take_headers(struct pl_fetch *fetch)
 		return;
 	char *type = NULL;
 	curl_easy_getinfo(fetch->easy, CURLINFO_CONTENT_TYPE, &type);
-	fetch->info.content_type = normalized_type(type);
+	pl_content_type_split(type, &fetch->info.content_type, &fetch->info.charset);
 	curl_off_t length = -1;
 	curl_easy_getinfo(fetch->easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &length);
 	fetch->info.encoded = false;
@@ -332,6 +342,7 @@ struct pl_fetch *pl_fetch_open(const char *url, const struct pl_fetch_options *o
 	}
 
 	CURL *easy = fetch->easy;
+	fetch->secure = astrcmpi_n(url, "https://", 8) == 0;
 	curl_easy_setopt(easy, CURLOPT_URL, url);
 	curl_easy_setopt(easy, CURLOPT_USERAGENT, options->user_agent);
 	/* plain http and https only, for the first request and every redirect (R-REM-1) */
@@ -359,7 +370,18 @@ struct pl_fetch *pl_fetch_open(const char *url, const struct pl_fetch_options *o
 	curl_easy_setopt(easy, CURLOPT_ACCEPT_ENCODING, "");
 	/* a proxy's answer to CONNECT is not the server's response */
 	curl_easy_setopt(easy, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
+	/* no signals: the lookup's time limit is the connect timeout above, not an alarm */
 	curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
+#if LIBCURL_VERSION_NUM >= 0x075700
+	/* a stop during a name lookup: closing does not wait for the lookup's thread (the top of this file). An older
+	 * libcurl at run time does not know the option and refuses it, which changes nothing. */
+	curl_easy_setopt(easy, CURLOPT_QUICK_EXIT, 1L);
+#endif
+	/* fetch.h: no proxy, also none from the environment (http_proxy and the like), as with WinHTTP */
+	curl_easy_setopt(easy, CURLOPT_PROXY, "");
+	/* fetch.h: a user name and password in the address are sent as Basic, with the first request; libcurl does
+	 * not send them on to another host a redirect names (CURLOPT_UNRESTRICTED_AUTH stays off) */
+	curl_easy_setopt(easy, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
 	curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, on_header);
 	curl_easy_setopt(easy, CURLOPT_HEADERDATA, fetch);
 	curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, on_body);
@@ -452,6 +474,7 @@ void pl_fetch_close(struct pl_fetch *fetch)
 		curl_multi_cleanup(fetch->multi);
 	bfree(fetch->body);
 	bfree(fetch->info.content_type);
+	bfree(fetch->info.charset);
 	bfree(fetch->info.final_url);
 	bfree(fetch);
 }

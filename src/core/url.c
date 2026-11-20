@@ -540,3 +540,72 @@ char *pl_posix_path_resolve(const char *base_path, const char *reference)
 	dstr_free(&joined);
 	return out.array;
 }
+
+static bool header_space(char c)
+{
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static char *lowered(const char *text, size_t length)
+{
+	char *copy = bstrdup_n(text, length);
+	for (char *c = copy; *c; c++) {
+		if (*c >= 'A' && *c <= 'Z')
+			*c = (char)(*c - 'A' + 'a');
+	}
+	return copy;
+}
+
+void pl_content_type_split(const char *header, char **type, char **charset)
+{
+	*type = NULL;
+	*charset = NULL;
+	if (!header)
+		return;
+	while (header_space(*header))
+		header++;
+	size_t length = strcspn(header, ";");
+	const char *parameters = header + length;
+	while (length && header_space(header[length - 1]))
+		length--;
+	if (length)
+		*type = lowered(header, length);
+
+	/* the parameters, each "name=value" or "name=\"value\"" after a ";" */
+	while (*parameters == ';') {
+		const char *name = parameters + 1;
+		while (header_space(*name))
+			name++;
+		size_t name_length = strcspn(name, "=;");
+		parameters = name + name_length;
+		if (*parameters != '=')
+			continue;
+		const char *value = parameters + 1;
+		while (header_space(*value))
+			value++;
+		size_t value_length;
+		if (*value == '"') {
+			value++;
+			value_length = strcspn(value, "\"");
+			parameters = value + value_length;
+			parameters += strcspn(parameters, ";");
+		} else {
+			value_length = strcspn(value, ";");
+			parameters = value + value_length;
+			while (value_length && header_space(value[value_length - 1]))
+				value_length--;
+		}
+		while (name_length && header_space(name[name_length - 1]))
+			name_length--;
+		if (*charset || name_length != 7 || astrcmpi_n(name, "charset", 7) != 0)
+			continue;
+		bool plain = value_length > 0 && value_length <= 40;
+		for (size_t i = 0; plain && i < value_length; i++) {
+			char c = value[i];
+			plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+				c == '-' || c == '_' || c == '.' || c == ':' || c == '+';
+		}
+		if (plain)
+			*charset = lowered(value, value_length);
+	}
+}

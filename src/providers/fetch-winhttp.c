@@ -23,6 +23,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "fetch.h"
 #include "os.h"
 
+#include "core/url.h"
+
 #include <string.h>
 #include <util/bmem.h>
 #include <util/dstr.h>
@@ -168,6 +170,10 @@ static enum pl_fetch_result failure(struct pl_fetch *fetch, DWORD error, bool in
 		return PL_FETCH_TLS_ERROR;
 	if (error == ERROR_WINHTTP_REDIRECT_FAILED && (uint32_t)fetch->redirects >= fetch->max_redirects)
 		return PL_FETCH_TOO_MANY_REDIRECTS;
+	/* below the limit WinHTTP refuses a redirect only for where it leads: from https to http (the redirect policy
+	 * set in start), or to a scheme that is not http(s) */
+	if (error == ERROR_WINHTTP_REDIRECT_FAILED)
+		fetch->info.failure = PL_FETCH_FAILURE_REDIRECT_REFUSED;
 	return in_body ? PL_FETCH_TRUNCATED : PL_FETCH_NETWORK_ERROR;
 }
 
@@ -219,31 +225,6 @@ static char *query_text(HINTERNET request, DWORD query)
 	return text;
 }
 
-/* "Audio/X-MpegURL; charset=utf-8" -> "audio/x-mpegurl" */
-static char *normalize_content_type(char *text)
-{
-	if (!text)
-		return NULL;
-	text[strcspn(text, ";")] = '\0';
-	char *start = text;
-	while (*start == ' ' || *start == '\t')
-		start++;
-	size_t length = strlen(start);
-	while (length && (start[length - 1] == ' ' || start[length - 1] == '\t'))
-		length--;
-	char *type = bstrdup_n(start, length);
-	for (char *c = type; *c; c++) {
-		if (*c >= 'A' && *c <= 'Z')
-			*c = (char)(*c - 'A' + 'a');
-	}
-	bfree(text);
-	if (!*type) {
-		bfree(type);
-		return NULL;
-	}
-	return type;
-}
-
 static void read_headers(struct pl_fetch *fetch)
 {
 	struct pl_fetch_info *info = &fetch->info;
@@ -253,7 +234,9 @@ static void read_headers(struct pl_fetch *fetch)
 				WINHTTP_HEADER_NAME_BY_INDEX, &status, &bytes, WINHTTP_NO_HEADER_INDEX))
 		info->status = status;
 
-	info->content_type = normalize_content_type(query_text(fetch->request, WINHTTP_QUERY_CONTENT_TYPE));
+	char *type = query_text(fetch->request, WINHTTP_QUERY_CONTENT_TYPE);
+	pl_content_type_split(type, &info->content_type, &info->charset);
+	bfree(type);
 
 	char *length = query_text(fetch->request, WINHTTP_QUERY_CONTENT_LENGTH);
 	if (length && *length) {
@@ -302,6 +285,21 @@ static bool track(struct pl_fetch *fetch, HINTERNET handle)
 	return false;
 }
 
+/* A user name or password out of a URL: its "%XX" sequences decoded, as libcurl decodes them (bmem) */
+static wchar_t *url_part(const wchar_t *text, DWORD length)
+{
+	wchar_t *raw = bzalloc(((size_t)length + 1) * sizeof(wchar_t));
+	memcpy(raw, text, (size_t)length * sizeof(wchar_t));
+	char *utf8 = NULL;
+	os_wcs_to_utf8_ptr(raw, 0, &utf8);
+	bfree(raw);
+	char *decoded = pl_url_percent_decode(utf8 ? utf8 : "");
+	bfree(utf8);
+	wchar_t *wide = to_wide(decoded);
+	bfree(decoded);
+	return wide;
+}
+
 static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const struct pl_fetch_options *options)
 {
 	wchar_t *wide_url = to_wide(url);
@@ -314,6 +312,8 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 	parts.dwHostNameLength = (DWORD)-1;
 	parts.dwUrlPathLength = (DWORD)-1;
 	parts.dwExtraInfoLength = (DWORD)-1;
+	parts.dwUserNameLength = (DWORD)-1;
+	parts.dwPasswordLength = (DWORD)-1;
 	if (!WinHttpCrackUrl(wide_url, 0, 0, &parts) || !parts.dwHostNameLength ||
 	    (parts.nScheme != INTERNET_SCHEME_HTTP && parts.nScheme != INTERNET_SCHEME_HTTPS)) {
 		bfree(wide_url);
@@ -337,11 +337,15 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 	}
 	bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
 	INTERNET_PORT port = parts.nPort;
+	/* fetch.h: a user name and password in the address go to that server as Basic authentication */
+	wchar_t *user = parts.dwUserNameLength ? url_part(parts.lpszUserName, parts.dwUserNameLength) : NULL;
+	wchar_t *password = user ? url_part(parts.lpszPassword, parts.dwPasswordLength) : NULL;
 	bfree(wide_url);
 
 	enum pl_fetch_result result = PL_FETCH_OK;
 	wchar_t *agent = to_wide(options->user_agent ? options->user_agent : "obs-playlister");
-	fetch->session = WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+	/* fetch.h: no proxy, as with libcurl */
+	fetch->session = WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME,
 				     WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
 	bfree(agent);
 	DWORD flags = WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_REDIRECT |
@@ -372,9 +376,19 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 
 	DWORD redirects = fetch->max_redirects;
 	DWORD decompression = WINHTTP_DECOMPRESSION_FLAG_ALL;
+	/* fetch.h: never from https to http. WinHTTP's default, set here so that it is the plugin's rule and not a
+	 * default that could change. */
+	DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
 	if (!WinHttpSetOption(fetch->request, WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS, &redirects,
 			      sizeof(redirects)) ||
+	    !WinHttpSetOption(fetch->request, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy,
+			      sizeof(redirect_policy)) ||
 	    !WinHttpSetOption(fetch->request, WINHTTP_OPTION_DECOMPRESSION, &decompression, sizeof(decompression))) {
+		result = failure(fetch, GetLastError(), false);
+		goto done;
+	}
+	if (user && !WinHttpSetCredentials(fetch->request, WINHTTP_AUTH_TARGET_SERVER, WINHTTP_AUTH_SCHEME_BASIC, user,
+					   password ? password : L"", NULL)) {
 		result = failure(fetch, GetLastError(), false);
 		goto done;
 	}
@@ -412,6 +426,10 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 done:
 	bfree(host);
 	bfree(object);
+	bfree(user);
+	if (password)
+		SecureZeroMemory(password, wcslen(password) * sizeof(wchar_t));
+	bfree(password);
 	return result;
 }
 
@@ -504,6 +522,7 @@ void pl_fetch_close(struct pl_fetch *fetch)
 	if (fetch->all_closed)
 		CloseHandle(fetch->all_closed);
 	bfree(fetch->info.content_type);
+	bfree(fetch->info.charset);
 	bfree(fetch->info.final_url);
 	bfree(fetch);
 }
