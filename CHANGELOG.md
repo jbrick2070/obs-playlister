@@ -6,6 +6,52 @@ version numbers are the ones in `buildspec.json`.
 
 ## [Unreleased]
 
+Fixes from the code review of 2026-11-20.
+
+### Fixed
+
+- Quitting OBS, switching scene collection or editing the list no longer waits
+  for a folder or playlist that is being read from a slow or stalled network
+  share. The folder scanner leaves its per-file checks as soon as it is asked
+  to stop (it used to finish them, about 100 ms per remaining file on Windows),
+  every row's reader is asked to stop before any is waited for, and the wait
+  itself moved off OBS's video thread to a background thread, so removing or
+  changing a folder row during a show cannot freeze the picture.
+- A playlist is limited to 100,000 entries, and so is a folder. A list of
+  millions of lines, from a web address or a local file, could ask for
+  gigabytes of memory and take OBS down. The row's status says how many
+  entries were left out.
+- A paused item that is deleted, or leaves its folder or playlist, is no longer
+  resumed with sound and no picture, and the item after it is no longer
+  skipped: Play starts the item that followed it.
+- Deleting or editing the current row while the source is stopped, paused or at
+  the end of its list no longer starts playback. The position moves, and Play
+  or Restart starts it. A source that was paused only because it is hidden
+  plays from there when it is shown. Adding files to a source that had nothing
+  to play still starts it.
+- Shuffle: a manual Next from a hotkey or a remote control on Windows no longer
+  draws the same "random" order in every OBS session, and lists longer than
+  32,767 items are drawn from evenly. Playlister has its own random generator
+  now, seeded once when the plugin loads.
+- Shuffle: a change to a long list (a file added to a watched folder of
+  thousands) no longer holds up OBS's video thread while the played items are
+  matched with the new list.
+- Windows: files and folders whose names start with a dot are left out of
+  folder rows, as on macOS and Linux. That includes the `._name` side files a
+  Mac writes next to each file on a USB drive or a network share, which used
+  to show up as items that could not be played.
+- A file being recorded or copied into a watched folder no longer makes
+  Playlister list the whole folder twice a second. It waits for half a second
+  of quiet, and at most 5 seconds.
+- Lock list at start: holding back a change in a list of tens of thousands of
+  entries no longer costs about a second on every update.
+
+### Changed
+
+- The Linux harness (`tests/obs/run-harness.sh`) fails when OBS has to be
+  ended on exit, when OBS reports a memory leak, and when fewer checks ran
+  than the script expects.
+
 ## [0.5.2] - 2026-11-17
 
 ### Added
