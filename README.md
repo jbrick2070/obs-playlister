@@ -206,11 +206,21 @@ Tick **Show advanced options** for the rest:
 - **Speed** (100% / 1x, range 1% to 200% / 0.01x to 2x): playback speed.
   Changing Speed restarts the item that is playing.
 
-Web lists are fetched directly: no proxy is used. A list address may carry a
-user name and password (`https://user:password@host/list.m3u`); they are sent
-to that server only. A redirect from https to http is refused. A list that is
-not UTF-8 is read in the character set its server names, and as Windows-1252
-when it names none.
+Web lists: a list address may carry a user name and password
+(`https://user:password@host/list.m3u`). They are sent to that server, and
+after a redirect only if it stays with the same scheme, host and port; never
+to another host, nor from http to https. A redirect from https to http is
+refused. A list that is not UTF-8 is read in the character set its server
+names; it is read as Windows-1252 when the server names none, or names one
+this computer cannot convert from, or the text is not valid in the one it
+names.
+
+Behind a proxy: Playlister uses the proxy the environment names (`http_proxy`
+for http addresses, `https_proxy` for https, `all_proxy` for both, and
+`no_proxy` for hosts to reach directly). With none named, Windows uses the
+system's proxy settings and macOS and Linux use none. The items of a list are
+played by OBS's own media source (FFmpeg), which looks at `http_proxy` and
+`no_proxy` only, so set those for the items to play as well.
 
 ## Hotkeys
 

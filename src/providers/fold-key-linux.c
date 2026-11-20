@@ -45,6 +45,10 @@ char *pl_charset_to_utf8(const char *charset, const char *data, size_t size, siz
 	char *out_cursor = out;
 	size_t out_left = capacity;
 	size_t converted = iconv(converter, &in_cursor, &in_left, &out_cursor, &out_left);
+	/* the end of the text: a set that keeps state (ISO-2022-JP) or holds a character back to see what follows it
+	 * writes what it still has, and says so if the text stopped in the middle of something */
+	if (converted != (size_t)-1 && !in_left)
+		converted = iconv(converter, NULL, NULL, &out_cursor, &out_left);
 	iconv_close(converter);
 	if (converted == (size_t)-1 || in_left) {
 		bfree(out);

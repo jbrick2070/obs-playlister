@@ -2172,11 +2172,11 @@ static void settle_resume(struct media_playlist_source *mps, struct media_file_d
 /* ---- rows whose kind only the disk can tell (R-LIST-1 rule 5) ---- */
 
 /* The answer kept for this row and path, or NULL. The caller holds the list lock. */
-static const struct kind_answer *find_kind_answer(const struct media_playlist_source *mps, const char *row_uuid,
-						  const char *path)
+static struct kind_answer *find_kind_answer(const struct media_playlist_source *mps, const char *row_uuid,
+					    const char *path)
 {
 	for (size_t i = 0; i < mps->kind_answers.num; i++) {
-		const struct kind_answer *answer = &mps->kind_answers.array[i];
+		struct kind_answer *answer = &mps->kind_answers.array[i];
 		if (strcmp(answer->row_uuid, row_uuid) == 0 && strcmp(answer->path, path) == 0)
 			return answer;
 	}
@@ -2188,8 +2188,134 @@ static void keep_kind_answer(struct media_playlist_source *mps, const char *row_
 {
 	if (find_kind_answer(mps, row_uuid, path))
 		return;
-	struct kind_answer answer = {bstrdup(row_uuid), bstrdup(path), directory};
+	struct kind_answer answer = {bstrdup(row_uuid), bstrdup(path), directory, true};
 	da_push_back(mps->kind_answers, &answer);
+}
+
+/* ---- asking again about a row that was "not a folder" (struct kind_answer) ---- */
+
+struct kind_question {
+	char *row_uuid;
+	char *path;
+	uint64_t instance_id;
+};
+
+static void apply_snapshot(void *owner, struct pl_snapshot *snapshot);
+
+/* Under the list lock, in an update. Takes out the rechecks that have answered or whose row is gone or has another
+ * path (their providers come back in retired_out, to be retired once the lock is released), and registers one for
+ * each question that has none running (they come back in asked_out with their instance ids, to be created then).
+ * Takes the questions' strings. */
+static void reconcile_kind_rechecks(struct media_playlist_source *mps, const struct darray *rows_array,
+				    struct darray *questions_array, struct darray *retired_out)
+{
+	DARRAY(struct media_file_data) rows;
+	DARRAY(struct kind_question) questions;
+	DARRAY(struct pl_provider *) retired;
+	rows.da = *rows_array;
+	questions.da = *questions_array;
+	da_init(retired);
+
+	for (size_t i = mps->kind_rechecks.num; i-- > 0;) {
+		struct kind_recheck *check = &mps->kind_rechecks.array[i];
+		bool wanted = false;
+		for (size_t j = 0; j < rows.num && !wanted; j++)
+			wanted = strcmp(rows.array[j].id, check->row_uuid) == 0 &&
+				 strcmp(rows.array[j].path, check->path) == 0;
+		if (wanted && !check->done)
+			continue;
+		if (check->provider)
+			da_push_back(retired, &check->provider);
+		bfree(check->row_uuid);
+		bfree(check->path);
+		da_erase(mps->kind_rechecks, i);
+	}
+	for (size_t i = questions.num; i-- > 0;) {
+		struct kind_question *question = &questions.array[i];
+		bool running = false;
+		for (size_t j = 0; j < mps->kind_rechecks.num && !running; j++)
+			running = strcmp(mps->kind_rechecks.array[j].row_uuid, question->row_uuid) == 0 &&
+				  strcmp(mps->kind_rechecks.array[j].path, question->path) == 0;
+		if (running) {
+			bfree(question->row_uuid);
+			bfree(question->path);
+			da_erase(questions, i);
+			continue;
+		}
+		question->instance_id = ++mps->last_instance_id;
+		struct kind_recheck check = {question->instance_id, bstrdup(question->row_uuid),
+					     bstrdup(question->path), NULL, false};
+		da_push_back(mps->kind_rechecks, &check);
+	}
+	*questions_array = questions.da;
+	*retired_out = retired.da;
+}
+
+/* With no lock held, after reconcile_kind_rechecks: retires what it took out and starts what it registered. Frees
+ * both arrays. */
+static void start_and_stop_kind_rechecks(struct media_playlist_source *mps, struct darray *questions_array,
+					 struct darray *retired_array, const struct pl_container_options *options)
+{
+	DARRAY(struct kind_question) questions;
+	DARRAY(struct pl_provider *) retired;
+	questions.da = *questions_array;
+	retired.da = *retired_array;
+	for (size_t i = 0; i < retired.num; i++)
+		pl_provider_request_stop(retired.array[i]);
+	for (size_t i = 0; i < retired.num; i++)
+		pl_provider_retire(retired.array[i]);
+	da_free(retired);
+
+	for (size_t i = 0; i < questions.num; i++) {
+		struct kind_question *question = &questions.array[i];
+		struct pl_provider *provider = pl_provider_create(PL_ROW_UNKNOWN, question->path, question->row_uuid,
+								  question->instance_id, options, apply_snapshot, mps);
+		bool stored = false;
+		pthread_mutex_lock(&mps->mutex);
+		for (size_t j = mps->kind_rechecks.num; j-- > 0;) {
+			struct kind_recheck *check = &mps->kind_rechecks.array[j];
+			if (check->instance_id != question->instance_id)
+				continue;
+			if (provider) {
+				check->provider = provider;
+				stored = true;
+			} else {
+				/* no worker to ask: the row stays a file row, and the next update asks again */
+				bfree(check->row_uuid);
+				bfree(check->path);
+				da_erase(mps->kind_rechecks, j);
+			}
+		}
+		pthread_mutex_unlock(&mps->mutex);
+		if (provider && !stored)
+			pl_provider_retire(provider);
+		bfree(question->row_uuid);
+		bfree(question->path);
+	}
+	da_free(questions);
+	*questions_array = questions.da;
+	*retired_array = retired.da;
+}
+
+/* The answer of a recheck, from apply_snapshot under the list lock: true when the row turned out to be a folder
+ * after all, and the list has to be built again. The provider stays until the next update retires it (a publish
+ * callback must not). */
+static bool take_kind_recheck(struct media_playlist_source *mps, const struct pl_snapshot *snapshot)
+{
+	for (size_t i = 0; i < mps->kind_rechecks.num; i++) {
+		struct kind_recheck *check = &mps->kind_rechecks.array[i];
+		if (check->instance_id != snapshot->instance_id || check->done)
+			continue;
+		check->done = true;
+		struct kind_answer *answer = find_kind_answer(mps, check->row_uuid, check->path);
+		if (answer && !answer->directory && snapshot->probe == PL_PROBE_FOLDER) {
+			answer->directory = true;
+			answer->fresh = true;
+			return true;
+		}
+		return false;
+	}
+	return false;
 }
 
 /* Drops the answers of rows that are gone or whose path changed (all of them with rows NULL). The caller holds the
@@ -2230,8 +2356,12 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 	size_t row_index = 0;
 	struct media_file_data *row = registration ? folder_row(mps, registration->row_uuid, &row_index) : NULL;
 	if (!row) {
+		/* no row's provider: a file row's kind asked again, perhaps (struct kind_recheck) */
+		bool became_folder = snapshot->probe != PL_PROBE_NONE && take_kind_recheck(mps, snapshot);
 		pthread_mutex_unlock(&mps->mutex);
 		pl_snapshot_free(snapshot);
+		if (became_folder)
+			obs_source_update(mps->source, NULL);
 		return;
 	}
 	if (snapshot->probe != PL_PROBE_NONE) {
@@ -2580,6 +2710,14 @@ static void mps_destroy(void *data)
 		bfree(mps->providers.array[i].location);
 	}
 	da_free(mps->providers);
+	for (size_t i = 0; i < mps->kind_rechecks.num; i++)
+		pl_provider_request_stop(mps->kind_rechecks.array[i].provider);
+	for (size_t i = 0; i < mps->kind_rechecks.num; i++) {
+		pl_provider_retire(mps->kind_rechecks.array[i].provider);
+		bfree(mps->kind_rechecks.array[i].row_uuid);
+		bfree(mps->kind_rechecks.array[i].path);
+	}
+	da_free(mps->kind_rechecks);
 	prune_kind_answers(mps, NULL);
 	da_free(mps->kind_answers);
 	cancel_resume(mps);
@@ -3663,15 +3801,22 @@ struct kind_lookup {
 	struct media_playlist_source *mps;
 	const char *row_uuid;
 	bool unknown;
+	/* the answer was "not a folder" and is not this update's own: it stands for now, and is asked again on a
+	 * worker (struct kind_answer), as upstream asked on every update */
+	bool ask_again;
 };
 
 static bool path_is_directory(const char *path, void *context)
 {
 	struct kind_lookup *lookup = context;
 	pthread_mutex_lock(&lookup->mps->mutex);
-	const struct kind_answer *answer = find_kind_answer(lookup->mps, lookup->row_uuid, path);
+	struct kind_answer *answer = find_kind_answer(lookup->mps, lookup->row_uuid, path);
 	bool known = answer != NULL;
 	bool directory = answer && answer->directory;
+	if (answer && !answer->directory) {
+		lookup->ask_again = !answer->fresh;
+		answer->fresh = false;
+	}
 	pthread_mutex_unlock(&lookup->mps->mutex);
 	if (!known)
 		lookup->unknown = true;
@@ -3871,18 +4016,25 @@ static void mps_update(void *data, obs_data_t *settings)
 	obs_data_t *new_row_kinds = obs_data_create();
 	struct pl_filter filter;
 	pl_filter_parse(&filter, obs_data_get_string(settings, S_EXTENSION_FILTER));
+	DARRAY(struct kind_question) kind_questions;
+	DARRAY(struct pl_provider *) kind_retired;
+	da_init(kind_questions);
 	for (size_t i = 0; i < count; i++) {
 		obs_data_t *item = obs_data_array_item(array, i);
 		const char *path = obs_data_get_string(item, "value");
 		const char *id = obs_data_get_string(item, S_ID);
 
 		if (path && *path) {
-			struct kind_lookup lookup = {mps, id, false};
+			struct kind_lookup lookup = {mps, id, false, false};
 			enum pl_row_kind kind = pl_classify_row(path, saved_folder_kind(row_kinds, id, path), &filter,
 								path_is_directory, &lookup);
 			/* only the disk can tell, and it has not been asked yet: the row's worker asks (R-LIST-1 rule 5) */
 			if (lookup.unknown)
 				kind = PL_ROW_UNKNOWN;
+			if (lookup.ask_again) {
+				struct kind_question question = {bstrdup(id), bstrdup(path), 0};
+				da_push_back(kind_questions, &question);
+			}
 			add_file(&new_files.da, path, id, kind);
 			if (kind == PL_ROW_FOLDER && *id)
 				save_folder_kind(new_row_kinds, id, path);
@@ -3907,6 +4059,7 @@ static void mps_update(void *data, obs_data_t *settings)
 	/* R-BEH-5: a list change tries the entries that failed again */
 	clear_failures(mps);
 	prune_kind_answers(mps, &new_files.da);
+	reconcile_kind_rechecks(mps, &new_files.da, &kind_questions.da, &kind_retired.da);
 	if (mps->first_update) {
 		/* R-KEY-2: the row by its uuid (current_media_index only when the uuid is gone), and in a folder row the
 		 * item by key and occurrence */
@@ -4155,6 +4308,7 @@ static void mps_update(void *data, obs_data_t *settings)
 	free_files(&old_files.da);
 	/* R-THR-3: providers are destroyed and created with no lock held; the options reach the running ones */
 	start_and_stop_providers(mps, &starts.da, &retired.da, &container_options);
+	start_and_stop_kind_rechecks(mps, &kind_questions.da, &kind_retired.da, &container_options);
 	for (size_t i = 0; i < option_targets.num; i++)
 		pl_provider_set_options(option_targets.array[i], &container_options);
 	da_free(option_targets);

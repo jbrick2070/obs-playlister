@@ -171,8 +171,10 @@ static enum pl_fetch_result failure(struct pl_fetch *fetch, DWORD error, bool in
 	if (error == ERROR_WINHTTP_REDIRECT_FAILED && (uint32_t)fetch->redirects >= fetch->max_redirects)
 		return PL_FETCH_TOO_MANY_REDIRECTS;
 	/* below the limit WinHTTP refuses a redirect only for where it leads: from https to http (the redirect policy
-	 * set in start), or to a scheme that is not http(s) */
-	if (error == ERROR_WINHTTP_REDIRECT_FAILED)
+	 * set in start), or to a scheme that is not http(s), which it may also report as a scheme it does not know.
+	 * The address the fetch was opened with never gives that code: start refuses such a one itself, as an invalid
+	 * address, before WinHTTP sees it. */
+	if (error == ERROR_WINHTTP_REDIRECT_FAILED || error == ERROR_WINHTTP_UNRECOGNIZED_SCHEME)
 		fetch->info.failure = PL_FETCH_FAILURE_REDIRECT_REFUSED;
 	return in_body ? PL_FETCH_TRUNCATED : PL_FETCH_NETWORK_ERROR;
 }
@@ -285,6 +287,115 @@ static bool track(struct pl_fetch *fetch, HINTERNET handle)
 	return false;
 }
 
+/* One environment variable as UTF-8 (bmem), or NULL when it is not set or empty. Windows' own call, so a name is
+ * found in any case, as the system compares them. */
+static char *environment(const wchar_t *name)
+{
+	wchar_t value[2048];
+	DWORD length = GetEnvironmentVariableW(name, value, (DWORD)(sizeof(value) / sizeof(value[0])));
+	if (!length || length >= sizeof(value) / sizeof(value[0]))
+		return NULL;
+	char *text = NULL;
+	os_wcs_to_utf8_ptr(value, 0, &text);
+	return text;
+}
+
+/* Whether no_proxy names the host: entries separated by commas or spaces, "*" for every host, and an entry matches
+ * the host itself and every host below it ("example.com", ".example.com" and "*.example.com" all match
+ * "lists.example.com"), as FFmpeg and libcurl read it */
+static bool host_in_no_proxy(const char *no_proxy, const char *host)
+{
+	size_t host_length = strlen(host);
+	const char *c = no_proxy;
+	while (*c) {
+		c += strspn(c, ", \t");
+		size_t length = strcspn(c, ", \t");
+		const char *entry = c;
+		c += length;
+		if (length == 1 && entry[0] == '*')
+			return true;
+		if (length && entry[0] == '*') {
+			entry++;
+			length--;
+		}
+		if (length && entry[0] == '.') {
+			entry++;
+			length--;
+		}
+		if (!length || length > host_length)
+			continue;
+		const char *tail = host + host_length - length;
+		if (astrcmpi_n(tail, entry, length) == 0 && (tail == host || tail[-1] == '.'))
+			return true;
+	}
+	return false;
+}
+
+/* fetch.h: the proxy the environment names for this request, as the "host:port" WinHTTP takes, or NULL: none is
+ * named, no_proxy names the host, or the value is not a plain http proxy without a user name (then the system's
+ * settings decide, as they do when nothing is named). bmem. */
+static wchar_t *environment_proxy(bool secure, const wchar_t *wide_host)
+{
+	char *value = secure ? environment(L"https_proxy") : environment(L"http_proxy");
+	if (!value)
+		value = environment(L"all_proxy");
+	if (!value)
+		return NULL;
+	char *host = NULL;
+	os_wcs_to_utf8_ptr(wide_host, 0, &host);
+	char *no_proxy = environment(L"no_proxy");
+	bool direct = no_proxy && host && host_in_no_proxy(no_proxy, host);
+	bfree(no_proxy);
+	bfree(host);
+
+	const char *address = value;
+	if (astrcmpi_n(address, "http://", 7) == 0)
+		address += 7;
+	size_t length = strcspn(address, "/");
+	wchar_t *proxy = NULL;
+	if (!direct && length && !strstr(address, "://") && !memchr(address, '@', length)) {
+		char *plain = bstrdup_n(address, length);
+		proxy = to_wide(plain);
+		bfree(plain);
+	}
+	bfree(value);
+	return proxy;
+}
+
+/* Whether two addresses have the same scheme, host and port, as they are written (a port left out and the same
+ * port written out count as different, which errs on the side of not sending). User names, passwords, paths and
+ * queries do not count. */
+static bool same_origin(const char *a, const char *b)
+{
+	char *plain_a = pl_url_redacted(a);
+	char *plain_b = pl_url_redacted(b);
+	const char *host_a = strstr(plain_a, "://");
+	const char *host_b = strstr(plain_b, "://");
+	bool same = false;
+	if (host_a && host_b) {
+		size_t length_a = (size_t)(host_a + 3 - plain_a) + strcspn(host_a + 3, "/?#");
+		size_t length_b = (size_t)(host_b + 3 - plain_b) + strcspn(host_b + 3, "/?#");
+		same = length_a == length_b && astrcmpi_n(plain_a, plain_b, length_a) == 0;
+	}
+	bfree(plain_a);
+	bfree(plain_b);
+	return same;
+}
+
+/* Sends the request and waits for the response's headers */
+static enum pl_fetch_result exchange(struct pl_fetch *fetch)
+{
+	if (!WinHttpSendRequest(fetch->request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0,
+				(DWORD_PTR)fetch))
+		return failure(fetch, GetLastError(), false);
+	enum pl_fetch_result result = wait_for(fetch, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE, false);
+	if (result != PL_FETCH_OK)
+		return result;
+	if (!WinHttpReceiveResponse(fetch->request, NULL))
+		return failure(fetch, GetLastError(), false);
+	return wait_for(fetch, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE, false);
+}
+
 /* A user name or password out of a URL: its "%XX" sequences decoded, as libcurl decodes them (bmem) */
 static wchar_t *url_part(const wchar_t *text, DWORD length)
 {
@@ -344,9 +455,13 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 
 	enum pl_fetch_result result = PL_FETCH_OK;
 	wchar_t *agent = to_wide(options->user_agent ? options->user_agent : "obs-playlister");
-	/* fetch.h: no proxy, as with libcurl */
-	fetch->session = WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME,
-				     WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+	/* fetch.h: the proxy the environment names, as the player of the items reads it; with none named, the system's
+	 * own proxy settings, as before */
+	wchar_t *proxy = environment_proxy(secure, host);
+	fetch->session =
+		WinHttpOpen(agent, proxy ? WINHTTP_ACCESS_TYPE_NAMED_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+			    proxy ? proxy : WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+	bfree(proxy);
 	bfree(agent);
 	DWORD flags = WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_REDIRECT |
 		      WINHTTP_CALLBACK_FLAG_HANDLES;
@@ -393,24 +508,35 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 		goto done;
 	}
 
-	if (!WinHttpSendRequest(fetch->request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0,
-				(DWORD_PTR)fetch)) {
-		result = failure(fetch, GetLastError(), false);
-		goto done;
-	}
-	result = wait_for(fetch, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE, false);
+	result = exchange(fetch);
 	if (result != PL_FETCH_OK)
 		goto done;
-
-	if (!WinHttpReceiveResponse(fetch->request, NULL)) {
-		result = failure(fetch, GetLastError(), false);
-		goto done;
-	}
-	result = wait_for(fetch, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE, false);
-	if (result != PL_FETCH_OK)
-		goto done;
-
 	read_headers(fetch);
+
+	/* fetch.h: the user name and password also count after a redirect that stays with the origin they were given
+	 * for. WinHTTP sends them with the first request and drops them at every redirect, so when such a redirect
+	 * ends at a 401, the request, which now stands at the redirect's address, is sent once more with them. After
+	 * a redirect to another origin they are never sent. */
+	if (user && fetch->info.status == 401 && fetch->info.redirects > 0 && fetch->info.final_url &&
+	    same_origin(url, fetch->info.final_url)) {
+		if (!WinHttpSetCredentials(fetch->request, WINHTTP_AUTH_TARGET_SERVER, WINHTTP_AUTH_SCHEME_BASIC, user,
+					   password ? password : L"", NULL)) {
+			result = failure(fetch, GetLastError(), false);
+			goto done;
+		}
+		bfree(fetch->info.content_type);
+		bfree(fetch->info.charset);
+		bfree(fetch->info.final_url);
+		uint32_t redirects_before = fetch->info.redirects;
+		memset(&fetch->info, 0, sizeof(fetch->info));
+		result = exchange(fetch);
+		if (result != PL_FETCH_OK)
+			goto done;
+		read_headers(fetch);
+		/* a further redirect of the second request is not followed with them either: only its own count shows */
+		if (fetch->info.redirects < redirects_before)
+			fetch->info.redirects = redirects_before;
+	}
 	/* WinHTTP hands back the redirect it would not follow; a 3xx without a Location is just a status */
 	char *location = NULL;
 	if (fetch->info.status >= 300 && fetch->info.status < 400 && fetch->info.redirects >= fetch->max_redirects)

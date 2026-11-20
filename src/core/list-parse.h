@@ -61,8 +61,9 @@ void pl_list_result_free(struct pl_list_result *result);
 
 /* The body as UTF-8: a UTF-8 BOM is dropped; a UTF-16 BOM (either byte order) converts; text that is valid UTF-8
  * stays, whatever the server called it (plain ASCII is the same in every character set a playlist comes in, and
- * servers that label UTF-8 as something else are common). Text that is not: UTF-16 without a BOM when charset says
- * "utf-16", "utf-16le" or "utf-16be"; else converted from charset by convert when both are given and the conversion
+ * servers that label UTF-8 as something else are common), unless charset says "utf-16", "utf-16le" or "utf-16be"
+ * and every other byte is a NUL, which is UTF-16 of mostly ASCII text without a BOM. Text that is not valid UTF-8:
+ * UTF-16 without a BOM when charset says so; else converted from charset by convert when both are given and the conversion
  * succeeds; else, and always without a charset, read as Windows-1252, the code page older Windows players wrote .m3u
  * files in. Returns a bmem buffer of *length bytes plus a terminating NUL; NULs inside the text are kept (the line
  * reader reports them). */

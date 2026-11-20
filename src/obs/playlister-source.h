@@ -47,13 +47,26 @@ struct row_provider {
 	struct pl_provider *provider; /* NULL until created, or when it could not be */
 };
 
-/* What a row's worker found its path to be (a PL_ROW_UNKNOWN row, provider.h): kept for the session, so the row is
- * asked about once and never on the graphics thread. A folder's answer is also saved with the source (row_kinds); a
- * file's is not, so a share that was offline when the row was added is asked again when OBS next starts. */
+/* What a row's worker found its path to be (a PL_ROW_UNKNOWN row, provider.h), so the disk is never asked on the
+ * graphics thread. A folder's answer is final and also saved with the source (row_kinds). "Not a folder" is also
+ * what a drive that is not connected or a share that is offline answers, so it only stands until the next update:
+ * every later update keeps the row a file row and asks again on a worker (struct kind_recheck), and the row becomes a
+ * folder row when the answer changes. fresh: the answer came for the update now due, which does not ask again. */
 struct kind_answer {
 	char *row_uuid;
 	char *path;
 	bool directory;
+	bool fresh;
+};
+
+/* A file row's kind being asked again: a provider of its own, as for a row of unknown kind, but not the row's (a
+ * file row has none). Under the list lock; the provider is created and retired with no lock held. */
+struct kind_recheck {
+	uint64_t instance_id;
+	char *row_uuid;
+	char *path;
+	struct pl_provider *provider; /* NULL until created */
+	bool done;                    /* it has answered: retired by the next update */
 };
 
 /* R-BEH-5: an entry that failed to play, and why, for its status line (R-UX-4) */
@@ -149,7 +162,8 @@ struct media_playlist_source {
 	struct pl_container_options container_options; /* extension_filter points at container_filter */
 	char *container_filter;
 	struct resume_target resume;
-	DARRAY(struct kind_answer) kind_answers; /* under the list lock */
+	DARRAY(struct kind_answer) kind_answers;   /* under the list lock */
+	DARRAY(struct kind_recheck) kind_rechecks; /* under the list lock */
 	volatile bool release_held; /* a playback trigger: video_tick has the providers publish kept lists (R-DIR-11) */
 
 	/* R-BEH-5 */

@@ -55,11 +55,13 @@ Italian.
 - The warning under Speed is about Speed only ("Changing Speed restarts the item that is playing."); that every
   change goes live is said at the top of the window.
 - Web lists: both the Windows and the Mac and Linux fetchers now refuse a redirect from https to http and say so,
-  send a user name and password in the address (to that server only), and use no proxy. Before, Windows dropped
-  the user name and password and used the system's proxy; Mac and Linux followed https to http and used the proxy
-  environment variables.
-- A web list that is not UTF-8 is read in the character set its server names. Windows-1252 is used only when it
-  names none.
+  and send a user name and password in the address to that server, and after a redirect only to the same scheme,
+  host and port. Before, Windows dropped the user name and password, and Mac and Linux followed https to http.
+- Web lists behind a proxy: Windows now also uses the proxy the environment names (`http_proxy`, `https_proxy`,
+  `all_proxy`, with `no_proxy`), as Mac and Linux did and do; with none named it uses the system's proxy settings,
+  as before. OBS's media source, which plays the items, reads `http_proxy` and `no_proxy`.
+- A web list that is not UTF-8 is read in the character set its server names. Windows-1252 is used when the server
+  names none, names one this computer cannot convert from, or sends text that is not valid in the one it names.
 - README: Install comes right after the Quick start with one download per system first; where Playlister comes
   from and the feature list are at the end; the table of four players is a link to START-HERE.md.
 - CI: a release tag whose version is not the one in `buildspec.json` fails the release; the GitHub actions are
@@ -83,6 +85,10 @@ Italian.
   video thread to see whether it is a folder. A path on a drive that is
   spinning up or on a stalled share could hold the picture for that look. A
   background thread looks instead; the row reads "reading" for that moment.
+  A path that was not a folder when it was looked at (a drive that was not
+  connected, a share that was offline) is looked at again, in the
+  background, at every later change of the source's settings, as before: it
+  becomes a folder row when its drive is back.
 - Mac and Linux: quitting, or removing a web address row, no longer waits for
   a name lookup that is not answered (a dead DNS server), with libcurl 7.87
   or later. With an older libcurl it still waits until the system's resolver

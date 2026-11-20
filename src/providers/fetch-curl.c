@@ -377,10 +377,11 @@ struct pl_fetch *pl_fetch_open(const char *url, const struct pl_fetch_options *o
 	 * libcurl at run time does not know the option and refuses it, which changes nothing. */
 	curl_easy_setopt(easy, CURLOPT_QUICK_EXIT, 1L);
 #endif
-	/* fetch.h: no proxy, also none from the environment (http_proxy and the like), as with WinHTTP */
-	curl_easy_setopt(easy, CURLOPT_PROXY, "");
-	/* fetch.h: a user name and password in the address are sent as Basic, with the first request; libcurl does
-	 * not send them on to another host a redirect names (CURLOPT_UNRESTRICTED_AUTH stays off) */
+	/* fetch.h: the proxy the environment names (http_proxy, https_proxy, all_proxy, with no_proxy) is used, which
+	 * is libcurl's default: no option is set for it */
+	/* fetch.h: a user name and password in the address are sent as Basic, with the first request, and after a
+	 * redirect only to the same host, port and scheme: libcurl 7.83 and later compare all three, older ones the
+	 * host name (CURLOPT_UNRESTRICTED_AUTH stays off) */
 	curl_easy_setopt(easy, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
 	curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, on_header);
 	curl_easy_setopt(easy, CURLOPT_HEADERDATA, fetch);

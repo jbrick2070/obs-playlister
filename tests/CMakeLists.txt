@@ -69,12 +69,15 @@ obs_playlister_add_test(test-modes test-modes.c "${_core}/modes.c" "${_core}/sor
 obs_playlister_add_test(test-keys test-keys.c "${_core}/keys.c" "${_core}/sort.c" "${_core}/natural.c")
 # What a row does with a new snapshot while an item plays: delete, eviction and renames (R-DIR-8)
 obs_playlister_add_test(test-merge test-merge.c "${_core}/merge.c" "${_core}/entry-list.c")
-# R-KEY-1 key folding at the Win32 boundary and on macOS (R-MAC-4); Linux keys are the text unchanged (R-LNX-5)
+# R-KEY-1 key folding at the Win32 boundary and on macOS (R-MAC-4); Linux keys are the text unchanged (R-LNX-5). And
+# the system's character sets, for a playlist a server sends in one (R-REM-10), on all three.
 if(WIN32)
   obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-win.c")
 elseif(OS_MACOS)
   obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-mac.c")
   target_link_libraries(test-fold-key PRIVATE ${_playlister_macos_frameworks})
+else()
+  obs_playlister_add_test(test-fold-key test-fold-key.c "${CMAKE_SOURCE_DIR}/src/providers/fold-key-linux.c")
 endif()
 # The folder provider's write-complete gate and watch modes against a fake folder (R-DIR-3, R-DIR-4)
 obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")

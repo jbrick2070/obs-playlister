@@ -220,6 +220,21 @@ static void test_named_charset(void)
 	expect_decoded(be, sizeof(be), "utf-16be",
 		       "\xC3\xA9"
 		       "b");
+	/* UTF-16 of plain ASCII, which is valid UTF-8 byte for byte (a NUL after every letter): the name and the NULs
+	 * together say UTF-16, in the byte order the NULs show, whichever of the three names the server used */
+	const char ascii_le[] = {'a', 0, '.', 0, 'm', 0, 'p', 0, '3', 0, '\n', 0, 'b', 0};
+	const char ascii_be[] = {0, 'a', 0, '.', 0, 'm', 0, 'p', 0, '3', 0, '\n', 0, 'b'};
+	expect_decoded(ascii_le, sizeof(ascii_le), "utf-16le", "a.mp3\nb");
+	expect_decoded(ascii_le, sizeof(ascii_le), "utf-16", "a.mp3\nb");
+	expect_decoded(ascii_be, sizeof(ascii_be), "utf-16be", "a.mp3\nb");
+	expect_decoded(ascii_be, sizeof(ascii_be), "utf-16", "a.mp3\nb");
+	/* plain ASCII called UTF-16 stays what it is, and the NUL pattern alone, with no such name, decides nothing */
+	expect_decoded("a.mp3\nb", 7, "utf-16", "a.mp3\nb");
+	size_t kept = 0;
+	char *as_sent = pl_list_decode_as(ascii_le, sizeof(ascii_le), NULL, convert_stub, &kept);
+	assert(kept == sizeof(ascii_le) && memcmp(as_sent, ascii_le, kept) == 0);
+	bfree(as_sent);
+
 	/* a BOM wins over the name */
 	const char bom[] = {'\xFE', '\xFF', 0, 'b'};
 	expect_decoded(bom, sizeof(bom), "x-upper", "b");

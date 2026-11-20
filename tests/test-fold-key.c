@@ -43,6 +43,12 @@ int main(void)
 	pl_test_no_crash_dialogs();
 
 	long allocations = bnum_allocs();
+#ifdef __linux__
+	/* R-LNX-5: Linux file systems tell names apart by case and by every byte, so the key is the text as it is */
+	expect_fold("Clip.mp4", "Clip.mp4");
+	expect_fold("Sub\\Episode 2.MKV", "Sub\\Episode 2.MKV");
+	expect_fold("caf\xc3\xa9.mp4", "caf\xc3\xa9.mp4");
+#else
 	expect_fold("clip.mp4", "CLIP.MP4");
 #ifdef _WIN32
 	expect_fold("Sub\\Episode 2.MKV", "SUB/EPISODE 2.MKV");
@@ -66,6 +72,7 @@ int main(void)
 		    "b.mp4",
 		    "A\xef\xbf\xbd"
 		    "B.MP4");
+#endif
 	expect_fold("", "");
 	assert(pl_fold_key(NULL) == NULL);
 
