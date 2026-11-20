@@ -536,7 +536,7 @@ static void shuffler_update_files_(struct shuffler *s, struct darray *array, boo
 			size_t history_before_next = 0;
 
 			/* nothing drawn and no history (shuffle never used): nothing is looked for, so no index */
-			struct match_index built;
+			struct match_index built = {0};
 			struct match_index *index = NULL;
 			bool searches = s->head > 0 || s->history < s->shuffled_files.num;
 			if (indexed && searches &&

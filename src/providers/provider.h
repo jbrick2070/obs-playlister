@@ -108,12 +108,20 @@ void pl_provider_request_stop(struct pl_provider *provider);
 /* Ends a provider without waiting for its worker: the stop is requested, the provider is cut off from its owner (no
  * publish happens after this returns, and the owner may be freed; the wait is for a publish call in flight at most,
  * never for a file or network call), and a background thread joins the worker and frees everything (R-THR-3). NULL is
- * nothing to retire. When that thread cannot be started the provider is destroyed here. */
+ * nothing to retire. When that thread cannot be started, or after pl_provider_reaper_shutdown, the provider is
+ * destroyed here instead (still cut off first), which waits for its worker. */
 void pl_provider_retire(struct pl_provider *provider);
 
-/* Waits until every retired provider's worker has ended and been freed, and ends the background thread. Called when
- * the module unloads, after every source is gone; safe to call when nothing was ever retired. */
+/* Waits until every retired provider's worker has ended and been freed, and ends the background thread; safe to
+ * call again, and when nothing was ever retired. Called when the module is on its way out, before OBS frees the
+ * module's texts, which the workers look up (plugin-main.c). From then on no thread is started: a provider retired
+ * later (a source that something still held is destroyed after the module unloaded) is joined by its caller, so no
+ * thread and no memory is left behind. */
 void pl_provider_reaper_shutdown(void);
+
+/* Lets pl_provider_retire use its background thread (again): when the module loads, and in tests after a shutdown.
+ * This is also the state before any call. */
+void pl_provider_reaper_open(void);
 
 /* R-LIST-1 rule 5: whether path names an existing directory, from its attributes (no listing), so a folder the user
  * may not read is still a folder */

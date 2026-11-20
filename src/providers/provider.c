@@ -124,6 +124,10 @@ static struct pl_thread *reaper_thread;
 static struct pl_stop *reaper_stop; /* set by the shutdown: the thread ends once the queue is empty */
 static struct pl_wake *reaper_wake; /* a provider was queued */
 static bool reaper_ending;
+/* the shutdown ran (the module is unloading): no thread is started any more, and a provider retired from here on is
+ * joined by its caller. A source something still holds is destroyed after the unload, and a thread started for it
+ * would never be ended. */
+static bool reaper_closed;
 
 static void reaper_main(void *unused)
 {
@@ -162,7 +166,7 @@ void pl_provider_retire(struct pl_provider *provider)
 
 	bool queued = false;
 	pthread_mutex_lock(&reaper_mutex);
-	if (!reaper_thread && !reaper_ending) {
+	if (!reaper_thread && !reaper_ending && !reaper_closed) {
 		if (!reaper_stop)
 			reaper_stop = pl_stop_create();
 		if (!reaper_wake)
@@ -180,9 +184,17 @@ void pl_provider_retire(struct pl_provider *provider)
 		pl_provider_destroy(provider);
 }
 
+void pl_provider_reaper_open(void)
+{
+	pthread_mutex_lock(&reaper_mutex);
+	reaper_closed = false;
+	pthread_mutex_unlock(&reaper_mutex);
+}
+
 void pl_provider_reaper_shutdown(void)
 {
 	pthread_mutex_lock(&reaper_mutex);
+	reaper_closed = true;
 	struct pl_thread *thread = reaper_thread;
 	if (thread) {
 		reaper_ending = true;

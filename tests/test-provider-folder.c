@@ -874,6 +874,73 @@ static void test_missing_folder(void)
 	bfree(parent);
 }
 
+/* ---- a receiver whose publish call blocks, for the retire tests (R-THR-3) ---- */
+
+struct blocking_owner {
+	os_event_t *entered; /* manual reset: a publish call has begun */
+	os_event_t *release; /* manual reset: publish calls may return */
+	volatile long calls;
+	volatile long finished;
+};
+
+static void blocking_publish(void *owner, struct pl_snapshot *snapshot)
+{
+	struct blocking_owner *blocking = owner;
+	os_atomic_inc_long(&blocking->calls);
+	os_event_signal(blocking->entered);
+	os_event_wait(blocking->release);
+	pl_snapshot_free(snapshot);
+	os_atomic_inc_long(&blocking->finished);
+}
+
+struct retire_call {
+	struct pl_provider *provider;
+	struct blocking_owner *owner;
+	volatile long returned;
+	long finished_at_return; /* publish calls that had returned when the retire did */
+};
+
+static void *retire_on_thread(void *data)
+{
+	struct retire_call *call = data;
+	pl_provider_retire(call->provider);
+	call->finished_at_return = os_atomic_load_long(&call->owner->finished);
+	os_atomic_set_long(&call->returned, 1);
+	return NULL;
+}
+
+/* Retires provider, whose first publish call is made to blocking and held there: the retire must wait for that call
+ * (without the cut-off it returns at once, and the owner could be freed under the call), and return once it is
+ * over. The caller then checks that nothing more is published. */
+static void retire_during_publish(struct pl_provider *provider, struct blocking_owner *blocking)
+{
+	assert(os_event_timedwait(blocking->entered, WAIT_MS) == 0);
+	struct retire_call call = {provider, blocking, 0, 0};
+	pthread_t thread;
+	assert(pthread_create(&thread, NULL, retire_on_thread, &call) == 0);
+	os_sleep_ms(400);
+	/* the publish call is still in flight, so the retire has not returned */
+	assert(os_atomic_load_long(&call.returned) == 0);
+	assert(os_atomic_load_long(&blocking->finished) == 0);
+	os_event_signal(blocking->release);
+	pthread_join(thread, NULL);
+	assert(os_atomic_load_long(&call.returned) == 1);
+	assert(call.finished_at_return == 1 && os_atomic_load_long(&blocking->calls) == 1);
+}
+
+static void blocking_owner_init(struct blocking_owner *blocking)
+{
+	memset(blocking, 0, sizeof(*blocking));
+	os_event_init(&blocking->entered, OS_EVENT_TYPE_MANUAL);
+	os_event_init(&blocking->release, OS_EVENT_TYPE_MANUAL);
+}
+
+static void blocking_owner_free(struct blocking_owner *blocking)
+{
+	os_event_destroy(blocking->entered);
+	os_event_destroy(blocking->release);
+}
+
 /* R-THR-3: a retired provider is asked to stop, cut off from its owner and joined by the module's background thread.
  * Nothing is published after the retire returns, whether the worker was idle or in the middle of its first listing,
  * and the shutdown leaves nothing behind. */
@@ -914,10 +981,43 @@ static void test_retire(void)
 	pl_provider_retire(NULL);
 	pl_provider_request_stop(NULL);
 
+	/* a retire while the publish callback is running waits for it and for nothing else; nothing is published
+	 * afterwards, though the folder changes and the callback would no longer block */
+	struct blocking_owner blocking;
+	blocking_owner_init(&blocking);
+	struct pl_provider *publishing =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 40, &options, blocking_publish, &blocking);
+	assert(publishing);
+	retire_during_publish(publishing, &blocking);
+	write_file(folder, "4.mp4", 100, OLD);
+	os_sleep_ms(1500);
+	assert(os_atomic_load_long(&blocking.calls) == 1);
+
 	/* the shutdown waits for every worker and frees them; a second one has nothing to do */
 	pl_provider_reaper_shutdown();
 	pl_provider_reaper_shutdown();
 	assert(inbox_count(&inbox) == mark);
+	assert(os_atomic_load_long(&blocking.calls) == 1);
+	blocking_owner_free(&blocking);
+
+	/* after the shutdown (the module unloading) a retire starts no thread again: the provider is joined and freed
+	 * before the retire returns, so nothing is left behind (main checks the allocations) and its owner hears
+	 * nothing more */
+	struct inbox late;
+	inbox_init(&late);
+	struct pl_provider *last = pl_provider_create(PL_ROW_FOLDER, folder, "row", 41, &options, on_publish, &late);
+	assert(last);
+	assert(wait_for(&late, 0, lists, K("1.mp4"), "a listing before the late retire"));
+	long before_late = bnum_allocs();
+	pl_provider_retire(last);
+	/* the provider and its worker are gone already, and no thread, stop or wake was made for it */
+	assert(bnum_allocs() < before_late);
+	size_t late_mark = inbox_count(&late);
+	write_file(folder, "5.mp4", 100, OLD);
+	os_sleep_ms(1000);
+	assert(inbox_count(&late) == late_mark);
+	inbox_free(&late);
+	pl_provider_reaper_open();
 	inbox_free(&inbox);
 	remove_folder(folder);
 	bfree(folder);
