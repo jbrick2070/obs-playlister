@@ -304,6 +304,10 @@ static void test_carry_credentials(void)
 	expect_carried("https://host/list", "https://host/x", "https://host/x");
 	expect_carried("https://user:pw@host/list", "https://other:pw2@host/x", "https://other:pw2@host/x");
 	expect_carried("https://user:pw@host/list", "https://user:pw@host/list", "https://user:pw@host/list");
+	/* the same ones in libcurl's spelling, as it writes them after a relative redirect: the given spelling */
+	expect_carried("http://us%40er:p%3Ass@127.0.0.1:8080/auth", "http://us%40er:p%3ass@127.0.0.1:8080/auth-needed",
+		       "http://us%40er:p%3Ass@127.0.0.1:8080/auth-needed");
+	expect_carried("https://user:pw@host/list", "https://user:p%77@host/x", "https://user:pw@host/x");
 }
 
 static void test_file_url(void)

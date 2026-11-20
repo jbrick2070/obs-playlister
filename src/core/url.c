@@ -682,19 +682,25 @@ bool pl_url_same_origin(const char *a, const char *b)
 
 char *pl_url_carry_credentials(const char *given, const char *final)
 {
+	char *final_plain, *final_user, *final_password;
+	pl_url_split_credentials(final, &final_plain, &final_user, &final_password);
 	char *plain, *user, *password;
-	pl_url_split_credentials(final, &plain, &user, &password);
-	bool has_own = user != NULL;
-	bfree(plain);
-	bfree(user);
-	bfree(password);
 	pl_url_split_credentials(given, &plain, &user, &password);
-	bool to_carry = user != NULL;
+	/* Newer libcurl writes the user name and password it was given apart back into the address of a relative
+	 * redirect, in its own spelling ("p%3ass" for "p%3Ass"): the same user and password are written as the given
+	 * address writes them. A final address with other ones of its own keeps them. */
+	bool same_own = final_user && user && strcmp(final_user, user) == 0 && strcmp(final_password, password) == 0;
+	bool carry = user && (!final_user || same_own) && pl_url_same_origin(given, final);
+	bfree(final_user);
+	bfree(final_password);
 	bfree(plain);
 	bfree(user);
 	bfree(password);
-	if (has_own || !to_carry || !pl_url_same_origin(given, final))
+	if (!carry) {
+		bfree(final_plain);
 		return bstrdup(final);
+	}
+	final = final_plain;
 
 	/* the user information as the given address writes it, "@" included: from after "://" to its last "@" before
 	 * the path */
@@ -710,5 +716,6 @@ char *pl_url_carry_credentials(const char *given, const char *final)
 	dstr_ncopy(&carried, final, (size_t)(final_authority - final));
 	dstr_ncat(&carried, authority, info_length);
 	dstr_cat(&carried, final_authority);
+	bfree(final_plain);
 	return carried.array;
 }
