@@ -11,8 +11,9 @@
 # prints what it found and returns 0 only when all of this holds:
 # - the script reached its end ("HARNESS DONE" in the log);
 # - no check failed, and as many passed as were expected: EXPECTED_CHECKS when set, else the number the script itself
-#   logs with DONE ("HARNESS DONE checks=<run> expected=<n>"). A script that logs no number must pass at least one
-#   check. Without this a step that stops scheduling its checks still passed;
+#   logs with DONE ("HARNESS DONE checks=<run> expected=<n>"; playlister-harness.lua counts the checks declared in
+#   its own text, so the number cannot go stale). A script that logs no number must pass at least one check. Without
+#   this a step that stops scheduling its checks still passed;
 # - OBS exited by itself when asked to. killed is true when it had to be ended: a hang on exit is the plugin's worst
 #   failure (a worker or player thread that is never joined), and it used to pass;
 # - OBS reported "Number of memory leaks: 0", for every script. A missing line counts as a leak: OBS writes it only

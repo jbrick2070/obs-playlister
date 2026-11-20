@@ -17,7 +17,7 @@
 #   tests/obs/run-harness.sh                 # after installing the plugin (sudo cmake --install build)
 #   TIMEOUT_SECONDS=600 tests/obs/run-harness.sh
 #   HARNESS_LOG_COPY=/path/log.txt tests/obs/run-harness.sh   # keeps OBS's log (the run's folder is removed)
-#   EXPECTED_CHECKS=124 tests/obs/run-harness.sh              # instead of the number the script logs with DONE
+#   EXPECTED_CHECKS=<n> tests/obs/run-harness.sh              # instead of the number the script logs with DONE
 # Needs: obs (33 or later, with Lua scripting), ffmpeg, and Xvfb when there is no DISPLAY.
 
 set -euo pipefail

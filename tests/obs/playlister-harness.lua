@@ -39,11 +39,43 @@ local D = {}
 local mark = {}
 local steps = {}
 local index, step_start = 1, 0
--- How many checks a whole run makes. The runner compares it with the passes it finds in the log (run-harness.sh), so
--- a step that stops making its checks fails the run instead of passing with fewer. When checks are added or removed,
--- this number changes with them: the DONE line says how many ran.
-local EXPECTED_CHECKS = 124
+-- How many checks a whole run makes is not written down anywhere: the script reads its own text when it is done and
+-- takes every check("name", and check_status("name", it finds as declared (each is made exactly once in a run; a
+-- comment line does not count). A declared check that did not run is logged as a FAIL by name, and the DONE line
+-- carries the number declared, which the runner compares with the passes in the log (harness-verdict.sh). So a step
+-- that stops making its checks fails the run, and adding or removing a check needs no number to be kept up to date.
 local checks_run = 0
+local runs = {} -- by check name: how often it ran
+
+-- name -> how many places in this script make that check, and the total; nil when the script cannot be read
+local function declared_checks()
+	-- where this script is: the chunk name of one of its functions (a path, with "@" before it when loaded as a
+	-- file), else the folder OBS gives the script
+	local file = nil
+	local info = debug and debug.getinfo and debug.getinfo(1, "S")
+	if info and type(info.source) == "string" and #info.source < 1024 then
+		file = io.open((info.source:gsub("^@", "")), "r")
+	end
+	if not file and script_path then
+		file = io.open(script_path() .. "/playlister-harness.lua", "r")
+	end
+	if not file then
+		return nil
+	end
+	local declared, total = {}, 0
+	for line in file:lines() do
+		if not line:match("^%s*%-%-") then
+			for _, pattern in ipairs({ 'check%("([^"]+)",', 'check_status%("([^"]+)",' }) do
+				for name in line:gmatch(pattern) do
+					declared[name] = (declared[name] or 0) + 1
+					total = total + 1
+				end
+			end
+		end
+	end
+	file:close()
+	return declared, total
+end
 
 local function log(s)
 	obs.script_log(obs.LOG_INFO, "HARNESS " .. s)
@@ -51,7 +83,25 @@ end
 
 local function check(name, ok, detail)
 	checks_run = checks_run + 1
+	runs[name] = (runs[name] or 0) + 1
 	log((ok and "PASS " or "FAIL ") .. name .. " (" .. (detail or "") .. ")")
+end
+
+-- the last thing a run logs: every declared check that did not run, then DONE with both counts
+local function log_done()
+	local declared, total = declared_checks()
+	if not declared then
+		log("FAIL the script could not read its own text to count its checks (no check count)")
+		total = 0
+	else
+		for name, places in pairs(declared) do
+			if (runs[name] or 0) < places then
+				log("FAIL a declared check did not run: " .. name .. " (ran " .. (runs[name] or 0) .. " of " ..
+					places .. ")")
+			end
+		end
+	end
+	log(string.format("DONE checks=%d expected=%d", checks_run, total))
 end
 
 local function now_ms()
@@ -1346,6 +1396,99 @@ step("hold over", 500, 10000, function() return dur() == D[1] and st() == PLAYIN
 	remove_source()
 end)
 
+-- A list edit while the source stands still starts nothing (review 2026-11-20, Q-04; core/standstill.h): the current
+-- row deleted while paused, its path edited after Stop, and a row in the middle of the list deleted after Stop. Each
+-- time the source reports stopped, and Play starts the row now in that place. Three file rows, loop on.
+step("source for edits while standing still", 1500, 1500, nil, function()
+	create_source("playlister-harness-standstill", function(settings)
+		set_playlist(settings, { { FILES[1], "s1" }, { FILES[2], "s2" }, { FILES[3], "s3" } })
+		obs.obs_data_set_bool(settings, "loop", true)
+	end)
+	check("source for edits while standing still created and shown", src ~= nil and item ~= nil)
+end)
+
+step("standing-still source plays", 1000, 15000, function() return st() == PLAYING and dur() == D[1] end, function()
+	obs.obs_source_media_play_pause(src, true)
+end)
+
+step("paused before the edit", 1000, 5000, function() return st() == PAUSED end, function()
+	check("the source is paused on row 1 before its row is deleted", st() == PAUSED and dur() == D[1], status())
+	update_settings(function(data)
+		set_playlist(data, { { FILES[2], "s2" }, { FILES[3], "s3" } })
+	end)
+end)
+
+step("current row deleted while paused", 2000, 2000, nil, function()
+	check("deleting the current row while paused starts nothing", st() == STOPPED, status())
+	obs.obs_source_media_play_pause(src, false)
+end)
+
+step("play after the paused row was deleted", 500, 15000, function() return st() == PLAYING and dur() == D[2] end,
+	function()
+		check("Play then starts the row that took the deleted row's place", st() == PLAYING and dur() == D[2],
+			status())
+		obs.obs_source_media_stop(src)
+	end)
+
+step("stopped before the edit", 2000, 2000, nil, function()
+	check("the source is stopped before its row is edited", st() == STOPPED, status())
+	update_settings(function(data)
+		set_playlist(data, { { FILES[1], "s2" }, { FILES[3], "s3" } })
+	end)
+end)
+
+step("current row edited while stopped", 2000, 2000, nil, function()
+	check("editing the current row's path while stopped starts nothing", st() == STOPPED, status())
+	obs.obs_source_media_play_pause(src, false)
+end)
+
+step("play after the stopped row was edited", 500, 15000, function() return st() == PLAYING and dur() == D[1] end,
+	function()
+		check("Play then starts the edited row's new file", st() == PLAYING and dur() == D[1], status())
+		obs.obs_source_media_next(src)
+	end)
+
+step("second row before the stop", 500, 15000, function() return st() == PLAYING and dur() == D[3] end, function()
+	obs.obs_source_media_stop(src)
+end)
+
+-- the second row goes and another takes its place: the position stays in the middle of the list, not back on row 1
+step("stopped on the second row", 2000, 2000, nil, function()
+	check("the source is stopped on its second row", st() == STOPPED, status())
+	update_settings(function(data)
+		set_playlist(data, { { FILES[1], "s2" }, { FILES[2], "s4" } })
+	end)
+end)
+
+step("second row deleted while stopped", 2000, 2000, nil, function()
+	check("deleting the current row while stopped starts nothing", st() == STOPPED, status())
+	obs.obs_source_media_play_pause(src, false)
+end)
+
+step("play after the second row was deleted", 500, 15000, function() return st() == PLAYING and dur() > 0 end,
+	function()
+		check("Play then starts the row now in the deleted row's place, not row 1", st() == PLAYING and
+			dur() == D[2], status())
+		remove_source()
+	end)
+
+-- and a source with nothing to play is not standing still: its first file starts by itself
+step("source with no rows", 1500, 1500, nil, function()
+	create_source("playlister-harness-empty-start", function(settings)
+		set_playlist(settings, {})
+	end)
+	check("source with no rows created and shown", src ~= nil and item ~= nil)
+	update_settings(function(data)
+		set_playlist(data, { { FILES[3], "e1" } })
+	end)
+end)
+
+step("first file added", 500, 15000, function() return st() == PLAYING and dur() == D[3] end, function()
+	check("the first file added to a source with no rows plays by itself", st() == PLAYING and dur() == D[3],
+		status())
+	remove_source()
+end)
+
 -- R-UP-81, R-BEH-7: sources in a scene that is not live never play, so their child has no size; each still reports
 -- one, so it is a box that can be placed: a saved size, else the canvas while it has rows, else none
 local other_scene = nil
@@ -1414,7 +1557,7 @@ end)
 step("removed", 1500, 1500, nil, function()
 	os.remove(CORRUPT_FILE)
 	os.remove(CORRUPT_STILL)
-	log(string.format("DONE checks=%d expected=%d", checks_run, EXPECTED_CHECKS))
+	log_done()
 end)
 
 local function tick()
