@@ -1001,9 +1001,11 @@ static enum pl_status_level row_status(const struct media_playlist_source *mps, 
 		}
 	} else {
 		const struct row_report *report = &row->report;
-		dstr_copy(line, row->kind == PL_ROW_PLAYLIST ? T_ROW_KIND_PLAYLIST
-				: row->kind == PL_ROW_REMOTE ? T_ROW_KIND_REMOTE
-							     : T_ROW_KIND_FOLDER);
+		/* a row whose kind its worker is still finding out has none to name yet */
+		dstr_copy(line, row->kind == PL_ROW_PLAYLIST  ? T_ROW_KIND_PLAYLIST
+				: row->kind == PL_ROW_REMOTE  ? T_ROW_KIND_REMOTE
+				: row->kind == PL_ROW_UNKNOWN ? ""
+							      : T_ROW_KIND_FOLDER);
 		level = report->level;
 		size_t visible = row->folder_items.num;
 		if (row->awaiting) {
@@ -1034,7 +1036,8 @@ static enum pl_status_level row_status(const struct media_playlist_source *mps, 
 			cat_last_list(next_part(&status), report->last_ok_unix_ms);
 	}
 	if (status.len) {
-		dstr_cat(line, " - ");
+		if (line->len)
+			dstr_cat(line, " - ");
 		dstr_cat_dstr(line, &status);
 	}
 	dstr_free(&status);
@@ -1921,6 +1924,52 @@ static void settle_resume(struct media_playlist_source *mps, struct media_file_d
 		resume_after_row(mps, target_index);
 }
 
+/* ---- rows whose kind only the disk can tell (R-LIST-1 rule 5) ---- */
+
+/* The answer kept for this row and path, or NULL. The caller holds the list lock. */
+static const struct kind_answer *find_kind_answer(const struct media_playlist_source *mps, const char *row_uuid,
+						  const char *path)
+{
+	for (size_t i = 0; i < mps->kind_answers.num; i++) {
+		const struct kind_answer *answer = &mps->kind_answers.array[i];
+		if (strcmp(answer->row_uuid, row_uuid) == 0 && strcmp(answer->path, path) == 0)
+			return answer;
+	}
+	return NULL;
+}
+
+/* The caller holds the list lock */
+static void keep_kind_answer(struct media_playlist_source *mps, const char *row_uuid, const char *path, bool directory)
+{
+	if (find_kind_answer(mps, row_uuid, path))
+		return;
+	struct kind_answer answer = {bstrdup(row_uuid), bstrdup(path), directory};
+	da_push_back(mps->kind_answers, &answer);
+}
+
+/* Drops the answers of rows that are gone or whose path changed (all of them with rows NULL). The caller holds the
+ * list lock. */
+static void prune_kind_answers(struct media_playlist_source *mps, const struct darray *rows_array)
+{
+	DARRAY(struct media_file_data) rows;
+	if (rows_array)
+		rows.da = *rows_array;
+	else
+		da_init(rows);
+	for (size_t i = mps->kind_answers.num; i-- > 0;) {
+		struct kind_answer *answer = &mps->kind_answers.array[i];
+		bool used = false;
+		for (size_t j = 0; j < rows.num && !used; j++)
+			used = strcmp(rows.array[j].id, answer->row_uuid) == 0 &&
+			       strcmp(rows.array[j].path, answer->path) == 0;
+		if (used)
+			continue;
+		bfree(answer->row_uuid);
+		bfree(answer->path);
+		da_erase(mps->kind_answers, i);
+	}
+}
+
 /* The publish callback (PLAN section 3.3), on the provider's worker: under the list lock the snapshot replaces the
  * row's items, unless it comes from an instance the row no longer expects (R-THR-2). The playing item keeps
  * playing, found by key and occurrence (R-DIR-8), and the shuffler follows (R-THR-4). */
@@ -1938,6 +1987,19 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 	if (!row) {
 		pthread_mutex_unlock(&mps->mutex);
 		pl_snapshot_free(snapshot);
+		return;
+	}
+	if (snapshot->probe != PL_PROBE_NONE) {
+		/* the worker of a row of unknown kind has its answer: it is kept, and the list is built again with it. The
+		 * update is only asked for here; libobs runs it at the source's next tick, as it runs an edit made in
+		 * Properties. */
+		bool asked = row->kind == PL_ROW_UNKNOWN;
+		if (asked)
+			keep_kind_answer(mps, row->id, row->path, snapshot->probe == PL_PROBE_FOLDER);
+		pthread_mutex_unlock(&mps->mutex);
+		pl_snapshot_free(snapshot);
+		if (asked)
+			obs_source_update(mps->source, NULL);
 		return;
 	}
 
@@ -2270,6 +2332,8 @@ static void mps_destroy(void *data)
 		bfree(mps->providers.array[i].location);
 	}
 	da_free(mps->providers);
+	prune_kind_answers(mps, NULL);
+	da_free(mps->kind_answers);
 	cancel_resume(mps);
 	bfree(mps->container_filter);
 	clear_failures(mps);
@@ -3095,12 +3159,29 @@ static void set_parents(struct darray *array)
 	}
 }
 
-/* R-LIST-1 rule 5, from the path's attributes: a folder the user may not read is still a folder, whose row then shows
- * access denied (upstream opened the folder, which took such a folder for a file) */
+/* R-LIST-1 rule 5: whether a row's path is a folder, which only the disk can tell. The update that asks runs on the
+ * graphics thread (libobs applies an edit made in Properties, and a source's first settings, at the source's next
+ * tick), and the disk can take as long as a drive that is spinning up or a share that has gone quiet: so the disk
+ * is never asked here. The answer is the one the row's worker found earlier (apply_snapshot), and without one the
+ * row is of unknown kind for now (unknown is set): mps_update gives it a worker that asks, and classifies it again
+ * when the answer comes. Upstream opened the folder here, on every update. */
+struct kind_lookup {
+	struct media_playlist_source *mps;
+	const char *row_uuid;
+	bool unknown;
+};
+
 static bool path_is_directory(const char *path, void *context)
 {
-	UNUSED_PARAMETER(context);
-	return pl_folder_is_directory(path);
+	struct kind_lookup *lookup = context;
+	pthread_mutex_lock(&lookup->mps->mutex);
+	const struct kind_answer *answer = find_kind_answer(lookup->mps, lookup->row_uuid, path);
+	bool known = answer != NULL;
+	bool directory = answer && answer->directory;
+	pthread_mutex_unlock(&lookup->mps->mutex);
+	if (!known)
+		lookup->unknown = true;
+	return directory;
 }
 
 /* A folder kind saved for this row with an unchanged path (R-LIST-1, rule 1) */
@@ -3207,7 +3288,9 @@ static void migrate_settings(obs_data_t *settings)
 		if (path && *path) {
 			if (position++ == index)
 				obs_data_set_string(settings, S_CURRENT_ROW_UUID, id);
-			if (*id && !strstr(path, "://") && !pl_path_is_unc(path) && path_is_directory(path, NULL))
+			/* the one place the disk is still asked during an update: once per source, when settings saved by
+			 * upstream's Media Playlist Source or by Phase 1 are taken over, for the rows they hold */
+			if (*id && !strstr(path, "://") && !pl_path_is_unc(path) && pl_folder_is_directory(path))
 				save_folder_kind(row_kinds, id, path);
 		}
 		obs_data_release(row);
@@ -3297,8 +3380,12 @@ static void mps_update(void *data, obs_data_t *settings)
 		const char *id = obs_data_get_string(item, S_ID);
 
 		if (path && *path) {
+			struct kind_lookup lookup = {mps, id, false};
 			enum pl_row_kind kind = pl_classify_row(path, saved_folder_kind(row_kinds, id, path), &filter,
-								path_is_directory, NULL);
+								path_is_directory, &lookup);
+			/* only the disk can tell, and it has not been asked yet: the row's worker asks (R-LIST-1 rule 5) */
+			if (lookup.unknown)
+				kind = PL_ROW_UNKNOWN;
 			add_file(&new_files.da, path, id, kind);
 			if (kind == PL_ROW_FOLDER && *id)
 				save_folder_kind(new_row_kinds, id, path);
@@ -3322,6 +3409,7 @@ static void mps_update(void *data, obs_data_t *settings)
 	shuffler_set_loop(&mps->shuffler, loop);
 	/* R-BEH-5: a list change tries the entries that failed again */
 	clear_failures(mps);
+	prune_kind_answers(mps, &new_files.da);
 	if (mps->first_update) {
 		/* R-KEY-2: the row by its uuid (current_media_index only when the uuid is gone), and in a folder row the
 		 * item by key and occurrence */
@@ -3347,8 +3435,12 @@ static void mps_update(void *data, obs_data_t *settings)
 	 * list, an edit that takes the current row away or changes its path loads nothing (core/standstill.h). Not on the
 	 * first update, and not with an empty list, where the change is what starts playback. */
 	const enum obs_media_state state_before = media_state(mps);
-	const enum pl_standstill stand = !mps->first_update && mps->current_media ? standstill(mps, state_before)
-										  : PL_STANDSTILL_NONE;
+	/* parked_for_kind: the last update parked with no current row, because the only rows it had were of unknown kind
+	 * (below); the stand still counts for the update their answer brings */
+	const enum pl_standstill stand = !mps->first_update && (mps->current_media || mps->parked_for_kind)
+						 ? standstill(mps, state_before)
+						 : PL_STANDSTILL_NONE;
+	mps->parked_for_kind = false;
 	/* where the current row was, for the row that takes its place if it is deleted while the source stands still */
 	const size_t index_before = mps->current_media_index;
 
@@ -3360,7 +3452,10 @@ static void mps_update(void *data, obs_data_t *settings)
 			if (strcmp(new_files.array[i].id, mps->current_media->id) == 0) {
 				mps->current_media_index = i;
 				found = true;
-				item_edited = strcmp(mps->current_media->path, new_files.array[i].path) != 0;
+				/* a row whose kind changed is another thing to play too: a row of unknown kind that
+				 * turned out to be a file is loaded like an edited one */
+				item_edited = strcmp(mps->current_media->path, new_files.array[i].path) != 0 ||
+					      mps->current_media->kind != new_files.array[i].kind;
 			}
 		}
 	}
@@ -3535,7 +3630,18 @@ static void mps_update(void *data, obs_data_t *settings)
 		}
 	} else if (!mps->first_update) {
 		remember_item(mps, NULL);
-		clear_media_source(mps);
+		/* nothing to play, but the current row may be one whose kind is still being found out. With the source
+		 * standing still (core/standstill.h) it must not start when the row turns out to be a file: the stand is
+		 * kept, as park_position keeps it, so the update the answer brings parks too. */
+		bool waits_for_kind = false;
+		for (size_t i = 0; stand != PL_STANDSTILL_NONE && i < mps->files.num && !waits_for_kind; i++)
+			waits_for_kind = mps->files.array[i].kind == PL_ROW_UNKNOWN;
+		if (waits_for_kind) {
+			park_position(mps, state_before, stand);
+			mps->parked_for_kind = true;
+		} else {
+			clear_media_source(mps);
+		}
 	}
 	/* R-BEH-5: stopped after everything failed, and this update loaded nothing: the list changed, so play again */
 	if (mps->all_failed && !nothing_playable(mps)) {

@@ -80,6 +80,10 @@ enum pl_publication_result pl_publication_update(struct pl_publication *publicat
 						 size_t count, const struct pl_publication_status *status,
 						 bool release);
 
+/* Publishes a PL_ROW_UNKNOWN row's answer (provider.h): a snapshot with nothing but the instance and the probe.
+ * Dropped, like any snapshot, once the publication is detached. Worker thread. */
+void pl_publication_publish_probe(struct pl_publication *publication, bool directory);
+
 /* Cuts the publication off from its receiver, from any thread: it waits for a publish call in flight (the receiver's
  * own work, never the provider's file or network calls), and no publish is made after it returns; later snapshots are
  * dropped. The caller must not hold a lock the receiver takes. For a provider whose worker is left to end by itself

@@ -307,3 +307,17 @@ void pl_container_options_copy(struct pl_container_options *dst, char **filter_t
 	*filter_text = bstrdup(src->extension_filter ? src->extension_filter : "");
 	dst->extension_filter = *filter_text;
 }
+
+void pl_publication_publish_probe(struct pl_publication *publication, bool directory)
+{
+	struct pl_snapshot *snapshot = bzalloc(sizeof(*snapshot));
+	snapshot->instance_id = publication->instance_id;
+	snapshot->generation = ++publication->generation;
+	snapshot->probe = directory ? PL_PROBE_FOLDER : PL_PROBE_FILE;
+	pthread_mutex_lock(&publication->owner_mutex);
+	if (publication->detached)
+		pl_snapshot_free(snapshot);
+	else
+		publication->publish(publication->owner, snapshot);
+	pthread_mutex_unlock(&publication->owner_mutex);
+}

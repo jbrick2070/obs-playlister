@@ -1038,6 +1038,74 @@ static void test_is_directory(void)
 	bfree(folder);
 }
 
+static bool probed(const struct pl_snapshot *snapshot, const void *context)
+{
+	return snapshot->probe == *(const enum pl_probe *)context && snapshot->count == 0 && !snapshot->status_message;
+}
+
+/* A row whose kind only the disk can tell (PL_ROW_UNKNOWN): its provider asks on its own worker and publishes the
+ * answer once, so the source never asks on the graphics thread. A folder is a folder; a file, and a path that is not
+ * there at all, is a file row, as it always was. */
+static void test_unknown_kind(void)
+{
+	char *folder = make_folder("kind");
+	write_file(folder, "1.mp4", 100, OLD);
+	char *file = path_in(folder, "1.mp4");
+	char *nothing = path_in(folder, "not-there");
+	struct pl_container_options options = default_options();
+	const enum pl_probe is_folder = PL_PROBE_FOLDER;
+	const enum pl_probe is_file = PL_PROBE_FILE;
+	struct {
+		const char *location;
+		const enum pl_probe *expected;
+	} cases[] = {{folder, &is_folder}, {file, &is_file}, {nothing, &is_file}};
+
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		struct inbox inbox;
+		inbox_init(&inbox);
+		struct pl_provider *provider = pl_provider_create(PL_ROW_UNKNOWN, cases[i].location, "row", 60 + i,
+								  &options, on_publish, &inbox);
+		assert(provider);
+		const struct pl_snapshot *answer = wait_for(&inbox, 0, probed, cases[i].expected, cases[i].location);
+		assert(answer->instance_id == 60 + i && !answer->initial_scan_complete);
+		/* the calls every provider takes do nothing to this one, and it has nothing kept */
+		pl_provider_set_options(provider, &options);
+		pl_provider_release_held(provider);
+		pl_provider_refresh_now(provider);
+		assert(pl_provider_held_changes(provider) == 0);
+		os_sleep_ms(200);
+		/* one answer, and that is all it ever says */
+		assert(inbox_count(&inbox) == 1);
+		pl_provider_destroy(provider);
+		inbox_free(&inbox);
+	}
+
+	/* retired the moment it starts: the answer is either published by then or never, so the owner can go */
+	for (size_t i = 0; i < 8; i++) {
+		struct inbox inbox;
+		inbox_init(&inbox);
+		struct pl_provider *provider =
+			pl_provider_create(PL_ROW_UNKNOWN, folder, "row", 70 + i, &options, on_publish, &inbox);
+		assert(provider);
+		pl_provider_request_stop(provider);
+		pl_provider_retire(provider);
+		size_t published = inbox_count(&inbox);
+		assert(published <= 1);
+		os_sleep_ms(50);
+		assert(inbox_count(&inbox) == published);
+		inbox_free(&inbox);
+	}
+	/* the retired workers are joined and freed before the allocations are counted (main) */
+	pl_provider_reaper_shutdown();
+	pl_provider_reaper_open();
+
+	assert(!pl_provider_create(PL_ROW_UNKNOWN, NULL, "row", 80, &options, on_publish, NULL));
+	bfree(nothing);
+	bfree(file);
+	remove_folder(folder);
+	bfree(folder);
+}
+
 static void test_create_arguments(void)
 {
 	struct pl_container_options options = default_options();
@@ -1116,6 +1184,8 @@ int main(void)
 	printf("missing folder: passed\n");
 	test_retire();
 	printf("retire: passed\n");
+	test_unknown_kind();
+	printf("a row of unknown kind: passed\n");
 #ifdef _WIN32
 	test_admin_share();
 #endif

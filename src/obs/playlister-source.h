@@ -47,6 +47,15 @@ struct row_provider {
 	struct pl_provider *provider; /* NULL until created, or when it could not be */
 };
 
+/* What a row's worker found its path to be (a PL_ROW_UNKNOWN row, provider.h): kept for the session, so the row is
+ * asked about once and never on the graphics thread. A folder's answer is also saved with the source (row_kinds); a
+ * file's is not, so a share that was offline when the row was added is asked again when OBS next starts. */
+struct kind_answer {
+	char *row_uuid;
+	char *path;
+	bool directory;
+};
+
 /* R-BEH-5: an entry that failed to play, and why, for its status line (R-UX-4) */
 struct failure_mark {
 	char *key;  /* failure_key */
@@ -123,6 +132,7 @@ struct media_playlist_source {
 	 * because it was hidden; showing it plays from the position. */
 	bool stopped_by_request;
 	bool play_on_show;
+	bool parked_for_kind; /* mps_update only, under the list lock: see there */
 	enum visibility_behavior visibility_behavior;
 	enum restart_behavior restart_behavior;
 
@@ -135,6 +145,7 @@ struct media_playlist_source {
 	struct pl_container_options container_options; /* extension_filter points at container_filter */
 	char *container_filter;
 	struct resume_target resume;
+	DARRAY(struct kind_answer) kind_answers; /* under the list lock */
 	volatile bool release_held; /* a playback trigger: video_tick has the providers publish kept lists (R-DIR-11) */
 
 	/* R-BEH-5 */
