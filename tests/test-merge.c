@@ -22,8 +22,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <util/bmem.h>
+#include <util/platform.h>
 #include "test-common.h"
 
 #include "core/merge.h"
@@ -228,6 +230,131 @@ static void test_compose(void)
 	free_entries(alone, 1);
 }
 
+/* P-08: what pl_merge_compose_renames did before it sorted its renames, a scan of both lists per entry, kept here
+ * to compare with */
+static void compose_by_scanning(struct pl_entry *newer, size_t newer_count, const struct pl_entry *held,
+				size_t held_count)
+{
+	const char **published = bzalloc((newer_count ? newer_count : 1) * sizeof(*published));
+	for (size_t n = 0; n < newer_count; n++) {
+		const char *look_for = newer[n].previous_key;
+		if (!look_for) {
+			bool renamed_away = false;
+			for (size_t r = 0; r < newer_count && !renamed_away; r++)
+				renamed_away = newer[r].previous_key &&
+					       strcmp(newer[r].previous_key, newer[n].key) == 0;
+			if (renamed_away)
+				continue;
+			look_for = newer[n].key;
+		}
+		for (size_t h = 0; h < held_count && !published[n]; h++) {
+			if (held[h].previous_key && strcmp(held[h].key, look_for) == 0)
+				published[n] = held[h].previous_key;
+		}
+	}
+	for (size_t n = 0; n < newer_count; n++) {
+		if (published[n]) {
+			char *copy = bstrdup(published[n]);
+			bfree(newer[n].previous_key);
+			newer[n].previous_key = copy;
+		}
+		if (newer[n].previous_key && strcmp(newer[n].previous_key, newer[n].key) == 0) {
+			bfree(newer[n].previous_key);
+			newer[n].previous_key = NULL;
+		}
+	}
+	bfree((void *)published);
+}
+
+static bool same_or_both_null(const char *a, const char *b)
+{
+	return a && b ? strcmp(a, b) == 0 : a == b;
+}
+
+/* random held and newer snapshots over a few keys, so renames chain, swap, collide and repeat: the sorted look-ups
+ * give what the scan gave, entry by entry */
+static void test_compose_matches_the_scan(void)
+{
+	const char *keys[] = {"A", "B", "C", "D", "E", "F", "G", "H"};
+	srand(20261120);
+	size_t composed = 0;
+	for (int round = 0; round < 20000; round++) {
+		struct pl_entry held[6], newer[6], expected[6];
+		size_t held_count = (size_t)rand() % 7;
+		size_t newer_count = (size_t)rand() % 7;
+		for (size_t i = 0; i < held_count; i++)
+			set_entry(&held[i], keys[rand() % 8], 1, rand() % 3 ? NULL : keys[rand() % 8]);
+		for (size_t i = 0; i < newer_count; i++) {
+			set_entry(&newer[i], keys[rand() % 8], 1, rand() % 3 ? NULL : keys[rand() % 8]);
+			set_entry(&expected[i], newer[i].key, 1, newer[i].previous_key);
+		}
+		pl_merge_compose_renames(newer, newer_count, held, held_count);
+		compose_by_scanning(expected, newer_count, held, held_count);
+		for (size_t i = 0; i < newer_count; i++) {
+			if (!same_or_both_null(newer[i].previous_key, expected[i].previous_key)) {
+				fprintf(stderr, "round %d, entry %zu (%s): %s, the scan gave %s\n", round, i,
+					newer[i].key, newer[i].previous_key ? newer[i].previous_key : "none",
+					expected[i].previous_key ? expected[i].previous_key : "none");
+				assert(false);
+			}
+			composed += newer[i].previous_key != NULL;
+		}
+		free_entries(held, held_count);
+		free_entries(newer, newer_count);
+		free_entries(expected, newer_count);
+	}
+	/* the rounds did compose renames */
+	assert(composed > 1000);
+}
+
+/* a locked list of 20,000 entries: composing costs nothing without renames, and little with every entry renamed in
+ * both snapshots (the scan took about a second for the first and far longer for the second) */
+static void test_compose_is_quick(void)
+{
+	const size_t count = 20000;
+	struct pl_entry *held = bzalloc(count * sizeof(*held));
+	struct pl_entry *newer = bzalloc(count * sizeof(*newer));
+	char key[32], previous[32];
+	for (size_t i = 0; i < count; i++) {
+		snprintf(key, sizeof(key), "FILE-%zu.MP4", i);
+		set_entry(&held[i], key, 1, NULL);
+		set_entry(&newer[i], key, 1, NULL);
+	}
+	uint64_t start = os_gettime_ns();
+	for (int i = 0; i < 100; i++)
+		pl_merge_compose_renames(newer, count, held, count);
+	double plain = (double)(os_gettime_ns() - start) / 1e9;
+	for (size_t i = 0; i < count; i++)
+		assert(!newer[i].previous_key);
+	free_entries(held, count);
+	free_entries(newer, count);
+
+	/* every held entry was renamed from OLD-i to MID-i, and every newer one from MID-i to FILE-i */
+	for (size_t i = 0; i < count; i++) {
+		snprintf(key, sizeof(key), "MID-%zu.MP4", i);
+		snprintf(previous, sizeof(previous), "OLD-%zu.MP4", i);
+		set_entry(&held[i], key, 1, previous);
+		snprintf(previous, sizeof(previous), "FILE-%zu.MP4", i);
+		set_entry(&newer[i], previous, 1, key);
+	}
+	start = os_gettime_ns();
+	pl_merge_compose_renames(newer, count, held, count);
+	double renamed = (double)(os_gettime_ns() - start) / 1e9;
+	for (size_t i = 0; i < count; i += 199) {
+		snprintf(previous, sizeof(previous), "OLD-%zu.MP4", i);
+		assert(newer[i].previous_key && strcmp(newer[i].previous_key, previous) == 0);
+	}
+	free_entries(held, count);
+	free_entries(newer, count);
+	bfree(held);
+	bfree(newer);
+	if (plain > 1.0 || renamed > 1.0) {
+		fprintf(stderr, "composing %zu entries: %.2f s for 100 runs without renames, %.2f s with all renamed\n",
+			count, plain, renamed);
+		assert(false);
+	}
+}
+
 int main(void)
 {
 	pl_test_no_crash_dialogs();
@@ -238,6 +365,8 @@ int main(void)
 	test_rekey();
 	test_follow_rename();
 	test_compose();
+	test_compose_matches_the_scan();
+	test_compose_is_quick();
 	assert(bnum_allocs() == allocations);
 	printf("merge tests: passed\n");
 	return 0;
