@@ -10,13 +10,19 @@ Fixes from the code review of 2026-11-20.
 
 ### Fixed
 
-- Quitting OBS, switching scene collection or editing the list no longer waits
-  for a folder or playlist that is being read from a slow or stalled network
-  share. The folder scanner leaves its per-file checks as soon as it is asked
-  to stop (it used to finish them, about 100 ms per remaining file on Windows),
-  every row's reader is asked to stop before any is waited for, and the wait
-  itself moved off OBS's video thread to a background thread, so removing or
-  changing a folder row during a show cannot freeze the picture.
+- A folder or playlist that is being read from a slow or stalled network share
+  holds OBS up less. Removing its row, or removing the source, no longer waits
+  for the reader at all: the wait moved off OBS's video thread to a background
+  thread, so removing a folder row during a show does not freeze the picture
+  for it. Quitting OBS still waits for a call that is already in flight on
+  the share, but only for that one call: the folder scanner leaves its
+  per-file checks as soon as it is asked to stop (it used to finish them,
+  about 100 ms per remaining file on Windows), and every row's reader is asked
+  to stop before any is waited for. On macOS and Linux a call on a share that
+  has hung can still not be interrupted. Not changed: a row whose path was
+  just typed or changed is still looked at once on OBS's video thread to see
+  whether it is a folder, so a new path on a stalled share can still hold the
+  picture for that look.
 - A playlist is limited to 100,000 entries, and so is a folder. A list of
   millions of lines, from a web address or a local file, could ask for
   gigabytes of memory and take OBS down. The row's status says how many
@@ -25,7 +31,8 @@ Fixes from the code review of 2026-11-20.
   resumed with sound and no picture, and the item after it is no longer
   skipped: Play starts the item that followed it.
 - Deleting or editing the current row while the source is stopped, paused or at
-  the end of its list no longer starts playback. The position moves, and Play
+  the end of its list no longer starts playback. The position moves to the
+  row that took its place (after a deletion, the row that followed), and Play
   or Restart starts it. A source that was paused only because it is hidden
   plays from there when it is shown. Adding files to a source that had nothing
   to play still starts it.
@@ -49,8 +56,9 @@ Fixes from the code review of 2026-11-20.
 ### Changed
 
 - The Linux harness (`tests/obs/run-harness.sh`) fails when OBS has to be
-  ended on exit, when OBS reports a memory leak, and when fewer checks ran
-  than the script expects.
+  ended on exit, when OBS reports a memory leak, and when a check the script
+  declares did not run. The script counts its own checks, so no number is
+  kept by hand.
 
 ## [0.5.2] - 2026-11-17
 
