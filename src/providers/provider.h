@@ -65,8 +65,9 @@ struct pl_container_options {
 };
 
 /* Called on the provider's worker thread with the list it just built; the receiver owns snapshot. Never called after
- * pl_provider_destroy returns. It must not create or destroy providers, nor wait for a lock that whoever calls
- * pl_provider_destroy holds meanwhile (destroy joins the worker, which may be inside this call). */
+ * pl_provider_destroy or pl_provider_retire returns. It must not create, destroy or retire providers, nor wait for a
+ * lock that whoever calls pl_provider_destroy or pl_provider_retire holds meanwhile (both wait for a call in
+ * flight). */
 typedef void (*pl_publish_fn)(void *owner, struct pl_snapshot *snapshot);
 
 struct pl_provider;
@@ -96,8 +97,31 @@ void pl_provider_release_held(struct pl_provider *provider);
 size_t pl_provider_held_changes(struct pl_provider *provider);
 
 /* Stops the worker (interrupting a scan or probe stuck on a stalled share), joins it and frees everything. NULL is
- * nothing to destroy. No publish happens after it returns. */
+ * nothing to destroy. No publish happens after it returns. It waits for the worker, for as long as a call on a slow
+ * share takes: on the graphics or UI thread use pl_provider_retire. */
 void pl_provider_destroy(struct pl_provider *provider);
+
+/* Asks the worker to stop and returns at once; NULL is nothing to stop. With several providers to end, ask every one
+ * before waiting for any, so their last calls end side by side instead of one after another (R-THR-3). */
+void pl_provider_request_stop(struct pl_provider *provider);
+
+/* Ends a provider without waiting for its worker: the stop is requested, the provider is cut off from its owner (no
+ * publish happens after this returns, and the owner may be freed; the wait is for a publish call in flight at most,
+ * never for a file or network call), and a background thread joins the worker and frees everything (R-THR-3). NULL is
+ * nothing to retire. When that thread cannot be started, or after pl_provider_reaper_shutdown, the provider is
+ * destroyed here instead (still cut off first), which waits for its worker. */
+void pl_provider_retire(struct pl_provider *provider);
+
+/* Waits until every retired provider's worker has ended and been freed, and ends the background thread; safe to
+ * call again, and when nothing was ever retired. Called when the module is on its way out, before OBS frees the
+ * module's texts, which the workers look up (plugin-main.c). From then on no thread is started: a provider retired
+ * later (a source that something still held is destroyed after the module unloaded) is joined by its caller, so no
+ * thread and no memory is left behind. */
+void pl_provider_reaper_shutdown(void);
+
+/* Lets pl_provider_retire use its background thread (again): when the module loads, and in tests after a shutdown.
+ * This is also the state before any call. */
+void pl_provider_reaper_open(void);
 
 /* R-LIST-1 rule 5: whether path names an existing directory, from its attributes (no listing), so a folder the user
  * may not read is still a folder */

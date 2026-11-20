@@ -74,26 +74,37 @@ struct pl_gate_file {
 	int64_t version_write_ms;
 };
 
+/* Whether the gate's owner was asked to stop (a provider being destroyed) */
+typedef bool (*pl_gate_stop_fn)(void *context);
+
 /* Files are kept sorted by key */
 struct pl_gate {
 	DARRAY(struct pl_gate_file) files;
+	pl_gate_stop_fn stop; /* NULL: never stopped */
+	void *stop_context;
 };
 
 void pl_gate_init(struct pl_gate *gate);
 void pl_gate_free(struct pl_gate *gate);
+/* The stop test, asked before every file a listing or a tick would sample or probe. Once it answers true no further
+ * file is touched: a listing keeps the files it has not probed as candidates, and a tick leaves the rest for the next
+ * one. So a stop never waits for one call per remaining file on a slow or stalled share (R-THR-3). */
+void pl_gate_set_stop(struct pl_gate *gate, pl_gate_stop_fn stop, void *context);
 
 /* A full listing of the folder, with both clocks read after the listing finished. Files no longer listed leave the
  * gate. An admitted file whose size and time did not change stays admitted and is never probed again; one that
  * changed becomes a candidate again. In the initial scan every other file whose last write is at least the window
  * old is probed once and admitted at once if the probe succeeds; every other file, and every new file in a later
- * listing, becomes a candidate due one window later. Keys must be unique within a listing. */
+ * listing, becomes a candidate due one window later. Keys must be unique within a listing. After a stop (see
+ * pl_gate_set_stop) nothing more is probed. */
 void pl_gate_listing(struct pl_gate *gate, const struct pl_gate_listing *files, size_t count, bool initial,
 		     int64_t mono_ms, int64_t utc_ms, pl_probe_fn probe, void *context);
 
 /* The batched second pass: every candidate due by mono_ms is sampled once. One that vanished leaves; one whose size
  * or time changed starts its window again; one unchanged across two samples at least the window apart, with its
  * last write the window old, is probed and admitted if the probe succeeds, else due again one window later (a file
- * held open forever never holds up the others). Returns how many were admitted. */
+ * held open forever never holds up the others). Returns how many were admitted. It ends early on a stop (see
+ * pl_gate_set_stop). */
 size_t pl_gate_tick(struct pl_gate *gate, int64_t mono_ms, int64_t utc_ms, pl_sample_fn sample, pl_probe_fn probe,
 		    void *context);
 
@@ -113,6 +124,20 @@ size_t pl_gate_pending_count(const struct pl_gate *gate);
 size_t pl_gate_admitted_count(const struct pl_gate *gate);
 /* Candidates whose last probe was refused; above 0 the row shows "access denied" (R-PLAT-10) */
 size_t pl_gate_denied_count(const struct pl_gate *gate);
+
+/* ---- The debounce of change notifications (R-DIR-2) ---- */
+
+/* A change is listed once the folder has been quiet this long, so a burst of notifications is one listing */
+#define PL_DEBOUNCE_QUIET_MS 500
+/* and at the latest this long after the first notification of the burst, so a folder that is never quiet (a file
+ * being recorded or copied into it sends a notification for every write) is still listed, every few seconds rather
+ * than twice a second: a listing reads every file's size and time, and tells nothing new about a file that is only
+ * growing, which the gate samples by itself */
+#define PL_DEBOUNCE_MAX_MS 5000
+
+/* When the listing for a change notified at mono_ms is due; first_ms is when the first notification came that no
+ * listing has followed yet (mono_ms itself for the first one) */
+int64_t pl_debounce_due(int64_t first_ms, int64_t mono_ms);
 
 /* ---- Watch modes (R-DIR-3) ---- */
 

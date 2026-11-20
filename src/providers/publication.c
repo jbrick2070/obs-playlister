@@ -36,6 +36,7 @@ void pl_publication_init(struct pl_publication *publication, uint64_t instance_i
 	publication->instance_id = instance_id;
 	publication->publish = publish;
 	publication->owner = owner;
+	pthread_mutex_init(&publication->owner_mutex, NULL);
 }
 
 static void free_entry_array(struct pl_entry **entries, size_t *count)
@@ -52,7 +53,15 @@ void pl_publication_free(struct pl_publication *publication)
 	bfree(publication->published_content);
 	free_entry_array(&publication->held, &publication->held_count);
 	bfree(publication->held_content);
+	pthread_mutex_destroy(&publication->owner_mutex);
 	memset(publication, 0, sizeof(*publication));
+}
+
+void pl_publication_detach(struct pl_publication *publication)
+{
+	pthread_mutex_lock(&publication->owner_mutex);
+	publication->detached = true;
+	pthread_mutex_unlock(&publication->owner_mutex);
 }
 
 struct pl_entry *pl_publication_copy_entries(const struct pl_entry *entries, size_t count, bool keep_renames)
@@ -229,7 +238,13 @@ static bool publish_membership(struct pl_publication *publication, const struct 
 	bfree(publication->published_content);
 	publication->published_content = content;
 
-	publication->publish(publication->owner, snapshot);
+	/* a detached publication's receiver may be gone: the snapshot is dropped instead (pl_publication_detach) */
+	pthread_mutex_lock(&publication->owner_mutex);
+	if (publication->detached)
+		pl_snapshot_free(snapshot);
+	else
+		publication->publish(publication->owner, snapshot);
+	pthread_mutex_unlock(&publication->owner_mutex);
 	return true;
 }
 

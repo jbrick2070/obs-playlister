@@ -42,7 +42,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "os.h"
 #include "publication.h"
 
-#define DEBOUNCE_MS 500
 #define MAX_CHAINED_EVENTS 8
 
 /* One file as the last listing saw it. Every name the always-skip list and the attributes let through is kept, so a
@@ -97,6 +96,7 @@ struct pl_folder_provider {
 	struct pl_folder_os *os; /* the listing, the probe and the watch */
 	bool arm_failed;         /* re-arming failed (in a rescan or after a notification); the main loop reports it */
 	int64_t debounce_ms;     /* when the debounced rescan is due; 0 when none is */
+	int64_t debounce_first_ms; /* when the first notification came that the due rescan answers */
 	enum missing_cause missing;
 	DARRAY(struct rename_pair) notified_renames; /* paired events since the last listing (relative names) */
 	DARRAY(struct rename_pair) renames;          /* carried to the next publication: key to key */
@@ -105,6 +105,7 @@ struct pl_folder_provider {
 	bool listed;
 	bool gate_fed;
 	size_t cloud_count;
+	size_t over_limit; /* files the last listing left out as over PL_MAX_ENTRIES */
 	int64_t last_ok_unix_ms;
 	struct pl_publication publication; /* what the receiver was given, and the lock (R-DIR-11) */
 };
@@ -140,12 +141,19 @@ static bool stopping(struct pl_folder_provider *p)
 	return pl_stop_is_set(p->stop);
 }
 
+/* The gate's stop test: its per-file loops end as soon as the provider is asked to stop (R-THR-3) */
+static bool gate_stopping(void *context)
+{
+	return stopping(context);
+}
+
 /* One listing in progress: the context of the listing sink */
 struct scan {
 	struct pl_folder_provider *provider;
 	DARRAY(struct listed_file) files;
 	uint32_t ordinal;
 	size_t cloud;
+	size_t over_limit; /* files after the first PL_MAX_ENTRIES, left out */
 };
 
 /* Each skipped subfolder is logged once (R-DIR-1) */
@@ -174,6 +182,11 @@ static void add_listed_file(void *context, const char *relative, const char *nam
 			scan->cloud++;
 		return;
 	}
+	/* a folder is limited as a playlist is; what comes after the limit, in listing order, is only counted */
+	if (scan->files.num >= PL_MAX_ENTRIES) {
+		scan->over_limit++;
+		return;
+	}
 	struct listed_file *file = da_push_back_new(scan->files);
 	struct dstr location = {0};
 	dstr_copy(&location, p->location);
@@ -189,7 +202,7 @@ static void add_listed_file(void *context, const char *relative, const char *nam
 
 /* Lists the folder (and its subfolders when the option is on) without opening any file (R-DIR-1); the last good
  * listing is replaced only by a complete one */
-static enum pl_folder_scan scan_folder(struct pl_folder_provider *p, size_t *cloud_count)
+static enum pl_folder_scan scan_folder(struct pl_folder_provider *p, size_t *cloud_count, size_t *over_limit)
 {
 	struct scan scan = {.provider = p};
 	da_init(scan.files);
@@ -202,6 +215,7 @@ static enum pl_folder_scan scan_folder(struct pl_folder_provider *p, size_t *clo
 	free_listing(&p->files.da);
 	p->files.da = scan.files.da;
 	*cloud_count = scan.cloud;
+	*over_limit = scan.over_limit;
 	return PL_FOLDER_SCAN_OK;
 }
 
@@ -389,6 +403,16 @@ static void note_rename(void *context, const char *old_relative, const char *new
 
 /* ---- the watch modes (R-DIR-3) ---- */
 
+/* A notification with changes came: the rescan waits until the folder is quiet, up to a limit (pl_debounce_due), so
+ * a file being written does not have the whole tree listed twice a second */
+static void debounce_change(struct pl_folder_provider *p)
+{
+	int64_t now = mono_now();
+	if (!p->debounce_ms)
+		p->debounce_first_ms = now;
+	p->debounce_ms = pl_debounce_due(p->debounce_first_ms, now);
+}
+
 /* Takes in a notification that completed with changes while the worker was busy, so the renames it reports are known
  * before the listing reaches the gate; anything else is left for the main loop */
 static void take_completed_changes(struct pl_folder_provider *p)
@@ -398,17 +422,21 @@ static void take_completed_changes(struct pl_folder_provider *p)
 	pl_watch_notified(&p->watch);
 	/* the watch machine hears of a failed re-arm from the main loop */
 	p->arm_failed = !pl_folder_os_arm(p->os);
-	if (!p->debounce_ms)
-		p->debounce_ms = mono_now() + DEBOUNCE_MS;
+	debounce_change(p);
 }
 
 static enum pl_folder_scan rescan(struct pl_folder_provider *p)
 {
 	size_t cloud = 0;
-	enum pl_folder_scan result = scan_folder(p, &cloud);
+	size_t over_limit = 0;
+	enum pl_folder_scan result = scan_folder(p, &cloud, &over_limit);
 	if (result != PL_FOLDER_SCAN_OK)
 		return result;
+	if (over_limit && !p->over_limit)
+		obs_log(LOG_WARNING, "folder %s: over %d files; the %zu after them are left out", p->location,
+			PL_MAX_ENTRIES, over_limit);
 	p->cloud_count = cloud;
+	p->over_limit = over_limit;
 	p->listed = true;
 	p->last_ok_unix_ms = pl_utc_now_ms();
 	/* a rename the listing already shows moves the admitted file before the gate sees the new name as new */
@@ -513,8 +541,7 @@ static void on_notification(struct pl_folder_provider *p)
 	 * waits for this change's debounced rescan (worker_main) */
 	if (!pl_folder_os_arm(p->os))
 		p->arm_failed = true;
-	if (!p->debounce_ms)
-		p->debounce_ms = mono_now() + DEBOUNCE_MS;
+	debounce_change(p);
 }
 
 /* ---- snapshots ---- */
@@ -602,6 +629,17 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 			    pl_text("RowWarning.CloudOnly",
 				    "%1 cloud-only files not downloaded; mark the folder Always keep on this device"),
 			    (const char *[]){number}, 1);
+	}
+	if (p->over_limit) {
+		if (level == PL_STATUS_OK)
+			level = PL_STATUS_WARNING;
+		if (message->len)
+			dstr_cat(message, "; ");
+		char limit[24];
+		snprintf(number, sizeof(number), "%zu", p->over_limit);
+		snprintf(limit, sizeof(limit), "%d", PL_MAX_ENTRIES);
+		pl_text_cat(message, pl_text("RowWarning.OverLimit", PL_OVER_LIMIT_TEXT),
+			    (const char *[]){number, limit}, 2);
 	}
 	status->level = level;
 	status->message = message->array;
@@ -719,6 +757,9 @@ static void worker_main(void *data)
 			if (p->watch.mode == PL_WATCH_NOTIFY)
 				run_event(p, PL_WATCH_OPENED_ARM_FAILED);
 		}
+		/* not after a stop: the tick would sample and probe the due files first (R-THR-3) */
+		if (stopping(p))
+			break;
 		if (pl_gate_next_deadline(&p->gate) <= mono_now())
 			pl_gate_tick(&p->gate, mono_now(), pl_utc_now_ms(), pl_folder_os_sample, pl_folder_os_probe,
 				     p->os);
@@ -788,6 +829,7 @@ struct pl_folder_provider *pl_folder_provider_create(const char *location, const
 	copy_options(&p->options, &p->filter_text, options);
 	pl_filter_parse(&p->filter, p->filter_text);
 	pl_gate_init(&p->gate);
+	pl_gate_set_stop(&p->gate, gate_stopping, p);
 	da_init(p->notified_renames);
 	da_init(p->renames);
 	da_init(p->files);
@@ -840,6 +882,16 @@ void pl_folder_provider_release_held(struct pl_folder_provider *provider)
 size_t pl_folder_provider_held_changes(struct pl_folder_provider *provider)
 {
 	return pl_publication_held_changes(&provider->publication);
+}
+
+void pl_folder_provider_request_stop(struct pl_folder_provider *provider)
+{
+	pl_stop_set(provider->stop);
+}
+
+void pl_folder_provider_detach(struct pl_folder_provider *provider)
+{
+	pl_publication_detach(&provider->publication);
 }
 
 void pl_folder_provider_destroy(struct pl_folder_provider *provider)

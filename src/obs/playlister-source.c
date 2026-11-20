@@ -60,6 +60,7 @@ static bool hold_shown(struct media_playlist_source *mps);
 static bool state_stopped(enum obs_media_state state);
 static bool picture_on_screen(struct media_playlist_source *mps);
 static void drop_playing_copy(struct media_playlist_source *mps);
+static enum obs_media_state media_state(struct media_playlist_source *mps);
 
 static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index);
 
@@ -485,6 +486,40 @@ static void clear_media_source(void *data)
 	/* nothing is playing now; get_state and video_render go by this (R-UP-78). Callers hold the list lock. */
 	mps->actual_media = NULL;
 	set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
+	/* stopped for want of anything to play: a list change that brings something starts it */
+	mps->stopped_by_request = false;
+	mps->play_on_show = false;
+}
+
+/* How the source stands should a list change take its loaded item away (core/standstill.h). The caller holds the
+ * list lock. */
+static enum pl_standstill standstill(struct media_playlist_source *mps, enum obs_media_state state)
+{
+	struct pl_standstill_input input = {
+		.playback = state == OBS_MEDIA_STATE_PAUSED    ? PL_PLAYBACK_PAUSED
+			    : state == OBS_MEDIA_STATE_ENDED   ? PL_PLAYBACK_ENDED
+			    : state == OBS_MEDIA_STATE_PLAYING ? PL_PLAYBACK_PLAYING
+							       : PL_PLAYBACK_STOPPED,
+		.stopped_by_request = mps->stopped_by_request,
+		.pause_when_hidden = mps->visibility_behavior == VISIBILITY_BEHAVIOR_PAUSE_UNPAUSE,
+		.active = obs_source_active(mps->source),
+	};
+	return pl_standstill_decide(&input);
+}
+
+/* The loaded item went away while the source stood still (decision is not PL_STANDSTILL_NONE): the child lets go of
+ * it, so it can never be resumed with sound and no picture, and nothing loads; the position, which the caller has
+ * set or sets, waits for Play or Restart. After the end of the list the state stays ENDED, which keeps that
+ * position on the first item (apply_snapshot). The caller holds the list lock. */
+static void park_position(struct media_playlist_source *mps, enum obs_media_state state, enum pl_standstill decision)
+{
+	pl_player_clear(&mps->player);
+	mps->actual_media = NULL;
+	if (state != OBS_MEDIA_STATE_ENDED)
+		set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
+	mps->stopped_by_request = true;
+	mps->play_on_show = decision == PL_STANDSTILL_PARK_TO_SHOW;
+	cancel_resume(mps);
 }
 
 /* Checks if the media source has to be updated, because updating its
@@ -517,6 +552,8 @@ static void update_media_source(void *data, bool forced)
 		 * everything failed is lifted (R-BEH-5) */
 		cancel_resume(mps);
 		mps->all_failed = false;
+		mps->stopped_by_request = false;
+		mps->play_on_show = false;
 	}
 	/* what plays now is an item of the list; an evicted item's copy is done with (R-DIR-8) */
 	drop_playing_copy(mps);
@@ -729,7 +766,7 @@ static void set_media_state(void *data, enum obs_media_state state)
 }
 
 /* The source's own media state; read without the list lock by video_tick, the hotkey and the media callbacks */
-static inline enum obs_media_state media_state(struct media_playlist_source *mps)
+static enum obs_media_state media_state(struct media_playlist_source *mps)
 {
 	return (enum obs_media_state)os_atomic_load_long(&mps->state);
 }
@@ -1183,6 +1220,8 @@ static bool restart_playing_copy(struct media_playlist_source *mps)
 	set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 	cancel_resume(mps);
 	mps->all_failed = false;
+	mps->stopped_by_request = false;
+	mps->play_on_show = false;
 	return true;
 }
 
@@ -1337,9 +1376,11 @@ static void mps_stop(void *data)
 	if (media_state(mps) != OBS_MEDIA_STATE_ENDED)
 		set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
 	/* a user stop: a folder row that settles later does not start by itself (R-KEY-2), nor does a list change after
-	 * everything failed (R-BEH-5) */
+	 * everything failed (R-BEH-5), nor an edit of the current row (core/standstill.h) */
 	cancel_resume(mps);
 	mps->all_failed = false;
+	mps->stopped_by_request = true;
+	mps->play_on_show = false;
 	pthread_mutex_unlock(&mps->mutex);
 }
 
@@ -1517,8 +1558,18 @@ static void mps_activate(void *data)
 		/* a plain unpause, as upstream: a source the user stopped stays stopped when it is shown again. Our own
 		 * state counts too, because the hide's pause may still be on its way to the child. */
 		pthread_mutex_lock(&mps->mutex);
-		if (media_state(mps) == OBS_MEDIA_STATE_PAUSED ||
-		    obs_source_media_get_state(mps->current_media_source) == OBS_MEDIA_STATE_PAUSED) {
+		if (mps->play_on_show) {
+			/* the paused item went away while the source was hidden: there is nothing to unpause, so the item
+			 * the position waits on plays (core/standstill.h) */
+			mps->play_on_show = false;
+			if (point_at_playable_item(mps)) {
+				os_atomic_set_bool(&mps->release_held, true);
+				update_media_source(mps, true);
+			}
+		} else if (mps->actual_media &&
+			   (media_state(mps) == OBS_MEDIA_STATE_PAUSED ||
+			    obs_source_media_get_state(mps->current_media_source) == OBS_MEDIA_STATE_PAUSED)) {
+			/* only with an item loaded: after a clear the child still reports the state of the media it had */
 			pl_player_play_pause(&mps->player, false);
 			set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 		}
@@ -1969,6 +2020,15 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 							   ? &row->folder_items.array[mps->current_folder_item_index]
 							   : NULL);
 			}
+			/* a paused item that is gone must not stay loaded: Play would resume it, with its sound and no
+			 * picture, and its end would then skip the item the position is on. The child lets go of it, and
+			 * Play loads from the position (core/standstill.h). */
+			if (state == OBS_MEDIA_STATE_PAUSED) {
+				obs_log(LOG_INFO,
+					"row %zu: the paused item is gone; Play goes on from the one that followed",
+					row_index + 1);
+				park_position(mps, state, standstill(mps, state));
+			}
 			mark_save_dirty(mps);
 			if (!mps->actual_media || mps->actual_media != &mps->playing_copy)
 				drop_playing_copy(mps);
@@ -2083,8 +2143,9 @@ static void reconcile_providers(struct media_playlist_source *mps, struct darray
 	*retired_out = retired.da;
 }
 
-/* With no lock held: the retired providers are destroyed (joined), then the new ones created, each stored in its
- * registration if that still expects it (R-THR-3) */
+/* With no lock held: the retired providers are handed to the module's background thread, which joins them (this runs
+ * on the graphics thread, which must not wait for a worker inside a call on a slow share), then the new ones are
+ * created, each stored in its registration if that still expects it (R-THR-3) */
 static void start_and_stop_providers(struct media_playlist_source *mps, struct darray *starts_array,
 				     struct darray *retired_array, const struct pl_container_options *options)
 {
@@ -2092,8 +2153,11 @@ static void start_and_stop_providers(struct media_playlist_source *mps, struct d
 	DARRAY(struct pl_provider *) retired;
 	starts.da = *starts_array;
 	retired.da = *retired_array;
+	/* every one is asked to stop before any is cut off from this source */
 	for (size_t i = 0; i < retired.num; i++)
-		pl_provider_destroy(retired.array[i]);
+		pl_provider_request_stop(retired.array[i]);
+	for (size_t i = 0; i < retired.num; i++)
+		pl_provider_retire(retired.array[i]);
 	da_free(retired);
 
 	for (size_t i = 0; i < starts.num; i++) {
@@ -2131,7 +2195,7 @@ static void start_and_stop_providers(struct media_playlist_source *mps, struct d
 		}
 		pthread_mutex_unlock(&mps->mutex);
 		if (provider && !stored)
-			pl_provider_destroy(provider);
+			pl_provider_retire(provider);
 		bfree(start->row_uuid);
 		bfree(start->location);
 	}
@@ -2189,9 +2253,13 @@ static void mps_destroy(void *data)
 	struct media_playlist_source *mps = data;
 
 	/* R-THR-3: every provider first, so none publishes into a source being torn down; no lock is held, as a
-	 * worker inside its publish waits for the list lock */
+	 * worker inside its publish waits for the list lock. All are asked to stop before any is waited for, and the
+	 * wait here is only for a publish in flight: the workers are joined by the module's background thread, so a
+	 * folder on a slow share holds up neither this source's teardown nor the ones after it. */
+	for (size_t i = 0; i < mps->providers.num; i++)
+		pl_provider_request_stop(mps->providers.array[i].provider);
 	for (size_t i = 0; i < mps->providers.num; i++) {
-		pl_provider_destroy(mps->providers.array[i].provider);
+		pl_provider_retire(mps->providers.array[i].provider);
 		bfree(mps->providers.array[i].row_uuid);
 		bfree(mps->providers.array[i].location);
 	}
@@ -2374,10 +2442,14 @@ static void draw_held_frame(struct media_playlist_source *mps)
 static void mps_video_render(void *data, gs_effect_t *effect)
 {
 	struct media_playlist_source *mps = data;
-	/* only the check is locked; rendering the child must not hold the list lock */
-	pthread_mutex_lock(&mps->mutex);
-	bool has_media = mps->actual_media != NULL;
-	pthread_mutex_unlock(&mps->mutex);
+	/* only the check is locked; rendering the child must not hold the list lock. And a frame never waits for that
+	 * lock: while a list change holds it (a snapshot of a large folder being installed), the answer of the last
+	 * frame stands for this one. */
+	if (pthread_mutex_trylock(&mps->mutex) == 0) {
+		mps->render_has_media = mps->actual_media != NULL;
+		pthread_mutex_unlock(&mps->mutex);
+	}
+	bool has_media = mps->render_has_media;
 
 	/* R-BEH-8: the child has a picture while libobs has a frame of it to draw; it has none from the start of a new
 	 * file until that file's first frame, and none after a stop or blank */
@@ -3366,6 +3438,15 @@ static void mps_update(void *data, obs_data_t *settings)
 		mps->current_item_occurrence = occurrence >= 1 && occurrence <= UINT32_MAX ? (uint32_t)occurrence : 1;
 	}
 
+	/* how the source stands before this update changes anything: paused, stopped on request or at the end of the
+	 * list, an edit that takes the current row away or changes its path loads nothing (core/standstill.h). Not on the
+	 * first update, and not with an empty list, where the change is what starts playback. */
+	const enum obs_media_state state_before = media_state(mps);
+	const enum pl_standstill stand = !mps->first_update && mps->current_media ? standstill(mps, state_before)
+										  : PL_STANDSTILL_NONE;
+	/* where the current row was, for the row that takes its place if it is deleted while the source stands still */
+	const size_t index_before = mps->current_media_index;
+
 	bool found = false;
 	if (!mps->first_update && mps->current_media) {
 		// check for current_media->id only if media isn't changed, allowing scripts to set the index.
@@ -3414,7 +3495,9 @@ static void mps_update(void *data, obs_data_t *settings)
 		if (target_index >= new_files.num)
 			target_index = 0;
 		struct media_file_data *target = new_files.num ? &new_files.array[target_index] : NULL;
-		if (target && target->is_folder && target->awaiting) {
+		/* standing still, the position only moves there (below): no wait that would start the row once listed */
+		bool parks = stand != PL_STANDSTILL_NONE && (!found || item_edited);
+		if (target && target->is_folder && target->awaiting && !parks) {
 			/* the saved or playing item's key, unless the row is not the one it was kept for */
 			bool same_row = mps->first_update ? resumed_row : found && !item_edited;
 			start_resume(mps, target->id, same_row ? mps->current_item_key : NULL,
@@ -3471,6 +3554,28 @@ static void mps_update(void *data, obs_data_t *settings)
 			clear_media_source(mps);
 		else if (mps->resume.row_unavailable && folder_row(mps, mps->resume.row_uuid, &resume_index))
 			resume_after_row(mps, resume_index);
+	} else if (stand != PL_STANDSTILL_NONE && (!found || item_edited) && get_total_file_count(mps)) {
+		/* The current row was deleted or its path edited while the source stood still (paused, stopped on request,
+		 * or at the end of the list): nothing starts by itself. The child lets go of the old item and the position
+		 * waits on the row that took its place: the edited row itself, or after a deletion the row now at the
+		 * deleted row's place in the list (the one that followed it; the first row when it was the last). A row
+		 * not listed yet is waited on as it is; otherwise the position is the first row from there with something
+		 * to play, at its first item that may be loaded. Play or Restart loads it. After the end of the list the
+		 * position is the first row, as always there (end_reached_locked). */
+		if (!found && state_before != OBS_MEDIA_STATE_ENDED)
+			set_current_media_index(mps, index_before < mps->files.num ? index_before : 0);
+		if (!(mps->current_media->is_folder && mps->current_media->awaiting)) {
+			size_t playable = skip_empty_folder_rows(mps, mps->current_media_index, false);
+			if (playable < mps->files.num)
+				set_current_media_index(mps, playable);
+		}
+		size_t first = mps->current_media->is_folder ? loadable_item(mps, mps->current_media, 0, false)
+							     : DARRAY_INVALID;
+		mps->current_folder_item_index = first != DARRAY_INVALID ? first : 0;
+		remember_item(mps, first != DARRAY_INVALID ? &mps->current_media->folder_items.array[first] : NULL);
+		park_position(mps, state_before, stand);
+		obs_log(LOG_INFO, "the current row was removed or changed while nothing played; Play starts at row %zu",
+			mps->current_media_index + 1);
 	} else if (get_total_file_count(mps)) {
 		if (item_edited) {
 			mps->current_folder_item_index = 0;
@@ -3514,6 +3619,10 @@ static void mps_update(void *data, obs_data_t *settings)
 			/* Clear if last file is a folder and is empty */
 			if (mps->current_media->is_folder && mps->current_media->folder_items.num == 0) {
 				clear_media_source(mps);
+			} else if (stand != PL_STANDSTILL_NONE) {
+				/* the remembered item of the current folder row is gone, and the source stands still: the
+				 * position stays on the item found above, and nothing loads (core/standstill.h) */
+				park_position(mps, state_before, stand);
 			} else {
 				update_media_source(mps, true);
 				remember_item(mps, mps->actual_media);

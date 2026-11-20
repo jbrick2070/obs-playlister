@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "list-check.h"
 
 #include <ctype.h>
+#include <util/dstr.h>
 
 #include "core/parse-m3u.h"
 
@@ -247,6 +248,47 @@ static void test_references(void)
 		   1);
 }
 
+/* P-02: a list has at most PL_MAX_ENTRIES entries; the references after them are counted, not kept, and lines that
+ * are not references (comments, blank lines) do not count */
+static void test_entry_limit(void)
+{
+	const size_t extra = 7;
+	struct dstr text = {0};
+	dstr_copy(&text, "#EXTM3U\n");
+	for (size_t i = 0; i < PL_MAX_ENTRIES + extra; i++)
+		dstr_catf(&text, "%zu.mp3\n\n# a comment\n", i);
+	struct pl_list_source source = {"C:\\Lists\\big.m3u", NULL, NULL};
+	struct pl_list_result result;
+	pl_parse_m3u(&result, text.array, text.len, &source);
+	assert(result.count == PL_MAX_ENTRIES);
+	assert(result.over_limit == extra);
+	assert(result.unusable_lines == 0 && result.nested_playlists == 0 && !result.stream);
+	assert(strcmp(result.entries[0].location, "C:\\Lists\\0.mp3") == 0);
+	assert(strcmp(result.entries[PL_MAX_ENTRIES - 1].location, "C:\\Lists\\99999.mp3") == 0);
+	assert(result.entries[PL_MAX_ENTRIES - 1].source_ordinal == PL_MAX_ENTRIES - 1);
+	pl_list_result_free(&result);
+
+	/* exactly at the limit nothing is left out */
+	dstr_copy(&text, "");
+	for (size_t i = 0; i < PL_MAX_ENTRIES; i++)
+		dstr_cat(&text, "a\n");
+	pl_parse_m3u(&result, text.array, text.len, &source);
+	assert(result.count == PL_MAX_ENTRIES && result.over_limit == 0);
+	/* the same reference again and again: occurrences still number them */
+	assert(result.entries[PL_MAX_ENTRIES - 1].occurrence == PL_MAX_ENTRIES);
+	pl_list_result_free(&result);
+
+	/* an HLS stream is one entry, whatever it held */
+	dstr_copy(&text, "#EXTM3U\n#EXT-X-TARGETDURATION:6\n");
+	for (size_t i = 0; i < PL_MAX_ENTRIES + extra; i++)
+		dstr_cat(&text, "s.ts\n");
+	struct pl_list_source remote = {"https://example.com/live/index.m3u8", NULL, NULL};
+	pl_parse_m3u(&result, text.array, text.len, &remote);
+	assert(result.stream && result.count == 1 && result.over_limit == 0);
+	pl_list_result_free(&result);
+	dstr_free(&text);
+}
+
 static char *upper_key(const char *location, void *context)
 {
 	int *calls = context;
@@ -296,6 +338,7 @@ int main(void)
 	test_malformed();
 	test_titles();
 	test_references();
+	test_entry_limit();
 	test_keys();
 	assert(bnum_allocs() == allocations);
 	printf("test-parse-m3u: all passed\n");

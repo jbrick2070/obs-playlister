@@ -91,12 +91,16 @@ target_sources(
     src/core/parse-m3u.c
     src/core/parse-pls.h
     src/core/parse-pls.c
+    src/core/random.h
+    src/core/random.c
     src/core/row-kind.h
     src/core/row-kind.c
     src/core/sort.h
     src/core/sort.c
     src/core/source-size.h
     src/core/source-size.c
+    src/core/standstill.h
+    src/core/standstill.c
     src/core/startup.h
     src/core/startup.c
     src/core/text.h

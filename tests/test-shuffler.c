@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <util/platform.h>
 #include "test-common.h"
 
 static void print_state(const struct shuffler *shuffler)
@@ -517,7 +518,9 @@ static void test_random_operations_keep_invariant(void)
 	size_t last_id = 0;
 	shuffler_init(&shuffler);
 	da_init(rows);
+	/* the test's own choices, and the shuffler's draws, are the same on every run */
 	srand(20261024);
+	pl_random_seed_with(20261024);
 
 	for (int step = 0; step < 50000; step++) {
 		int op = rand() % 8;
@@ -582,6 +585,244 @@ static void test_random_operations_keep_invariant(void)
 	da_free(rows);
 }
 
+/* ---- Q-05: the indexed match of old items with new ones ---- */
+
+/* Lists of rows and folder items, with entries (as the plugin has them) or without (as upstream's tests have them) */
+struct match_list {
+	DARRAY(struct media_file_data) rows;
+	size_t last_id;
+};
+
+static void match_free_item(struct media_file_data *item)
+{
+	bfree(item->filename);
+	if (item->entry) {
+		bfree(item->entry->key);
+		bfree(item->entry);
+	}
+}
+
+static void match_free_row(struct media_file_data *row)
+{
+	for (size_t j = 0; j < row->folder_items.num; j++)
+		match_free_item(&row->folder_items.array[j]);
+	da_free(row->folder_items);
+	bfree(row->id);
+}
+
+static void match_free(struct match_list *list)
+{
+	for (size_t i = 0; i < list->rows.num; i++)
+		match_free_row(&list->rows.array[i]);
+	da_free(list->rows);
+}
+
+static void match_add_item(struct match_list *list, struct media_file_data *row, bool entries)
+{
+	struct media_file_data item = {0};
+	struct dstr name = {0};
+	dstr_printf(&name, "item-%zu.mp4", ++list->last_id);
+	item.filename = name.array;
+	if (entries) {
+		item.entry = bzalloc(sizeof(*item.entry));
+		/* now and then the same key again, told apart by its occurrence */
+		item.entry->key = bstrdup(rand() % 5 ? item.filename : "SAME.MP4");
+		item.entry->occurrence = 1;
+		for (size_t j = 0; j < row->folder_items.num; j++) {
+			const struct pl_entry *other = row->folder_items.array[j].entry;
+			if (strcmp(other->key, item.entry->key) == 0 && other->occurrence >= item.entry->occurrence)
+				item.entry->occurrence = other->occurrence + 1;
+		}
+	}
+	da_push_back(row->folder_items, &item);
+}
+
+static void match_add_row(struct match_list *list, bool folder, bool entries)
+{
+	struct media_file_data row = {0};
+	struct dstr id = {0};
+	dstr_printf(&id, "row-%zu", ++list->last_id);
+	row.id = id.array;
+	row.is_folder = folder;
+	da_init(row.folder_items);
+	for (int n = folder ? rand() % 6 : 0; n > 0; n--)
+		match_add_item(list, &row, entries);
+	da_push_back(list->rows, &row);
+}
+
+/* a deep copy with its own strings: the old list is freed after the update, as the plugin does */
+static void match_copy(struct match_list *dst, const struct match_list *src)
+{
+	da_init(dst->rows);
+	dst->last_id = src->last_id;
+	for (size_t i = 0; i < src->rows.num; i++) {
+		const struct media_file_data *from = &src->rows.array[i];
+		struct media_file_data row = {0};
+		row.id = bstrdup(from->id);
+		row.is_folder = from->is_folder;
+		da_init(row.folder_items);
+		for (size_t j = 0; j < from->folder_items.num; j++) {
+			const struct media_file_data *item_from = &from->folder_items.array[j];
+			struct media_file_data item = {0};
+			item.filename = bstrdup(item_from->filename);
+			if (item_from->entry) {
+				item.entry = bzalloc(sizeof(*item.entry));
+				item.entry->key = bstrdup(item_from->entry->key);
+				item.entry->occurrence = item_from->entry->occurrence;
+			}
+			da_push_back(row.folder_items, &item);
+		}
+		da_push_back(dst->rows, &row);
+	}
+}
+
+static void match_set_parents(struct match_list *list)
+{
+	for (size_t i = 0; i < list->rows.num; i++) {
+		struct media_file_data *row = &list->rows.array[i];
+		row->index = i;
+		for (size_t j = 0; j < row->folder_items.num; j++) {
+			row->folder_items.array[j].parent = row;
+			row->folder_items.array[j].parent_id = row->id;
+			row->folder_items.array[j].index = j;
+		}
+	}
+}
+
+/* The index gives exactly what the scan it replaced gave. A shuffler is taken through draws, selections and list
+ * changes (rows added, removed and moved, folder items added and removed); at every list change a copy of it is
+ * updated with the scan, and the two must agree in head, next, history and every place of the order. */
+static void test_indexed_update_matches_the_scan(bool entries)
+{
+	struct match_list list = {0};
+	struct shuffler shuffler;
+	da_init(list.rows);
+	shuffler_init(&shuffler);
+	shuffler_set_loop(&shuffler, true);
+	srand(20261120);
+	pl_random_seed_with(20261120);
+	size_t searched = 0;
+
+	for (int step = 0; step < 6000; step++) {
+		struct match_list next;
+		match_copy(&next, &list);
+		for (int edits = rand() % 4; edits > 0; edits--) {
+			int kind = rand() % 7;
+			/* the list stays short, so the scan the index is compared with stays quick */
+			if (next.rows.num > 24)
+				kind = 2;
+			if (kind < 2 || !next.rows.num) {
+				match_add_row(&next, rand() % 2, entries);
+			} else if (kind == 2) {
+				size_t at = (size_t)rand() % next.rows.num;
+				match_free_row(&next.rows.array[at]);
+				da_erase(next.rows, at);
+			} else if (kind == 3) {
+				size_t from = (size_t)rand() % next.rows.num;
+				size_t to = (size_t)rand() % next.rows.num;
+				da_move_item(next.rows, from, to);
+			} else {
+				struct media_file_data *row = &next.rows.array[(size_t)rand() % next.rows.num];
+				if (row->is_folder && row->folder_items.num && kind == 4) {
+					size_t at = (size_t)rand() % row->folder_items.num;
+					match_free_item(&row->folder_items.array[at]);
+					da_erase(row->folder_items, at);
+				} else if (row->is_folder) {
+					match_add_item(&next, row, entries);
+				}
+			}
+		}
+		match_set_parents(&next);
+
+		struct shuffler scanned = shuffler;
+		da_init(scanned.shuffled_files);
+		da_copy(scanned.shuffled_files, shuffler.shuffled_files);
+		searched += shuffler.head + (shuffler.shuffled_files.num - shuffler.history);
+		shuffler_update_files_(&shuffler, &next.rows.da, true);
+		shuffler_update_files_(&scanned, &next.rows.da, false);
+		bool same = shuffler.head == scanned.head && shuffler.next == scanned.next &&
+			    shuffler.history == scanned.history &&
+			    shuffler.shuffled_files.num == scanned.shuffled_files.num;
+		for (size_t i = 0; same && i < shuffler.shuffled_files.num; i++)
+			same = shuffler.shuffled_files.array[i] == scanned.shuffled_files.array[i];
+		if (!same) {
+			fprintf(stderr, "step %d: the indexed update differs from the scan\n", step);
+			print_state(&shuffler);
+			print_state(&scanned);
+			assert(false);
+		}
+		shuffler_destroy(&scanned);
+		assert_invariant(&shuffler);
+		match_free(&list);
+		list = next;
+
+		for (int moves = rand() % 8; moves > 0 && shuffler.shuffled_files.num; moves--) {
+			int move = rand() % 5;
+			if (move < 3 && shuffler_has_next(&shuffler))
+				shuffler_next(&shuffler);
+			else if (move == 3 && shuffler_has_prev(&shuffler))
+				shuffler_prev(&shuffler);
+			else if (move == 4)
+				shuffler_select_index(&shuffler, (size_t)rand() % shuffler.shuffled_files.num);
+		}
+	}
+	/* the run did look old items up, and plenty of them */
+	assert(searched > 10000);
+	shuffler_destroy(&shuffler);
+	match_free(&list);
+}
+
+/* A list change with every item drawn is quick however long the list is: one sort, not a scan per item (20,000
+ * items took the scan several seconds) */
+static void test_update_files_is_quick(void)
+{
+	const size_t count = 20000;
+	struct match_list list = {0}, changed = {0};
+	da_init(list.rows);
+	struct media_file_data row = {0};
+	row.id = bstrdup("folder");
+	row.is_folder = true;
+	da_init(row.folder_items);
+	for (size_t i = 0; i < count; i++) {
+		struct media_file_data item = {0};
+		struct dstr name = {0};
+		dstr_printf(&name, "a-long-folder-name/clip-%zu.mp4", i);
+		item.filename = name.array;
+		item.entry = bzalloc(sizeof(*item.entry));
+		item.entry->key = bstrdup(item.filename);
+		item.entry->occurrence = 1;
+		da_push_back(row.folder_items, &item);
+	}
+	da_push_back(list.rows, &row);
+	match_set_parents(&list);
+
+	struct shuffler shuffler;
+	shuffler_init(&shuffler);
+	shuffler_update_files(&shuffler, &list.rows.da);
+	for (size_t i = 0; i < count; i++)
+		shuffler_next(&shuffler); /* every item drawn: the worst case for the update */
+	assert(shuffler.head == count);
+
+	match_copy(&changed, &list);
+	match_set_parents(&changed);
+	uint64_t start = os_gettime_ns();
+	shuffler_update_files(&shuffler, &changed.rows.da);
+	double seconds = (double)(os_gettime_ns() - start) / 1e9;
+	assert(shuffler.head == count && shuffler.shuffled_files.num == count);
+	/* every drawn item kept its place in the order */
+	for (size_t i = 0; i < count; i += 997)
+		assert(shuffler.shuffled_files.array[i]->parent == &changed.rows.array[0]);
+	assert_invariant(&shuffler);
+	if (seconds > 1.0) {
+		fprintf(stderr, "updating %zu drawn items took %.2f s\n", count, seconds);
+		assert(false);
+	}
+	printf("updating %zu drawn items: %.3f s\n", count, seconds);
+	shuffler_destroy(&shuffler);
+	match_free(&list);
+	match_free(&changed);
+}
+
 int main(void)
 {
 	pl_test_no_crash_dialogs();
@@ -608,6 +849,11 @@ int main(void)
 	test_new_pass_after_used_up_pass();
 	printf("test_random_operations_keep_invariant\n");
 	test_random_operations_keep_invariant();
+	printf("test_indexed_update_matches_the_scan\n");
+	test_indexed_update_matches_the_scan(true);
+	test_indexed_update_matches_the_scan(false);
+	printf("test_update_files_is_quick\n");
+	test_update_files_is_quick();
 	printf("obs-playlister shuffler regression tests: passed\n");
 	return 0;
 }

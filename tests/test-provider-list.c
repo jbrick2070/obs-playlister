@@ -810,6 +810,146 @@ static void test_review_cases(void)
 	dstr_free(&expected);
 }
 
+/* ---- a receiver whose publish call blocks, for the retire tests (R-THR-3) ---- */
+
+struct blocking_owner {
+	os_event_t *entered; /* manual reset: a publish call has begun */
+	os_event_t *release; /* manual reset: publish calls may return */
+	volatile long calls;
+	volatile long finished;
+};
+
+static void blocking_publish(void *owner, struct pl_snapshot *snapshot)
+{
+	struct blocking_owner *blocking = owner;
+	os_atomic_inc_long(&blocking->calls);
+	os_event_signal(blocking->entered);
+	os_event_wait(blocking->release);
+	pl_snapshot_free(snapshot);
+	os_atomic_inc_long(&blocking->finished);
+}
+
+struct retire_call {
+	struct pl_provider *provider;
+	struct blocking_owner *owner;
+	volatile long returned;
+	long finished_at_return; /* publish calls that had returned when the retire did */
+};
+
+static void *retire_on_thread(void *data)
+{
+	struct retire_call *call = data;
+	pl_provider_retire(call->provider);
+	call->finished_at_return = os_atomic_load_long(&call->owner->finished);
+	os_atomic_set_long(&call->returned, 1);
+	return NULL;
+}
+
+/* Retires provider, whose first publish call is made to blocking and held there: the retire must wait for that call
+ * (without the cut-off it returns at once, and the owner could be freed under the call), and return once it is
+ * over. The caller then checks that nothing more is published. */
+static void retire_during_publish(struct pl_provider *provider, struct blocking_owner *blocking)
+{
+	assert(os_event_timedwait(blocking->entered, WAIT_MS) == 0);
+	struct retire_call call = {provider, blocking, 0, 0};
+	pthread_t thread;
+	assert(pthread_create(&thread, NULL, retire_on_thread, &call) == 0);
+	os_sleep_ms(400);
+	/* the publish call is still in flight, so the retire has not returned */
+	assert(os_atomic_load_long(&call.returned) == 0);
+	assert(os_atomic_load_long(&blocking->finished) == 0);
+	os_event_signal(blocking->release);
+	pthread_join(thread, NULL);
+	assert(os_atomic_load_long(&call.returned) == 1);
+	assert(call.finished_at_return == 1 && os_atomic_load_long(&blocking->calls) == 1);
+}
+
+static void blocking_owner_init(struct blocking_owner *blocking)
+{
+	memset(blocking, 0, sizeof(*blocking));
+	os_event_init(&blocking->entered, OS_EVENT_TYPE_MANUAL);
+	os_event_init(&blocking->release, OS_EVENT_TYPE_MANUAL);
+}
+
+static void blocking_owner_free(struct blocking_owner *blocking)
+{
+	os_event_destroy(blocking->entered);
+	os_event_destroy(blocking->release);
+}
+
+/* R-THR-3 for a list provider: a retire while its publish callback runs waits for that call, nothing is published
+ * afterwards (the file changes, and the folder check would read it again), and the shutdown leaves nothing behind */
+static void test_retire(void)
+{
+	make_folder("retire");
+	write_file("list.m3u", "a.mp3\n");
+	char *path = path_of("list.m3u");
+	struct pl_container_options options;
+	default_options(&options);
+
+	struct blocking_owner blocking;
+	blocking_owner_init(&blocking);
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_PLAYLIST, path, "row", 7, &options, blocking_publish, &blocking);
+	assert(provider);
+	retire_during_publish(provider, &blocking);
+	write_file("list.m3u", "a.mp3\nb.mp3\nc.mp3\n");
+	os_sleep_ms(2500);
+	assert(os_atomic_load_long(&blocking.calls) == 1);
+	pl_provider_reaper_shutdown();
+	assert(os_atomic_load_long(&blocking.calls) == 1);
+	blocking_owner_free(&blocking);
+
+	/* after the shutdown a retire joins the worker itself */
+	struct inbox inbox;
+	inbox_init(&inbox);
+	provider = start(PL_ROW_PLAYLIST, path, &options, &inbox);
+	size_t three = 3;
+	assert(wait_for(&inbox, 0, count_is, &three, "the list before the late retire"));
+	long before_late = bnum_allocs();
+	pl_provider_retire(provider);
+	assert(bnum_allocs() < before_late);
+	size_t mark = inbox_count(&inbox);
+	write_file("list.m3u", "a.mp3\n");
+	os_sleep_ms(2500);
+	assert(inbox_count(&inbox) == mark);
+	inbox_free(&inbox);
+	pl_provider_reaper_open();
+
+	os_unlink(path);
+	os_rmdir(folder);
+	bfree(path);
+}
+
+/* P-02: a playlist over the entry limit shows the first PL_MAX_ENTRIES entries and says how many it left out */
+static void test_entry_limit(void)
+{
+	make_folder("limit");
+	struct dstr text = {0};
+	for (size_t i = 0; i < PL_MAX_ENTRIES + 3; i++)
+		dstr_catf(&text, "%zu.mp3\n", i);
+	write_file("big.m3u", text.array);
+	dstr_free(&text);
+	char *path = path_of("big.m3u");
+
+	struct pl_container_options options;
+	default_options(&options);
+	options.folder_check_enabled = false;
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_provider *provider = start(PL_ROW_PLAYLIST, path, &options, &inbox);
+	const struct pl_snapshot *snapshot =
+		wait_for(&inbox, 0, says, "3 more entries left out (the limit is 100000)", "the entry limit said");
+	assert(snapshot);
+	assert(snapshot->count == PL_MAX_ENTRIES && snapshot->visible_count == PL_MAX_ENTRIES);
+	assert(snapshot->level == PL_STATUS_WARNING && !snapshot->stale);
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	os_unlink(path);
+	os_rmdir(folder);
+	bfree(path);
+}
+
 static void test_destroy_while_fetching(void)
 {
 	/* the fetch hangs; destroy returns at once and nothing is published afterwards (R-THR-3, R-REM-5) */
@@ -850,6 +990,8 @@ int main(void)
 	test_log_redacts_urls();
 	test_classification();
 	test_review_cases();
+	test_entry_limit();
+	test_retire();
 	test_destroy_while_fetching();
 
 	assert(os_atomic_load_long(&fetches_open) == 0);

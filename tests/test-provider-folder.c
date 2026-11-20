@@ -20,8 +20,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * through the write-complete gate, renames that keep their identity (also a file renamed twice before one listing),
  * deletions, a file rewritten in place keeping its place, view and filter changes without a new listing, lock list
  * at start, subfolders (a hidden one and a junction or symbolic link back up the tree skipped), a missing folder that
- * comes back, a change of the pending keys alone being published, and on Windows a folder through this machine's
- * admin share where it can be reached. Expected keys are written as file names and folded as the platform folds
+ * comes back, a change of the pending keys alone being published, a provider retired (ended without waiting for its
+ * worker, and never heard from again), and on Windows a folder through this machine's admin share where it can be
+ * reached. Expected keys are written as file names and folded as the platform folds
  * them (K). Each wait has a generous limit, so a slow machine only makes it slower. */
 
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(_GNU_SOURCE)
@@ -549,6 +550,10 @@ static void test_listing_and_changes(void)
 	write_file(folder, "c.mp4.part", 10, OLD);  /* always skipped: still downloading */
 	write_file(folder, "hidden.mp4", 10, OLD);
 	char *hidden = hide(folder, "hidden.mp4");
+	/* a name starting with "." is hidden on every system (P-06): the side file a Mac writes next to a.mp4 on a USB
+	 * drive or a share, and any other dot-file, without any attribute set */
+	write_file(folder, "._a.mp4", 10, OLD);
+	write_file(folder, ".dot.mp4", 10, OLD);
 
 	struct inbox inbox;
 	inbox_init(&inbox);
@@ -566,6 +571,7 @@ static void test_listing_and_changes(void)
 	assert(strcmp(a->location, expected.array) == 0 && a->size == 100 && a->has_date && a->occurrence == 1);
 	dstr_free(&expected);
 	assert(!entry(first, K("notes.txt")) && !entry(first, K(hidden)) && !entry(first, K("desktop.ini")));
+	assert(!entry(first, K("._a.mp4")) && !entry(first, K(".dot.mp4")));
 	bfree(hidden);
 
 	/* a new file waits in the gate, then joins */
@@ -774,6 +780,9 @@ static void test_subfolders(void)
 	write_file(folder, "secret" SEP "skipped.mp4", 10, OLD);
 	char *secret = hide(folder, "secret");
 	bfree(secret);
+	/* a folder whose name starts with "." is not entered on any system (P-06) */
+	make_subfolder(folder, ".dotted");
+	write_file(folder, ".dotted" SEP "skipped.mp4", 10, OLD);
 	/* a link back to the folder itself: following it would never end */
 	if (!make_loop(folder))
 		printf("note: no link could be made here; the loop case is not covered\n");
@@ -863,6 +872,155 @@ static void test_missing_folder(void)
 	bfree(away);
 	bfree(folder);
 	bfree(parent);
+}
+
+/* ---- a receiver whose publish call blocks, for the retire tests (R-THR-3) ---- */
+
+struct blocking_owner {
+	os_event_t *entered; /* manual reset: a publish call has begun */
+	os_event_t *release; /* manual reset: publish calls may return */
+	volatile long calls;
+	volatile long finished;
+};
+
+static void blocking_publish(void *owner, struct pl_snapshot *snapshot)
+{
+	struct blocking_owner *blocking = owner;
+	os_atomic_inc_long(&blocking->calls);
+	os_event_signal(blocking->entered);
+	os_event_wait(blocking->release);
+	pl_snapshot_free(snapshot);
+	os_atomic_inc_long(&blocking->finished);
+}
+
+struct retire_call {
+	struct pl_provider *provider;
+	struct blocking_owner *owner;
+	volatile long returned;
+	long finished_at_return; /* publish calls that had returned when the retire did */
+};
+
+static void *retire_on_thread(void *data)
+{
+	struct retire_call *call = data;
+	pl_provider_retire(call->provider);
+	call->finished_at_return = os_atomic_load_long(&call->owner->finished);
+	os_atomic_set_long(&call->returned, 1);
+	return NULL;
+}
+
+/* Retires provider, whose first publish call is made to blocking and held there: the retire must wait for that call
+ * (without the cut-off it returns at once, and the owner could be freed under the call), and return once it is
+ * over. The caller then checks that nothing more is published. */
+static void retire_during_publish(struct pl_provider *provider, struct blocking_owner *blocking)
+{
+	assert(os_event_timedwait(blocking->entered, WAIT_MS) == 0);
+	struct retire_call call = {provider, blocking, 0, 0};
+	pthread_t thread;
+	assert(pthread_create(&thread, NULL, retire_on_thread, &call) == 0);
+	os_sleep_ms(400);
+	/* the publish call is still in flight, so the retire has not returned */
+	assert(os_atomic_load_long(&call.returned) == 0);
+	assert(os_atomic_load_long(&blocking->finished) == 0);
+	os_event_signal(blocking->release);
+	pthread_join(thread, NULL);
+	assert(os_atomic_load_long(&call.returned) == 1);
+	assert(call.finished_at_return == 1 && os_atomic_load_long(&blocking->calls) == 1);
+}
+
+static void blocking_owner_init(struct blocking_owner *blocking)
+{
+	memset(blocking, 0, sizeof(*blocking));
+	os_event_init(&blocking->entered, OS_EVENT_TYPE_MANUAL);
+	os_event_init(&blocking->release, OS_EVENT_TYPE_MANUAL);
+}
+
+static void blocking_owner_free(struct blocking_owner *blocking)
+{
+	os_event_destroy(blocking->entered);
+	os_event_destroy(blocking->release);
+}
+
+/* R-THR-3: a retired provider is asked to stop, cut off from its owner and joined by the module's background thread.
+ * Nothing is published after the retire returns, whether the worker was idle or in the middle of its first listing,
+ * and the shutdown leaves nothing behind. */
+static void test_retire(void)
+{
+	char *folder = make_folder("retire");
+	write_file(folder, "1.mp4", 100, OLD);
+	write_file(folder, "2.mp4", 100, OLD);
+	struct pl_container_options options = default_options();
+
+	/* an idle provider */
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 21, &options, on_publish, &inbox);
+	assert(provider);
+	assert(wait_for(&inbox, 0, shows_exactly, K("1.mp4,2.mp4"), "the first listing before the retire"));
+	pl_provider_request_stop(provider);
+	pl_provider_retire(provider);
+	size_t mark = inbox_count(&inbox);
+	write_file(folder, "3.mp4", 100, OLD);
+	os_sleep_ms(1500);
+	assert(inbox_count(&inbox) == mark);
+
+	/* providers retired the moment they start, several at once: each publish callback is either done or never
+	 * made by the time its retire returns, so the owner can go at once */
+	struct inbox early[4];
+	for (size_t i = 0; i < 4; i++) {
+		inbox_init(&early[i]);
+		struct pl_provider *started =
+			pl_provider_create(PL_ROW_FOLDER, folder, "row", 30 + i, &options, on_publish, &early[i]);
+		assert(started);
+		pl_provider_retire(started);
+		size_t published = inbox_count(&early[i]);
+		assert(published <= 1);
+		inbox_free(&early[i]);
+	}
+	pl_provider_retire(NULL);
+	pl_provider_request_stop(NULL);
+
+	/* a retire while the publish callback is running waits for it and for nothing else; nothing is published
+	 * afterwards, though the folder changes and the callback would no longer block */
+	struct blocking_owner blocking;
+	blocking_owner_init(&blocking);
+	struct pl_provider *publishing =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 40, &options, blocking_publish, &blocking);
+	assert(publishing);
+	retire_during_publish(publishing, &blocking);
+	write_file(folder, "4.mp4", 100, OLD);
+	os_sleep_ms(1500);
+	assert(os_atomic_load_long(&blocking.calls) == 1);
+
+	/* the shutdown waits for every worker and frees them; a second one has nothing to do */
+	pl_provider_reaper_shutdown();
+	pl_provider_reaper_shutdown();
+	assert(inbox_count(&inbox) == mark);
+	assert(os_atomic_load_long(&blocking.calls) == 1);
+	blocking_owner_free(&blocking);
+
+	/* after the shutdown (the module unloading) a retire starts no thread again: the provider is joined and freed
+	 * before the retire returns, so nothing is left behind (main checks the allocations) and its owner hears
+	 * nothing more */
+	struct inbox late;
+	inbox_init(&late);
+	struct pl_provider *last = pl_provider_create(PL_ROW_FOLDER, folder, "row", 41, &options, on_publish, &late);
+	assert(last);
+	assert(wait_for(&late, 0, lists, K("1.mp4"), "a listing before the late retire"));
+	long before_late = bnum_allocs();
+	pl_provider_retire(last);
+	/* the provider and its worker are gone already, and no thread, stop or wake was made for it */
+	assert(bnum_allocs() < before_late);
+	size_t late_mark = inbox_count(&late);
+	write_file(folder, "5.mp4", 100, OLD);
+	os_sleep_ms(1000);
+	assert(inbox_count(&late) == late_mark);
+	inbox_free(&late);
+	pl_provider_reaper_open();
+	inbox_free(&inbox);
+	remove_folder(folder);
+	bfree(folder);
 }
 
 /* R-LIST-1 rule 5: a directory by its attributes; a file, a missing path and NULL are not */
@@ -956,6 +1114,8 @@ int main(void)
 	printf("subfolders: passed\n");
 	test_missing_folder();
 	printf("missing folder: passed\n");
+	test_retire();
+	printf("retire: passed\n");
 #ifdef _WIN32
 	test_admin_share();
 #endif

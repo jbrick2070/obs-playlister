@@ -46,6 +46,7 @@ struct pl_list_result {
 	bool stream;             /* HLS tags: the list is one stream, entries holds just it (R-REM-1) */
 	size_t nested_playlists; /* entries that are playlists themselves, skipped (D-12 c) */
 	size_t unusable_lines;   /* too long, holding a NUL, malformed, or naming what this list may not (see below) */
+	size_t over_limit;       /* references after the first PL_MAX_ENTRIES entries, left out */
 };
 
 void pl_list_result_free(struct pl_list_result *result);
@@ -75,11 +76,13 @@ void pl_list_builder_init(struct pl_list_builder *builder, const struct pl_list_
  * and a local path or any scheme but a network stream's (http, https, rtmp, rtsp, srt, udp, ...) unusable, so a list
  * on a server cannot name files on this computer. A reference whose extension is m3u or pls is counted as a nested
  * playlist and skipped (D-12 c); one ending in .m3u8 is an HLS stream the child plays, kept as a PL_ENTRY_STREAM and
- * never followed. */
+ * never followed. Once the result has PL_MAX_ENTRIES entries, further references are only counted (over_limit). */
 void pl_list_builder_add(struct pl_list_builder *builder, const char *reference, size_t reference_length,
 			 const char *title, size_t title_length);
 /* Counts a line the parser could not use */
 void pl_list_builder_unusable(struct pl_list_builder *builder);
+/* Counts a reference the parser itself left out because the list is over PL_MAX_ENTRIES */
+void pl_list_builder_over_limit(struct pl_list_builder *builder);
 /* The one entry of an HLS stream: the playlist itself (R-REM-1); drops anything added before */
 void pl_list_builder_stream(struct pl_list_builder *builder);
 /* Hands the entries to the result: source ordinals and occurrences assigned (R-KEY-1) */

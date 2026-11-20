@@ -46,11 +46,13 @@ function(obs_playlister_add_test name)
 endfunction()
 
 # Upstream shuffler self-tests (shuffler.c TEST_SHUFFLER block) plus regression tests, see test-shuffler.c
-obs_playlister_add_test(test-shuffler test-shuffler.c)
+obs_playlister_add_test(test-shuffler test-shuffler.c "${CMAKE_SOURCE_DIR}/src/core/random.c")
 # upstream's self-tests compare int loop counters with size_t fields; they are kept as upstream wrote them (R-TST-4)
 target_compile_options(test-shuffler PRIVATE $<$<C_COMPILER_ID:GNU,Clang,AppleClang>:-Wno-sign-compare>)
 # The shuffler's guards as the plugin is built, with asserts compiled out (R-UP-74)
-obs_playlister_add_test(test-shuffler-release test-shuffler-release.c)
+obs_playlister_add_test(test-shuffler-release test-shuffler-release.c "${CMAKE_SOURCE_DIR}/src/core/random.c")
+# The shuffle's own random numbers: seeded, the same on every thread, even over any range
+obs_playlister_add_test(test-random test-random.c "${CMAKE_SOURCE_DIR}/src/core/random.c")
 # The player's command FIFO
 obs_playlister_add_test(test-command-queue test-command-queue.c "${CMAKE_SOURCE_DIR}/src/core/command-queue.c")
 # Which end of the child may auto-advance
@@ -82,6 +84,8 @@ obs_playlister_add_test(test-startup test-startup.c "${_core}/startup.c")
 obs_playlister_add_test(test-frame-hold test-frame-hold.c "${_core}/frame-hold.c")
 # The size a source reports while it is not playing (R-BEH-7)
 obs_playlister_add_test(test-source-size test-source-size.c "${_core}/source-size.c")
+# What a list change does to a source that is paused, stopped or at the end of its list
+obs_playlister_add_test(test-standstill test-standstill.c "${_core}/standstill.c")
 # Playlists (R-REM-1): URL and path resolution, M3U and PLS against fixtures
 obs_playlister_add_test(test-url test-url.c "${_core}/url.c")
 # User-visible text by locale key, with English when no locale is loaded, and placeholders (R-I18N-1, R-I18N-2)
@@ -174,6 +178,15 @@ foreach(_test IN ITEMS test-provider-folder test-provider-list)
     target_link_libraries(${_test} PRIVATE CURL::libcurl Threads::Threads ${_playlister_macos_frameworks})
   endif()
 endforeach()
+
+# The verdict of the OBS harness (tests/obs/run-harness.sh) against made-up logs: a run fails when OBS had to be ended
+# on exit, when a leak is reported, when a check fails and when fewer checks ran than expected. Needs only a bash.
+if(UNIX)
+  find_program(_bash bash)
+  if(_bash)
+    add_test(NAME test-harness-verdict COMMAND "${_bash}" "${CMAKE_CURRENT_SOURCE_DIR}/obs/test-harness-verdict.sh")
+  endif()
+endif()
 
 # Every locale key used in src/ is in en-US.ini (R-TST-1); the second test proves the check fails on a missing key
 add_test(

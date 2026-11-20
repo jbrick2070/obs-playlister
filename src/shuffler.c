@@ -32,6 +32,8 @@ history.
 
 #include "shuffler.h"
 
+#include "core/random.h"
+
 /* On auto-reshuffle, avoid selecting the same item before at least
  * NOT_SAME_BEFORE other items have been selected (between the end of the
  * previous shuffle and the start of the new shuffle). */
@@ -68,7 +70,8 @@ static inline void shuffler_determine_one_(struct shuffler *s, size_t avoid_last
 	assert(s->head < s->shuffled_files.num);
 	assert(s->shuffled_files.num - s->head > avoid_last_n);
 	size_t range_len = s->shuffled_files.num - s->head - avoid_last_n;
-	size_t selected = s->head + (rand() % range_len);
+	/* Playlister's own generator, not rand(): seeded once for every thread and even over any length (core/random.h) */
+	size_t selected = s->head + pl_random_below(range_len);
 	da_swap(s->shuffled_files, s->head, selected);
 
 	if (s->head == s->history)
@@ -330,7 +333,190 @@ size_t find_media_index(struct darray *array, struct media_file_data *search_dat
 	return DARRAY_INVALID;
 }
 
-void shuffler_update_files(struct shuffler *s, struct darray *array)
+/* ---- finding the old items in a new list (shuffler_update_files) ----
+ *
+ * Each old item that was drawn, or is in the last cycle's history, is looked for in the new list. find_media_index
+ * does that with a scan of the new list per old item: with shuffle on and thousands of items, a list change then
+ * cost millions of string compares under the list lock. The index below answers the same question, the first match
+ * at or after a position, from the new items sorted once by what identifies them. */
+
+struct match_slot {
+	const struct media_file_data *data;
+	size_t original; /* its place in the new list before anything was swapped */
+};
+
+struct match_index {
+	struct match_slot *items; /* the new list's folder items (those with a parent_id), sorted by identity */
+	size_t item_count;
+	struct match_slot *rows; /* its entries with an id, sorted by id */
+	size_t row_count;
+	size_t *position;    /* by original place: where that entry is now */
+	size_t *original_at; /* by place now: which entry is there */
+	bool by_entry;       /* folder items are told apart by key and occurrence (R-KEY-1), else by file name */
+};
+
+static const char *text_or_empty(const char *text)
+{
+	return text ? text : "";
+}
+
+static int item_order_by_entry(const struct media_file_data *a, const struct media_file_data *b)
+{
+	int order = strcmp(a->parent_id, b->parent_id);
+	if (!order)
+		order = strcmp(text_or_empty(a->entry->key), text_or_empty(b->entry->key));
+	if (!order)
+		order = (a->entry->occurrence > b->entry->occurrence) - (a->entry->occurrence < b->entry->occurrence);
+	return order;
+}
+
+static int item_order_by_name(const struct media_file_data *a, const struct media_file_data *b)
+{
+	int order = strcmp(a->parent_id, b->parent_id);
+	return order ? order : strcmp(text_or_empty(a->filename), text_or_empty(b->filename));
+}
+
+static int row_order(const struct media_file_data *a, const struct media_file_data *b)
+{
+	return strcmp(a->id, b->id);
+}
+
+/* equal identities stay in list order, so the sort gives the same result everywhere */
+static int slot_tie(const struct match_slot *a, const struct match_slot *b)
+{
+	return (a->original > b->original) - (a->original < b->original);
+}
+
+static int compare_slots_by_entry(const void *a, const void *b)
+{
+	const struct match_slot *x = a, *y = b;
+	int order = item_order_by_entry(x->data, y->data);
+	return order ? order : slot_tie(x, y);
+}
+
+static int compare_slots_by_name(const void *a, const void *b)
+{
+	const struct match_slot *x = a, *y = b;
+	int order = item_order_by_name(x->data, y->data);
+	return order ? order : slot_tie(x, y);
+}
+
+static int compare_slots_by_id(const void *a, const void *b)
+{
+	const struct match_slot *x = a, *y = b;
+	int order = row_order(x->data, y->data);
+	return order ? order : slot_tie(x, y);
+}
+
+/* The index of the new (flattened) list. False when it cannot answer as find_media_index does: some folder items
+ * have an entry and some have none, among the new ones and the old ones that will be looked for (never the case in
+ * the plugin, where every folder item has one). The caller then scans. */
+static bool match_index_build(struct match_index *index, struct media_file_data *const *files, size_t count,
+			      const struct shuffler *old)
+{
+	bool with_entry = false;
+	bool without_entry = false;
+	for (size_t i = 0; i < count; i++) {
+		if (files[i]->parent_id)
+			*(files[i]->entry ? &with_entry : &without_entry) = true;
+	}
+	for (size_t i = 0; i < old->shuffled_files.num; i++) {
+		const struct media_file_data *data = old->shuffled_files.array[i];
+		if ((i < old->head || i >= old->history) && data->parent_id)
+			*(data->entry ? &with_entry : &without_entry) = true;
+	}
+	if (with_entry && without_entry)
+		return false;
+
+	size_t room = count ? count : 1;
+	index->items = bmalloc(room * sizeof(*index->items));
+	index->rows = bmalloc(room * sizeof(*index->rows));
+	index->position = bmalloc(room * sizeof(*index->position));
+	index->original_at = bmalloc(room * sizeof(*index->original_at));
+	index->item_count = 0;
+	index->row_count = 0;
+	index->by_entry = with_entry;
+	for (size_t i = 0; i < count; i++) {
+		struct match_slot slot = {files[i], i};
+		if (files[i]->parent_id)
+			index->items[index->item_count++] = slot;
+		if (files[i]->id)
+			index->rows[index->row_count++] = slot;
+		index->position[i] = i;
+		index->original_at[i] = i;
+	}
+	qsort(index->items, index->item_count, sizeof(*index->items),
+	      index->by_entry ? compare_slots_by_entry : compare_slots_by_name);
+	qsort(index->rows, index->row_count, sizeof(*index->rows), compare_slots_by_id);
+	return true;
+}
+
+static void match_index_free(struct match_index *index)
+{
+	bfree(index->items);
+	bfree(index->rows);
+	bfree(index->position);
+	bfree(index->original_at);
+}
+
+/* What find_media_index(files, search_data, offset) returns: the first place at or after offset that holds a match
+ * of search_data, or DARRAY_INVALID */
+static size_t match_index_find(const struct match_index *index, const struct media_file_data *search_data,
+			       size_t offset)
+{
+	const struct match_slot *slots;
+	size_t count;
+	int (*order)(const struct media_file_data *, const struct media_file_data *);
+	if (search_data->parent_id) {
+		slots = index->items;
+		count = index->item_count;
+		order = index->by_entry ? item_order_by_entry : item_order_by_name;
+	} else if (search_data->id) {
+		slots = index->rows;
+		count = index->row_count;
+		order = row_order;
+	} else {
+		return DARRAY_INVALID;
+	}
+
+	size_t low = 0;
+	size_t high = count;
+	while (low < high) {
+		size_t middle = low + (high - low) / 2;
+		if (order(slots[middle].data, search_data) < 0)
+			low = middle + 1;
+		else
+			high = middle;
+	}
+	/* identities are unique in the plugin, so this run is one entry long; with repeats, the first place wins */
+	size_t best = DARRAY_INVALID;
+	for (size_t i = low; i < count && order(slots[i].data, search_data) == 0; i++) {
+		size_t at = index->position[slots[i].original];
+		if (at >= offset && (best == DARRAY_INVALID || at < best))
+			best = at;
+	}
+	return best;
+}
+
+/* Swaps two places of the new list and keeps the index in step */
+static void match_swap(struct match_index *index, struct media_file_data **files, size_t a, size_t b)
+{
+	struct media_file_data *held = files[a];
+	files[a] = files[b];
+	files[b] = held;
+	if (!index)
+		return;
+	size_t original_a = index->original_at[a];
+	size_t original_b = index->original_at[b];
+	index->original_at[a] = original_b;
+	index->original_at[b] = original_a;
+	index->position[original_a] = b;
+	index->position[original_b] = a;
+}
+
+/* indexed false scans the new list for every old item, as before the index: kept for the mixed lists the index does
+ * not take, and for the tests, which compare the two */
+static void shuffler_update_files_(struct shuffler *s, struct darray *array, bool indexed)
 {
 	DARRAY(struct media_file_data) new_files;
 	DARRAY(struct media_file_data *) shuffled_files;
@@ -349,12 +535,21 @@ void shuffler_update_files(struct shuffler *s, struct darray *array)
 			size_t new_history = shuffled_files.num;
 			size_t history_before_next = 0;
 
+			/* nothing drawn and no history (shuffle never used): nothing is looked for, so no index */
+			struct match_index built = {0};
+			struct match_index *index = NULL;
+			bool searches = s->head > 0 || s->history < s->shuffled_files.num;
+			if (indexed && searches &&
+			    match_index_build(&built, shuffled_files.array, shuffled_files.num, s))
+				index = &built;
+
 			// Find determined media
 			for (size_t i = 0; i < s->head; i++) {
 				struct media_file_data *old_data = s->shuffled_files.array[i];
-				size_t new_idx = find_media_index(&shuffled_files.da, old_data, new_head);
+				size_t new_idx = index ? match_index_find(index, old_data, new_head)
+						       : find_media_index(&shuffled_files.da, old_data, new_head);
 				if (new_idx != DARRAY_INVALID) {
-					da_swap(shuffled_files, new_head++, new_idx);
+					match_swap(index, shuffled_files.array, new_head++, new_idx);
 				} else {
 					if (i < s->next)
 						new_next--;
@@ -366,9 +561,10 @@ void shuffler_update_files(struct shuffler *s, struct darray *array)
 			// drop below 0 when an item is missed by both loops)
 			for (size_t i = s->shuffled_files.num; i-- > s->history;) {
 				struct media_file_data *old_data = s->shuffled_files.array[i];
-				size_t new_idx = find_media_index(&shuffled_files.da, old_data, new_head);
+				size_t new_idx = index ? match_index_find(index, old_data, new_head)
+						       : find_media_index(&shuffled_files.da, old_data, new_head);
 				if (new_idx != DARRAY_INVALID) {
-					da_swap(shuffled_files, --new_history, new_idx);
+					match_swap(index, shuffled_files.array, --new_history, new_idx);
 					if (i < s->next)
 						history_before_next++;
 				} else {
@@ -384,6 +580,8 @@ void shuffler_update_files(struct shuffler *s, struct darray *array)
 			 * being clamped to head below */
 			if (new_next == shuffled_files.num && new_next != new_head)
 				new_next = 0;
+			if (index)
+				match_index_free(index);
 			s->head = new_head;
 			s->next = new_next;
 			s->history = new_history;
@@ -401,6 +599,11 @@ void shuffler_update_files(struct shuffler *s, struct darray *array)
 		shuffler_clear(s);
 		da_free(shuffled_files);
 	}
+}
+
+void shuffler_update_files(struct shuffler *s, struct darray *array)
+{
+	shuffler_update_files_(s, array, true);
 }
 
 #ifdef TEST_SHUFFLER
