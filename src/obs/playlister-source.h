@@ -96,6 +96,10 @@ struct media_playlist_source {
 	struct pl_player player;
 	volatile bool save_dirty; /* set after an index change; video_tick saves at most once a second */
 	uint64_t last_save_ns;    /* video_tick only */
+	/* R-UX-11: what plays, what comes next or the worst row status may have changed; video_tick tells the listeners
+	 * when it did. now_next_told is what they were last told (video_tick only). */
+	volatile bool now_next_dirty;
+	char *now_next_told;
 
 	struct shuffler shuffler;
 	bool shuffle;

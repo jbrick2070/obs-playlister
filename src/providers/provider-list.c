@@ -257,7 +257,7 @@ static void read_local(struct pl_list_provider *p)
 	size_t got;
 	result = pl_file_read(p->location, info.size, &data, &got, &os_error);
 	if (result == PL_FILE_IN_USE) {
-		set_error_text(p, pl_text("RowError.PlaylistInUse", "the playlist file is in use; trying again"));
+		set_error_text(p, pl_text("RowError.PlaylistInUse", "the playlist file is in use"));
 		return;
 	}
 	if (result != PL_FILE_OK) {
@@ -292,7 +292,7 @@ static void fetch_error(struct pl_list_provider *p, enum pl_fetch_result result,
 	char number[16];
 	switch (result) {
 	case PL_FETCH_TIMEOUT:
-		dstr_copy(&message, pl_text("RowError.TimedOut", "timed out"));
+		dstr_copy(&message, pl_text("RowError.TimedOut", "the server did not answer in time"));
 		break;
 	case PL_FETCH_TLS_ERROR:
 		snprintf(number, sizeof(number), "%u", info->error);
@@ -535,10 +535,9 @@ static void classify_remote(struct pl_list_provider *p)
 			bfree(final_url);
 		}
 	} else if (kind == RESPONSE_FEED) {
-		set_error_text(p, pl_text("RowError.FeedLater", "a podcast feed: feeds come in a later version"));
+		set_error_text(p, pl_text("RowError.FeedLater", "a podcast feed (not supported)"));
 	} else if (kind == RESPONSE_INDEX) {
-		set_error_text(p, pl_text("RowError.WebPageLater",
-					  "a web page: folder listings on web servers come in a later version"));
+		set_error_text(p, pl_text("RowError.WebPageLater", "a web page, not a playlist or media"));
 	} else {
 		struct dstr message = {0};
 		const char *type = info->content_type ? info->content_type : pl_text("RowError.NoContentType", "none");
@@ -597,6 +596,8 @@ static void refresh(struct pl_list_provider *p)
 	}
 }
 
+static int64_t interval_ms(struct pl_list_provider *p);
+
 /* Whether the row is read again on its own, and how often (R-REM-4, D-12 b) */
 static int64_t interval_ms(struct pl_list_provider *p)
 {
@@ -641,6 +642,15 @@ static void fill_status(struct pl_list_provider *p, const struct pl_entry *entri
 		level = PL_STATUS_ERROR;
 		dstr_copy(message, p->error);
 		status->stale = p->has_list;
+		/* what happens next (R-UX-4): the row is read or fetched again by itself, on this interval */
+		int64_t again_ms = interval_ms(p);
+		if (again_ms > 0) {
+			char seconds[24];
+			snprintf(seconds, sizeof(seconds), "%lld", (long long)((again_ms + 999) / 1000));
+			dstr_cat(message, "; ");
+			pl_text_cat(message, pl_text("RowStatus.TryingAgain", "trying again every %1 s"),
+				    (const char *[]){seconds}, 1);
+		}
 	}
 	if (p->shape == SHAPE_LIST && p->has_list && p->parsed.over_limit) {
 		if (level == PL_STATUS_OK)
@@ -673,19 +683,20 @@ static void fill_status(struct pl_list_provider *p, const struct pl_entry *entri
 				    (const char *[]){number}, 1);
 		}
 	}
-	/* R-DIR-10: with no dates, date order is list order, and "newest" means last in the list */
+	/* R-DIR-10: with no dates, "newest" means last in the list, and the row says so, as that is a choice the user
+	 * made and may not expect the outcome of. That date order is then list order is not said: a playlist playing in
+	 * its own order with the default settings is what everyone expects (the Order option's tooltip and the log say
+	 * it). */
 	bool dated = false;
 	for (size_t i = 0; i < count && !dated; i++)
 		dated = entries[i].has_date;
-	if (p->shape == SHAPE_LIST && count && !dated &&
-	    (p->options.sort_key == PL_SORT_DATE || p->options.mode != PL_MODE_FULL)) {
-		bool newest = p->options.mode != PL_MODE_FULL;
-		if (newest && level == PL_STATUS_OK)
+	if (p->shape == SHAPE_LIST && count && !dated && p->options.mode != PL_MODE_FULL) {
+		if (level == PL_STATUS_OK)
 			level = PL_STATUS_WARNING;
 		if (message->len)
 			dstr_cat(message, "; ");
-		dstr_cat(message, newest ? pl_text("RowNote.NoDatesNewest", "no dates: newest means last in the list")
-					 : pl_text("RowNote.NoDates", "no dates; list order"));
+		dstr_cat(message,
+			 pl_text("RowNote.NoDatesNewest", "no dates in the list: the last entries count as newest"));
 	}
 	status->level = level;
 	status->message = message->array;

@@ -32,7 +32,8 @@ struct row_report {
 	size_t held_changes; /* R-DIR-11 */
 	bool stale;          /* the last good list kept after a failure (R-BEH-3) */
 	int64_t last_ok_unix_ms;
-	char *logged; /* the status last written to the log */
+	size_t unfiltered_count; /* a folder: the files listed before the filter (R-UX-12) */
+	char *logged;            /* the status last written to the log */
 };
 
 struct media_file_data {
@@ -52,6 +53,7 @@ struct media_file_data {
 	/* folder rows: not listed by the row's provider yet, so not empty either (R-KEY-2); the keys still in its
 	 * write-complete gate (R-DIR-4) */
 	bool awaiting;
+	uint64_t awaiting_since_ns; /* when the row began to wait, for "slow to answer" in its status; 0 for a file row */
 	char **pending_keys;
 	size_t pending_count;
 	struct row_report report;

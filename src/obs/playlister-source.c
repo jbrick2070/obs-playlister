@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/source-size.h"
 #include "core/url.h"
 #include "providers/fold-key.h"
+#include "vendor.h"
 
 /* the audio queue's planes go straight into struct obs_source_audio */
 _Static_assert(PL_AUDIO_MAX_PLANES == MAX_AV_PLANES, "the audio queue must have as many planes as libobs");
@@ -45,7 +46,7 @@ static const char *still_filter = " (*.jpg *.jpeg *.png *.webp *.bmp);;";
 static const char *playlist_filter = " (*.m3u *.m3u8 *.pls);;";
 
 static void set_current_media_index(struct media_playlist_source *mps, size_t index);
-static size_t get_total_file_count(struct media_playlist_source *mps);
+static size_t get_total_file_count(const struct media_playlist_source *mps);
 
 static inline void reset_folder_item_index(struct media_playlist_source *mps);
 
@@ -78,7 +79,9 @@ static void end_reached_locked(struct media_playlist_source *mps);
 static void media_source_ended(void *data, calldata_t *cd);
 void mps_audio_callback(void *data, obs_source_t *source, const struct audio_data *audio_data, bool muted);
 static bool play_selected_clicked(obs_properties_t *props, obs_property_t *property, void *data);
-static void show_status_block(struct media_playlist_source *mps, obs_property_t *p);
+static void show_status_block(struct media_playlist_source *mps, obs_property_t *p, obs_data_t *edited);
+static bool row_playable(const struct media_playlist_source *mps, const struct media_file_data *row);
+static size_t skip_empty_folder_rows(struct media_playlist_source *mps, size_t index, bool backward);
 
 static void play_pause_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 static void restart_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
@@ -152,6 +155,7 @@ struct obs_source_info media_playlist_source_info = {
 #define S_VISIBILITY_BEHAVIOR "visibility_behavior"
 #define S_RESTART_BEHAVIOR "restart_behavior"
 #define S_CURRENT_FILE_NAME "current_file_name"
+#define S_NEXT_FILE_NAME "next_file_name" /* as current_file_name: written on updates, saves and button presses */
 #define S_SELECT_FILE "select_file"
 
 #define S_CURRENT_MEDIA_INDEX "current_media_index"
@@ -165,6 +169,11 @@ struct obs_source_info media_playlist_source_info = {
 #define S_EXTENSION_FILTER "extension_filter"
 #define S_SORT_KEY "sort_key"
 #define S_SORT_DESCENDING "sort_descending"
+/* The Order list of Properties: sort_key and sort_descending as one choice, sort_key * 2 + sort_descending. The two
+ * keys above stay what is saved and what scripts set; order_synced is the value the list last agreed with them on,
+ * which tells a change of the list from a change of the keys (sync_order). */
+#define S_ORDER "order"
+#define S_ORDER_SYNCED "order_synced"
 #define S_CONTAINER_MODE "container_mode"
 #define S_NEWEST_COUNT "newest_count"
 #define S_STILL_DURATION "still_duration_s"
@@ -182,6 +191,12 @@ struct obs_source_info media_playlist_source_info = {
 #define S_PLUGIN_VERSION "plugin_version"       /* the version line (R-LIST-6), an info text; no setting */
 #define S_REFRESH_HINT "refresh_hint"           /* what Refresh updates (R-UX-2), an info text; no setting */
 #define S_HOTKEYS_HINT "hotkeys_hint"           /* where the hotkeys are (R-UX-6), an info text; no setting */
+#define S_LIVE_NOTE "live_note"                 /* changes go live at once (R-UX-3), an info text; no setting */
+#define S_SPEED_WARNING "speed_warning"         /* a Speed change restarts the item, an info text; no setting */
+#define S_PLAY_SELECTED "play_selected"         /* the Play now button; no setting */
+/* Properties shows the playlist, its status and the few options most people use; the rest appears with this box
+ * ticked (R-UX-10). Saved with the source like any setting, but it only changes the window. */
+#define S_SHOW_ADVANCED "show_advanced"
 #define ROW_KIND_FOLDER "folder"
 #define SCHEMA_VERSION 1
 #define S_ID "uuid"
@@ -206,10 +221,16 @@ struct obs_source_info media_playlist_source_info = {
 #define T_RESTART_BEHAVIOR_CURRENT_FILE T_("RestartBehavior.CurrentFile")
 #define T_RESTART_BEHAVIOR_FIRST_FILE T_("RestartBehavior.FirstFile")
 #define T_CURRENT_FILE_NAME T_("CurrentFileName")
+#define T_NEXT_FILE_NAME T_("NextFileName")
+#define T_NEXT_FILE_NAME_SHUFFLE T_("NextFileName.Shuffle")
 #define T_SELECT_FILE T_("SelectFile")
 #define T_NO_FILE_SELECTED T_("NoFileSelected")
 #define T_SELECT_FILE_STALE T_("SelectFileStale")
 #define T_USE_HARDWARE_DECODING T_("UseHardwareDecoding")
+#define T_USE_HARDWARE_DECODING_TOOLTIP T_("UseHardwareDecoding.Tooltip")
+#define T_VISIBILITY_BEHAVIOR_TOOLTIP T_("VisibilityBehavior.Tooltip")
+#define T_LIVE_NOTE T_("LiveNote")
+#define T_SHOW_ADVANCED T_("ShowAdvanced")
 #define T_FFMPEG_CLOSE_WHEN_INACTIVE T_("CloseFileWhenInactive")
 #define T_FFMPEG_CLOSE_WHEN_INACTIVE_TOOLTIP T_("CloseFileWhenInactive.Tooltip")
 #define T_SPEED T_("Speed")
@@ -219,11 +240,14 @@ struct obs_source_info media_playlist_source_info = {
 #define T_INCLUDE_SUBFOLDERS T_("IncludeSubfolders")
 #define T_EXTENSION_FILTER T_("ExtensionFilter")
 #define T_EXTENSION_FILTER_TOOLTIP T_("ExtensionFilter.Tooltip")
-#define T_SORT_KEY T_("SortKey")
-#define T_SORT_KEY_LIST T_("SortKey.List")
-#define T_SORT_KEY_NAME T_("SortKey.Name")
-#define T_SORT_KEY_DATE T_("SortKey.Date")
-#define T_SORT_DESCENDING T_("SortDescending")
+#define T_ORDER T_("Order")
+#define T_ORDER_TOOLTIP T_("Order.Tooltip")
+#define T_ORDER_NAME_ASCENDING T_("Order.NameAscending")
+#define T_ORDER_NAME_DESCENDING T_("Order.NameDescending")
+#define T_ORDER_DATE_ASCENDING T_("Order.DateAscending")
+#define T_ORDER_DATE_DESCENDING T_("Order.DateDescending")
+#define T_ORDER_LIST_ASCENDING T_("Order.ListAscending")
+#define T_ORDER_LIST_DESCENDING T_("Order.ListDescending")
 #define T_CONTAINER_MODE T_("ContainerMode")
 #define T_CONTAINER_MODE_FULL T_("ContainerMode.Full")
 #define T_CONTAINER_MODE_NEWEST_ONLY T_("ContainerMode.NewestOnly")
@@ -242,17 +266,25 @@ struct obs_source_info media_playlist_source_info = {
 #define T_ROW_STATUS T_("RowStatus")
 #define T_PLUGIN_VERSION T_("PluginVersion")
 #define T_PLAY_SELECTED_FILE T_("PlaySelectedFile")
-#define T_CURRENT_FILE_NAME_HELP T_("CurrentFileName.Help")
 #define T_ROW_KIND_FILE T_("RowKind.File")
 #define T_ROW_KIND_URL T_("RowKind.Url")
 #define T_ROW_KIND_FOLDER T_("RowKind.Folder")
 #define T_ROW_KIND_PLAYLIST T_("RowKind.Playlist")
 #define T_ROW_KIND_REMOTE T_("RowKind.Remote")
 #define T_ROW_STATUS_SCANNING T_("RowStatus.Scanning")
+#define T_ROW_STATUS_SCANNING_SLOW T_("RowStatus.ScanningSlow")
 #define T_ROW_STATUS_EMPTY T_("RowStatus.Empty")
+#define T_ROW_STATUS_FOLDER_EMPTY T_("RowStatus.FolderEmpty")
+#define T_ROW_STATUS_FOLDER_EMPTY_HERE T_("RowStatus.FolderEmptyHere")
+#define T_ROW_STATUS_NO_MATCHING_FILES T_("RowStatus.NoMatchingFiles")
 #define T_ROW_STATUS_ONE_FILE T_("RowStatus.OneFile")
 #define T_ROW_STATUS_FILES T_("RowStatus.Files")
 #define T_ROW_STATUS_FILES_OF_MEMBERS T_("RowStatus.FilesOfMembers")
+#define T_ROW_STATUS_ONE_ITEM T_("RowStatus.OneItem")
+#define T_ROW_STATUS_ITEMS T_("RowStatus.Items")
+#define T_ROW_STATUS_ITEMS_OF_MEMBERS T_("RowStatus.ItemsOfMembers")
+#define T_ROW_STATUS_NEW_ROW T_("RowStatus.NewRow")
+#define T_ROW_STATUS_WAITING_FOR_PROGRAM T_("RowStatus.WaitingForProgram")
 #define T_ROW_STATUS_WAITING_ONE T_("RowStatus.WaitingForOneFile")
 #define T_ROW_STATUS_WAITING T_("RowStatus.WaitingForFiles")
 #define T_ROW_STATUS_ONE_CHANGE T_("RowStatus.OneChangeWaiting")
@@ -278,6 +310,15 @@ struct obs_source_info media_playlist_source_info = {
 static inline void mark_save_dirty(struct media_playlist_source *mps)
 {
 	os_atomic_set_bool(&mps->save_dirty, true);
+	/* whatever moved the resume point moved what plays or what comes next (mark_now_next_dirty) */
+	os_atomic_set_bool(&mps->now_next_dirty, true);
+}
+
+/* What plays, what comes next or the worst row status may have changed: video_tick looks, and tells whoever listens
+ * if it did (R-UX-11). Set wherever one of the three can change; telling twice costs nothing, as the tick compares. */
+static inline void mark_now_next_dirty(struct media_playlist_source *mps)
+{
+	os_atomic_set_bool(&mps->now_next_dirty, true);
 }
 
 /* Keeps the playing folder item's identity (R-KEY-1) to find it again after a rescan; a file row or no item keeps
@@ -394,7 +435,7 @@ static inline void set_current_media_index(struct media_playlist_source *mps, si
 	}
 }
 
-static size_t get_total_file_count(struct media_playlist_source *mps)
+static size_t get_total_file_count(const struct media_playlist_source *mps)
 {
 	size_t count = 0;
 	struct media_file_data item;
@@ -448,24 +489,133 @@ static inline void reset_folder_item_index(struct media_playlist_source *mps)
 	remember_item(mps, NULL);
 }
 
-/* The caller holds the list lock */
+/* The last part of a path or address: what a person calls the file */
+static const char *last_part(const char *path)
+{
+	const char *name = path;
+	for (const char *c = path; *c; c++) {
+		if ((*c == '/' || *c == '\\') && c[1])
+			name = c + 1;
+	}
+	return name;
+}
+
+/* What an item or a row is called where a person reads it (a failed row's status line, the Play item list, and what
+ * is published for controllers, R-UX-11): a playlist entry's own title when it has one, else its file name; of a web
+ * address its last part, without the user name, password and query an address can carry (pl_url_redacted). bmem. */
+static char *item_name(const struct media_file_data *item)
+{
+	if (item->entry && item->entry->title && *item->entry->title)
+		return bstrdup(item->entry->title);
+	if (item->is_url || strstr(item->path, "://")) {
+		char *shown = pl_url_redacted(item->path);
+		char *name = bstrdup(last_part(shown));
+		bfree(shown);
+		return name;
+	}
+	return bstrdup(last_part(item->path));
+}
+
+/* The item Play or Restart would load from where the position stands, or NULL. The caller holds the list lock. */
+static const struct media_file_data *position_item(const struct media_playlist_source *mps)
+{
+	const struct media_file_data *row = mps->current_media;
+	if (!row)
+		return NULL;
+	if (!row->is_folder)
+		return item_failed(mps, row) ? NULL : row;
+	size_t index = loadable_item(mps, row, mps->current_folder_item_index, false);
+	if (index == DARRAY_INVALID)
+		index = loadable_item(mps, row, 0, false);
+	return index != DARRAY_INVALID ? &row->folder_items.array[index] : NULL;
+}
+
+/* What plays after the playing item, without moving anything: the way playlist_next_locked would go. While nothing
+ * plays (stopped, ended, or nothing loaded) it is the item Play starts. NULL when nothing follows. With Shuffle on the
+ * next item is drawn only when it starts, so that a jump to another item cannot leave a drawn one out of the pass:
+ * it is known only where the shuffler has drawn it already (after Previous, and at the start of a new pass), and
+ * otherwise *undecided is set. The caller holds the list lock. */
+static const struct media_file_data *peek_next_locked(struct media_playlist_source *mps, bool *undecided)
+{
+	*undecided = false;
+	if (!get_total_file_count(mps) || !mps->current_media)
+		return NULL;
+	if (!mps->actual_media || state_stopped(media_state(mps)))
+		return position_item(mps);
+	if (mps->shuffle) {
+		const struct shuffler *s = &mps->shuffler;
+		if (s->next < s->head && s->next < s->shuffled_files.num &&
+		    item_loadable(mps, s->shuffled_files.array[s->next]))
+			return s->shuffled_files.array[s->next];
+		*undecided = shuffler_has_next(&mps->shuffler);
+		return NULL;
+	}
+
+	const struct media_file_data *row = mps->current_media;
+	/* R-DIR-8: after an evicted item, its row goes on with the first item of its new visible list */
+	if (mps->playing_copy_active && mps->actual_media == &mps->playing_copy && row->is_folder) {
+		size_t first = loadable_item(mps, row, 0, false);
+		if (first != DARRAY_INVALID)
+			return &row->folder_items.array[first];
+	}
+	if (row->is_folder && row->folder_items.num > 0 && mps->current_folder_item_index < row->folder_items.num - 1) {
+		size_t next_item = loadable_item(mps, row, mps->current_folder_item_index + 1, false);
+		if (next_item != DARRAY_INVALID)
+			return &row->folder_items.array[next_item];
+	}
+	size_t next;
+	if (mps->current_media_index < mps->files.num - 1)
+		next = mps->current_media_index + 1;
+	else if (mps->loop)
+		next = 0;
+	else
+		return NULL;
+	next = skip_empty_folder_rows(mps, next, false);
+	if (next >= mps->files.num)
+		return NULL;
+	const struct media_file_data *next_row = &mps->files.array[next];
+	if (!next_row->is_folder)
+		return next_row;
+	size_t first = loadable_item(mps, next_row, 0, false);
+	return first != DARRAY_INVALID ? &next_row->folder_items.array[first] : NULL;
+}
+
+/* An item as Now playing and Next show it: its place, "N" for a row or "N-M" for an item of a folder or playlist row,
+ * then its location */
+static void describe_item(const struct media_file_data *item, struct dstr *text)
+{
+	if (item->parent)
+		dstr_printf(text, "%zu-%zu", item->parent->index + 1, item->index + 1);
+	else
+		dstr_printf(text, "%zu", item->index + 1);
+	dstr_catf(text, ": %s", item->path);
+}
+
+/* Now playing and Next, as Properties shows them: info texts that show a setting, written here on every update, save
+ * and button press (they are not pushed into an open window, R-BEH-2). The caller holds the list lock. */
 static void update_current_filename_setting(struct media_playlist_source *mps, obs_data_t *data)
 {
 	struct dstr long_desc = {0};
 	if (!mps || !data)
 		return;
+	bool undecided = false;
+	const struct media_file_data *next = peek_next_locked(mps, &undecided);
+	if (next)
+		describe_item(next, &long_desc);
+	else if (undecided)
+		dstr_copy(&long_desc, T_NEXT_FILE_NAME_SHUFFLE);
+	obs_data_set_string(data, S_NEXT_FILE_NAME, long_desc.len ? long_desc.array : " ");
+	dstr_free(&long_desc);
+
 	if (!mps->actual_media) {
 		obs_data_set_string(data, S_CURRENT_FILE_NAME, " ");
 		return;
 	} else if (mps->actual_media == &mps->playing_copy) {
 		/* an evicted item has no place in its row's list now: the row only (R-DIR-8) */
-		dstr_catf(&long_desc, "%zu", mps->actual_media->parent->index + 1);
-	} else if (mps->actual_media->parent) {
-		dstr_catf(&long_desc, "%zu-%zu", mps->actual_media->parent->index + 1, mps->actual_media->index + 1);
+		dstr_catf(&long_desc, "%zu: %s", mps->actual_media->parent->index + 1, mps->actual_media->path);
 	} else {
-		dstr_catf(&long_desc, "%zu", mps->actual_media->index + 1);
+		describe_item(mps->actual_media, &long_desc);
 	}
-	dstr_catf(&long_desc, ": %s", mps->actual_media->path);
 	obs_data_set_string(data, S_CURRENT_FILE_NAME, long_desc.array);
 	dstr_free(&long_desc);
 }
@@ -484,6 +634,7 @@ static void clear_media_source(void *data)
 	/* stopped for want of anything to play: a list change that brings something starts it */
 	mps->stopped_by_request = false;
 	mps->play_on_show = false;
+	mark_now_next_dirty(mps);
 }
 
 /* How the source stands should a list change take its loaded item away (core/standstill.h). The caller holds the
@@ -515,6 +666,7 @@ static void park_position(struct media_playlist_source *mps, enum obs_media_stat
 	mps->stopped_by_request = true;
 	mps->play_on_show = decision == PL_STANDSTILL_PARK_TO_SHOW;
 	cancel_resume(mps);
+	mark_now_next_dirty(mps);
 }
 
 /* Checks if the media source has to be updated, because updating its
@@ -552,6 +704,7 @@ static void update_media_source(void *data, bool forced)
 	}
 	/* what plays now is an item of the list; an evicted item's copy is done with (R-DIR-8) */
 	drop_playing_copy(mps);
+	mark_now_next_dirty(mps);
 }
 
 /* Returns whether a selection was played. The caller holds the list lock. */
@@ -865,7 +1018,7 @@ static bool play_selected_clicked(obs_properties_t *props, obs_property_t *prope
 	pthread_mutex_unlock(&mps->mutex);
 	/* the click redraws the open Properties without building it again: its status block is updated here, so a
 	 * stale choice shows (R-UP-20) */
-	show_status_block(mps, obs_properties_get(props, S_ROW_STATUS));
+	show_status_block(mps, obs_properties_get(props, S_ROW_STATUS), NULL);
 	/* released after its last use (R-UP-71) */
 	obs_data_release(settings);
 
@@ -928,6 +1081,7 @@ static void store_report(struct media_file_data *row, const struct pl_snapshot *
 	report->held_changes = snapshot->held_changes;
 	report->stale = snapshot->stale;
 	report->last_ok_unix_ms = snapshot->last_ok_unix_ms;
+	report->unfiltered_count = snapshot->unfiltered_count;
 }
 
 /* Appends a locale text with %1 and %2 replaced by numbers; one is the text for a count of 1 */
@@ -981,11 +1135,15 @@ static size_t failed_items(const struct media_playlist_source *mps, const struct
 	return count;
 }
 
-/* One row's status, "kind" or "kind - status" (R-LIST-5), and its level. A folder row says whether it is listed yet
- * ("scanning", R-BEH-2), how many files it plays (of how many, in a newest mode), the files still being written
- * (R-DIR-4), the changes the locked list keeps (R-DIR-11), its failed files, the provider's own message (missing
- * folder, access denied, cloud-only files) and the time of the last list it keeps after a failure (R-BEH-3). The
- * caller holds the list lock. */
+#define SLOW_READ_NS (5ULL * 1000000000ULL) /* a row not listed after this long says the drive is slow to answer */
+
+/* One row's status, "kind" or "kind - status" (R-LIST-5), and its level. A file or web address row that failed to
+ * play is named, with the likely cause and what happened (R-UX-4). A folder, playlist or web list row says whether
+ * it is read yet ("reading", R-BEH-2, and after 5 s that the drive is slow to answer), how many files or items it
+ * plays (of how many, in a newest mode) or why it has none (R-UX-12), the files still being written (R-DIR-4), the
+ * changes the locked list keeps (R-DIR-11), its failed files, the provider's own message (missing folder, access
+ * denied, cloud-only files, each with what happens next) and the time of the last list it keeps after a failure
+ * (R-BEH-3). The caller holds the list lock. */
 static enum pl_status_level row_status(const struct media_playlist_source *mps, const struct media_file_data *row,
 				       struct dstr *line)
 {
@@ -993,14 +1151,19 @@ static enum pl_status_level row_status(const struct media_playlist_source *mps, 
 	struct dstr status = {0};
 	if (!row->is_folder) {
 		dstr_copy(line, row->is_url ? T_ROW_KIND_URL : T_ROW_KIND_FILE);
-		/* R-UX-4: why it failed, as skip_failed_load judged it */
+		/* R-UX-4: which file, and why it failed, as skip_failed_load judged it */
 		const struct failure_mark *failure = find_failure(mps, row);
 		if (failure) {
+			char *name = item_name(row);
+			dstr_catf(line, " %s", name);
+			bfree(name);
 			dstr_copy(&status, failure->ended ? T_ROW_STATUS_FAILED_NO_START : T_ROW_STATUS_FAILED_TIMEOUT);
 			level = PL_STATUS_ERROR;
 		}
 	} else {
 		const struct row_report *report = &row->report;
+		/* a playlist's and a web list's entries are items: they may be streams and addresses, not files */
+		const bool list = row->kind == PL_ROW_PLAYLIST || row->kind == PL_ROW_REMOTE;
 		/* a row whose kind its worker is still finding out has none to name yet */
 		dstr_copy(line, row->kind == PL_ROW_PLAYLIST  ? T_ROW_KIND_PLAYLIST
 				: row->kind == PL_ROW_REMOTE  ? T_ROW_KIND_REMOTE
@@ -1009,14 +1172,25 @@ static enum pl_status_level row_status(const struct media_playlist_source *mps, 
 		level = report->level;
 		size_t visible = row->folder_items.num;
 		if (row->awaiting) {
-			dstr_copy(&status, T_ROW_STATUS_SCANNING);
-		} else if (report->listed) {
-			if (!visible)
+			bool slow = row->awaiting_since_ns && os_gettime_ns() - row->awaiting_since_ns > SLOW_READ_NS;
+			dstr_copy(&status, slow ? T_ROW_STATUS_SCANNING_SLOW : T_ROW_STATUS_SCANNING);
+		} else if (report->listed && !visible) {
+			/* R-UX-12: nothing to play, and why. A folder with files on their way says so below instead. */
+			if (list) {
 				dstr_copy(&status, T_ROW_STATUS_EMPTY);
-			else if (visible == report->member_count)
-				cat_count(&status, T_ROW_STATUS_ONE_FILE, T_ROW_STATUS_FILES, visible, 0);
-			else
-				cat_count(&status, NULL, T_ROW_STATUS_FILES_OF_MEMBERS, visible, report->member_count);
+			} else if (!row->pending_count) {
+				/* (with its first files still being written, "waiting for ..." below says it all) */
+				const char *empty = mps->container_options.include_subfolders
+							    ? T_ROW_STATUS_FOLDER_EMPTY
+							    : T_ROW_STATUS_FOLDER_EMPTY_HERE;
+				dstr_copy(&status, report->unfiltered_count ? T_ROW_STATUS_NO_MATCHING_FILES : empty);
+			}
+		} else if (report->listed && visible == report->member_count) {
+			cat_count(&status, list ? T_ROW_STATUS_ONE_ITEM : T_ROW_STATUS_ONE_FILE,
+				  list ? T_ROW_STATUS_ITEMS : T_ROW_STATUS_FILES, visible, 0);
+		} else if (report->listed) {
+			cat_count(&status, NULL, list ? T_ROW_STATUS_ITEMS_OF_MEMBERS : T_ROW_STATUS_FILES_OF_MEMBERS,
+				  visible, report->member_count);
 		}
 		if (row->pending_count)
 			cat_count(next_part(&status), T_ROW_STATUS_WAITING_ONE, T_ROW_STATUS_WAITING,
@@ -1044,28 +1218,85 @@ static enum pl_status_level row_status(const struct media_playlist_source *mps, 
 	return level;
 }
 
+/* R-UX-13: the source has something to play and plays none of it because it is not in Program, where its
+ * visibility option stops it: a new source in a Studio Mode preview scene, or one whose scene is not on air. The
+ * caller holds the list lock. */
+static bool waiting_for_program(const struct media_playlist_source *mps)
+{
+	return (mps->visibility_behavior == VISIBILITY_BEHAVIOR_STOP_RESTART ||
+		mps->visibility_behavior == VISIBILITY_BEHAVIOR_STOP_PLAY_NEXT) &&
+	       !mps->all_failed && get_total_file_count(mps) > 0 && !obs_source_active(mps->source);
+}
+
+/* The row of the list that a row of the settings is: the same uuid and the same path, or NULL for a row the source
+ * has not been given yet */
+static const struct media_file_data *settings_row(const struct media_playlist_source *mps, obs_data_t *item)
+{
+	const char *id = obs_data_get_string(item, S_ID);
+	const char *path = obs_data_get_string(item, "value");
+	for (size_t i = 0; *id && i < mps->files.num; i++) {
+		const struct media_file_data *row = &mps->files.array[i];
+		if (strcmp(row->id, id) == 0 && strcmp(row->path, path) == 0)
+			return row;
+	}
+	return NULL;
+}
+
 /* The status block: one line per row, "N: kind - status", or what to do when there is no row (R-UX-1), then a line
- * when auto-advance stopped because nothing may play (R-BEH-5) and one when the last Play Selected choice was stale
- * (R-UP-20); returns the worst level. The caller holds the list lock. */
-static enum pl_status_level build_status_block(const struct media_playlist_source *mps, struct dstr *block)
+ * when auto-advance stopped because nothing may play (R-BEH-5), one when the source waits for Program (R-UX-13) and
+ * one when the last Play now choice was stale (R-UP-20); returns the worst level.
+ *
+ * edited is NULL for the list the source has. While Properties is open it is the window's own settings, whose
+ * Playlist the user may just have changed: OBS hands an edit to the source half a second later, so the rows are
+ * taken from those settings, each with the status of the source's row it still is, and a row the source does not
+ * have yet says so (R-UX-2). The caller holds the list lock. */
+static enum pl_status_level build_status_block(const struct media_playlist_source *mps, struct dstr *block,
+					       obs_data_t *edited)
 {
 	enum pl_status_level worst = PL_STATUS_OK;
 	struct dstr line = {0};
-	if (!mps->files.num)
-		dstr_copy(block, T_ROW_STATUS_EMPTY_LIST);
-	for (size_t i = 0; i < mps->files.num; i++) {
-		enum pl_status_level level = row_status(mps, &mps->files.array[i], &line);
-		if (level > worst)
-			worst = level;
+	obs_data_array_t *rows = edited ? obs_data_get_array(edited, S_PLAYLIST) : NULL;
+	size_t count = rows ? obs_data_array_count(rows) : mps->files.num;
+	size_t shown = 0;
+	bool all_known = true;
+	for (size_t i = 0; i < count; i++) {
+		const struct media_file_data *row = rows ? NULL : &mps->files.array[i];
+		if (rows) {
+			obs_data_t *item = obs_data_array_item(rows, i);
+			/* a row with an empty path is no row (R-UP-77) */
+			bool blank = !*obs_data_get_string(item, "value");
+			row = blank ? NULL : settings_row(mps, item);
+			obs_data_release(item);
+			if (blank)
+				continue;
+		}
+		shown++;
 		if (block->len)
 			dstr_cat(block, "\n");
-		dstr_catf(block, "%zu: %s", i + 1, line.array);
+		if (!row) {
+			all_known = false;
+			dstr_catf(block, "%zu: %s", shown, T_ROW_STATUS_NEW_ROW);
+			continue;
+		}
+		enum pl_status_level level = row_status(mps, row, &line);
+		if (level > worst)
+			worst = level;
+		dstr_catf(block, "%zu: %s", shown, line.array);
 	}
-	if (mps->all_failed) {
+	obs_data_array_release(rows);
+	if (!shown)
+		dstr_copy(block, T_ROW_STATUS_EMPTY_LIST);
+	/* the lines about playback are the source's, which has not seen an edited list yet */
+	bool current = all_known && shown == mps->files.num;
+	if (current && mps->all_failed) {
 		if (block->len)
 			dstr_cat(block, "\n");
 		dstr_cat(block, T_ROW_STATUS_ALL_FAILED);
 		worst = PL_STATUS_ERROR;
+	}
+	if (current && shown && waiting_for_program(mps)) {
+		dstr_cat(block, "\n");
+		dstr_cat(block, T_ROW_STATUS_WAITING_FOR_PROGRAM);
 	}
 	if (mps->stale_choice) {
 		if (block->len)
@@ -1083,14 +1314,14 @@ static enum pl_status_level build_status_block(const struct media_playlist_sourc
 /* Puts the status block into its Properties info text: as its long description, which Properties shows as plain lines
  * when the text has no value (with a value, the long description becomes a tooltip and the lines are folded), colored
  * by the worst level. Never written to the settings: Properties copies them before it builds itself, and a value
- * written while it builds makes it ask to save changes nobody made. */
-static void show_status_block(struct media_playlist_source *mps, obs_property_t *p)
+ * written while it builds makes it ask to save changes nobody made. edited: build_status_block. */
+static void show_status_block(struct media_playlist_source *mps, obs_property_t *p, obs_data_t *edited)
 {
 	if (!p)
 		return;
 	struct dstr block = {0};
 	pthread_mutex_lock(&mps->mutex);
-	enum pl_status_level worst = build_status_block(mps, &block);
+	enum pl_status_level worst = build_status_block(mps, &block, edited);
 	pthread_mutex_unlock(&mps->mutex);
 	obs_property_set_long_description(p, block.array);
 	obs_property_text_set_info_type(p, worst == PL_STATUS_ERROR     ? OBS_TEXT_INFO_ERROR
@@ -1239,6 +1470,20 @@ static bool point_at_playable_item(struct media_playlist_source *mps)
 	return true;
 }
 
+/* R-UP-42: a hotkey acts only while the source is shown somewhere (Program, a Studio Mode preview, a projector or
+ * Properties), as the hotkeys of OBS's own Media Source do. A press that is passed over says so in the log, since
+ * nothing on screen does (R-UX-6); the source toolbar and controllers act on a hidden source too. */
+static bool hotkey_acts(struct media_playlist_source *mps, bool pressed, const char *what)
+{
+	if (!pressed)
+		return false;
+	if (obs_source_showing(mps->source))
+		return true;
+	obs_log(LOG_INFO, "hotkey %s ignored: '%s' is not shown (Program, Preview, a projector or Properties)", what,
+		obs_source_get_name(mps->source));
+	return false;
+}
+
 static void play_pause_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
 {
 	UNUSED_PARAMETER(id);
@@ -1246,7 +1491,7 @@ static void play_pause_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey
 
 	struct media_playlist_source *mps = data;
 
-	if (pressed && obs_source_showing(mps->source))
+	if (hotkey_acts(mps, pressed, "Play/Pause"))
 		obs_source_media_play_pause(mps->source, media_state(mps) == OBS_MEDIA_STATE_PLAYING);
 }
 
@@ -1257,7 +1502,7 @@ static void restart_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, b
 
 	struct media_playlist_source *mps = data;
 
-	if (pressed && obs_source_showing(mps->source))
+	if (hotkey_acts(mps, pressed, "Restart"))
 		obs_source_media_restart(mps->source);
 }
 
@@ -1268,7 +1513,7 @@ static void stop_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool
 
 	struct media_playlist_source *mps = data;
 
-	if (pressed && obs_source_showing(mps->source))
+	if (hotkey_acts(mps, pressed, "Stop"))
 		obs_source_media_stop(mps->source);
 }
 
@@ -1279,7 +1524,7 @@ static void next_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool
 
 	struct media_playlist_source *mps = data;
 
-	if (pressed && obs_source_showing(mps->source))
+	if (hotkey_acts(mps, pressed, "Next"))
 		obs_source_media_next(mps->source);
 }
 
@@ -1290,7 +1535,7 @@ static void previous_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, 
 
 	struct media_playlist_source *mps = data;
 
-	if (pressed && obs_source_showing(mps->source))
+	if (hotkey_acts(mps, pressed, "Previous"))
 		obs_source_media_previous(mps->source);
 }
 
@@ -2113,6 +2358,8 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 		reset_folder_item_index(mps);
 	}
 	log_row_status(mps, row, row_index);
+	/* the row's items or its status changed: what comes next, or the worst status, may have */
+	mark_now_next_dirty(mps);
 	pthread_mutex_unlock(&mps->mutex);
 	pl_snapshot_free(snapshot);
 }
@@ -2155,6 +2402,7 @@ static void reconcile_providers(struct media_playlist_source *mps, struct darray
 				row->folder_items.da = old_row->folder_items.da;
 				da_init(old_row->folder_items);
 				row->awaiting = old_row->awaiting;
+				row->awaiting_since_ns = old_row->awaiting_since_ns;
 				row->pending_keys = old_row->pending_keys;
 				row->pending_count = old_row->pending_count;
 				old_row->pending_keys = NULL;
@@ -2361,7 +2609,131 @@ static void mps_destroy(void *data)
 	da_free(mps->missing_paths);
 	pthread_mutex_destroy(&mps->mutex);
 	bfree(mps->current_item_key);
+	bfree(mps->now_next_told);
 	bfree(mps);
+}
+
+/* ---- what plays now and what comes next, for controllers and scripts (R-UX-11) ---- */
+
+/* An operator needs both at a glance, and Properties is no place to look during a show. They are published three
+ * ways, all from the same reading: the proc get_now_next on the source, the signal playlister_now_next on the
+ * source when one of them or the worst row status changes, and through obs-websocket, where a controller such as a
+ * Stream Deck plugin can ask (vendor request) and listen (vendor event); obs/vendor.c. Only names leave the plugin,
+ * never paths: a path or an address can carry things that do not belong on a key or in a log. */
+struct now_next {
+	char *playing; /* "" when nothing is loaded */
+	char *next;    /* "" when nothing follows, or when it is not decided yet */
+	bool next_decided;
+	enum pl_status_level level; /* the worst of the rows, as the Status block colors it */
+	size_t row;                 /* the playing item's row, from 1; 0 when nothing is loaded */
+	size_t item;                /* its place in a folder or playlist row, from 1; 0 for a file row */
+	size_t items;               /* everything the list has to play */
+};
+
+static void free_now_next(struct now_next *reading)
+{
+	bfree(reading->playing);
+	bfree(reading->next);
+	memset(reading, 0, sizeof(*reading));
+}
+
+/* With no lock held */
+static void read_now_next(struct media_playlist_source *mps, struct now_next *reading)
+{
+	memset(reading, 0, sizeof(*reading));
+	struct dstr block = {0};
+	pthread_mutex_lock(&mps->mutex);
+	const struct media_file_data *playing = mps->actual_media;
+	reading->playing = playing ? item_name(playing) : bstrdup("");
+	if (playing && playing->parent) {
+		reading->row = playing->parent->index + 1;
+		/* an evicted item playing from its copy has no place in its row any more (R-DIR-8) */
+		reading->item = playing == &mps->playing_copy ? 0 : playing->index + 1;
+	} else if (playing) {
+		reading->row = playing->index + 1;
+	}
+	bool undecided = false;
+	const struct media_file_data *next = peek_next_locked(mps, &undecided);
+	reading->next = next ? item_name(next) : bstrdup("");
+	reading->next_decided = !undecided;
+	reading->items = get_total_file_count(mps);
+	reading->level = build_status_block(mps, &block, NULL);
+	pthread_mutex_unlock(&mps->mutex);
+	dstr_free(&block);
+}
+
+static const char *level_word(enum pl_status_level level)
+{
+	return level == PL_STATUS_ERROR ? "error" : level == PL_STATUS_WARNING ? "warning" : "ok";
+}
+
+static const char *state_word(enum obs_media_state state)
+{
+	switch (state) {
+	case OBS_MEDIA_STATE_PLAYING:
+		return "playing";
+	case OBS_MEDIA_STATE_OPENING:
+	case OBS_MEDIA_STATE_BUFFERING:
+		return "opening";
+	case OBS_MEDIA_STATE_PAUSED:
+		return "paused";
+	case OBS_MEDIA_STATE_STOPPED:
+		return "stopped";
+	case OBS_MEDIA_STATE_ENDED:
+		return "ended";
+	case OBS_MEDIA_STATE_ERROR:
+		return "error";
+	default:
+		return "none";
+	}
+}
+
+/* void get_now_next(out string playing, out string next, out bool next_decided, out string state, out string status,
+ * out int row, out int item, out int items): README, "For controllers". Any thread. */
+static void get_now_next_proc(void *data, calldata_t *cd)
+{
+	struct media_playlist_source *mps = data;
+	struct now_next reading;
+	read_now_next(mps, &reading);
+	calldata_set_string(cd, "playing", reading.playing);
+	calldata_set_string(cd, "next", reading.next);
+	calldata_set_bool(cd, "next_decided", reading.next_decided);
+	/* the source's own get_state, which takes the list lock: after read_now_next has let go of it */
+	calldata_set_string(cd, "state", state_word(obs_source_media_get_state(mps->source)));
+	calldata_set_string(cd, "status", level_word(reading.level));
+	calldata_set_int(cd, "row", (long long)reading.row);
+	calldata_set_int(cd, "item", (long long)reading.item);
+	calldata_set_int(cd, "items", (long long)reading.items);
+	free_now_next(&reading);
+}
+
+/* From video_tick, once something marked it (mark_now_next_dirty): tells the listeners, if what they were last told
+ * no longer holds. No timer and no poll: the mark is set by the change itself, and the tick is where this source
+ * does what must not be done under the list lock. */
+static void tell_now_next(struct media_playlist_source *mps)
+{
+	struct now_next reading;
+	read_now_next(mps, &reading);
+	struct dstr told = {0};
+	dstr_printf(&told, "%s\x1f%s\x1f%d\x1f%d", reading.playing, reading.next, (int)reading.next_decided,
+		    (int)reading.level);
+	bool changed = !mps->now_next_told || strcmp(mps->now_next_told, told.array) != 0;
+	if (changed) {
+		bfree(mps->now_next_told);
+		mps->now_next_told = told.array;
+		calldata_t cd = {0};
+		calldata_set_ptr(&cd, "source", mps->source);
+		calldata_set_string(&cd, "playing", reading.playing);
+		calldata_set_string(&cd, "next", reading.next);
+		calldata_set_bool(&cd, "next_decided", reading.next_decided);
+		calldata_set_string(&cd, "status", level_word(reading.level));
+		signal_handler_signal(obs_source_get_signal_handler(mps->source), "playlister_now_next", &cd);
+		calldata_free(&cd);
+		pl_vendor_now_next_changed(mps->source);
+	} else {
+		dstr_free(&told);
+	}
+	free_now_next(&reading);
 }
 
 /* R-BEH-7: a size kept in one atomic, so width and height are read as a pair */
@@ -2439,6 +2811,14 @@ static void *mps_create(obs_data_t *settings, obs_source_t *source)
 
 	proc_handler_t *ph = obs_source_get_proc_handler(source);
 	proc_handler_add(ph, "void select_index(int media_index, int folder_item_index)", select_index_proc, mps);
+	proc_handler_add(
+		ph,
+		"void get_now_next(out string playing, out string next, out bool next_decided, out string state, "
+		"out string status, out int row, out int item, out int items)",
+		get_now_next_proc, mps);
+	signal_handler_add(obs_source_get_signal_handler(source),
+			   "void playlister_now_next(ptr source, string playing, string next, bool next_decided, "
+			   "string status)");
 
 	obs_source_update(source, NULL);
 
@@ -2830,6 +3210,12 @@ static void mps_video_tick(void *data, float seconds)
 		pthread_mutex_unlock(&mps->mutex);
 	}
 
+	/* R-UX-11: what plays now and next, told to whoever listens when it changed; no plugin lock held */
+	if (os_atomic_load_bool(&mps->now_next_dirty)) {
+		os_atomic_set_bool(&mps->now_next_dirty, false);
+		tell_now_next(mps);
+	}
+
 	/* the resume point, at most once a second and with no plugin lock held (R-UP-43, R-UP-62) */
 	if (os_atomic_load_bool(&mps->save_dirty)) {
 		uint64_t now = os_gettime_ns();
@@ -2883,6 +3269,8 @@ static void mps_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_VISIBILITY_BEHAVIOR, VISIBILITY_BEHAVIOR_STOP_RESTART);
 	obs_data_set_default_int(settings, S_RESTART_BEHAVIOR, RESTART_BEHAVIOR_CURRENT_FILE);
 	obs_data_set_default_string(settings, S_CURRENT_FILE_NAME, " ");
+	obs_data_set_default_string(settings, S_NEXT_FILE_NAME, " ");
+	obs_data_set_default_bool(settings, S_SHOW_ADVANCED, false);
 	/* No File Selected (R-UP-65); upstream left it empty */
 	obs_data_set_default_string(settings, S_SELECT_FILE, "0");
 	obs_data_set_default_int(settings, S_SPEED, 100);
@@ -2898,8 +3286,12 @@ static void mps_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_CURRENT_ITEM_OCCURRENCE, 1);
 	obs_data_set_default_bool(settings, S_INCLUDE_SUBFOLDERS, false);
 	obs_data_set_default_string(settings, S_EXTENSION_FILTER, PL_FILTER_DEFAULT);
+	/* oldest first, as the Directory Sorter script played a folder. It stays the default: a playlist file has no
+	 * dates, so in this order it plays as it is written, which name order would not give it. */
 	obs_data_set_default_int(settings, S_SORT_KEY, PL_SORT_DATE);
 	obs_data_set_default_bool(settings, S_SORT_DESCENDING, false);
+	obs_data_set_default_int(settings, S_ORDER, PL_SORT_DATE * 2);
+	obs_data_set_default_int(settings, S_ORDER_SYNCED, PL_SORT_DATE * 2);
 	obs_data_set_default_int(settings, S_CONTAINER_MODE, PL_MODE_FULL);
 	obs_data_set_default_int(settings, S_NEWEST_COUNT, 5);
 	obs_data_set_default_int(settings, S_STILL_DURATION, 10);
@@ -2909,7 +3301,9 @@ static void mps_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_REMOTE_REFRESH, 300);
 }
 
-/* Each item is shown by its position, "N: location" or "N-M: location", and stored by its identity (R-UP-20) */
+/* Each item is shown by its position and its name, "N: name (folder)" or "N-M: name (folder)", a playlist entry
+ * with a title of its own as "N-M: title - name (folder)", and stored by its identity (R-UP-20). The name comes first
+ * because a narrow window cuts the text at its end, where the full path had the one part that tells items apart. */
 static void add_media_to_selection(obs_property_t *list, struct media_file_data *data)
 {
 	struct dstr name = {0};
@@ -2931,10 +3325,21 @@ static void add_media_to_selection(obs_property_t *list, struct media_file_data 
 		identity = pl_selection_format(data->id, 0, NULL);
 	}
 	dstr_cat(&name, ": ");
-	dstr_cat(&name, data->path);
-	/* a playlist entry's own title (#EXTINF, PLS TitleN) after its location */
+	/* a playlist entry's own title (#EXTINF, PLS TitleN) first, then the file it names */
 	if (data->entry && data->entry->title && *data->entry->title)
-		dstr_catf(&name, " (%s)", data->entry->title);
+		dstr_catf(&name, "%s - ", data->entry->title);
+	/* the location as a person reads it: no user name, password or query of a web address */
+	char *shown = pl_url_redacted(data->path);
+	const char *file = last_part(shown);
+	dstr_cat(&name, file);
+	if (file > shown) {
+		/* what comes before the name, without its last separator: the folder, or the address up to there */
+		size_t before = (size_t)(file - shown) - 1;
+		dstr_cat(&name, " (");
+		dstr_ncat(&name, shown, before ? before : 1);
+		dstr_cat(&name, ")");
+	}
+	bfree(shown);
 	obs_property_list_add_string(list, name.array, identity);
 	dstr_free(&name);
 	bfree(identity);
@@ -2958,12 +3363,74 @@ static bool folder_check_modified(obs_properties_t *props, obs_property_t *prope
 	return true;
 }
 
-/* the Apply button has something to apply only while the list is locked (R-DIR-11) */
+/* the Apply button is there only while the list is frozen, when it has something to apply (R-DIR-11); a greyed-out
+ * button said nothing about why */
 static bool lock_list_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
 {
 	UNUSED_PARAMETER(property);
-	obs_property_set_enabled(obs_properties_get(props, S_APPLY_WAITING),
+	obs_property_set_visible(obs_properties_get(props, S_APPLY_WAITING),
 				 obs_data_get_bool(settings, S_LOCK_LIST_AT_START));
+	return true;
+}
+
+/* R-UX-10: the options few people change are shown only with "Show advanced options" ticked. The folder options
+ * are hidden as one group; what each of its members shows inside is its own business (above). */
+static bool show_advanced_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	static const char *const advanced[] = {S_VISIBILITY_BEHAVIOR, S_RESTART_BEHAVIOR,
+					       S_FFMPEG_HW_DECODE,    S_FFMPEG_CLOSE_WHEN_INACTIVE,
+					       S_FOLDER_OPTIONS,      S_SPEED,
+					       S_SPEED_WARNING};
+	bool show = obs_data_get_bool(settings, S_SHOW_ADVANCED);
+	for (size_t i = 0; i < sizeof(advanced) / sizeof(advanced[0]); i++)
+		obs_property_set_visible(obs_properties_get(props, advanced[i]), show);
+	return true;
+}
+
+/* The Order list and the two settings it stands for (S_ORDER). Whichever changed since they last agreed decides: the
+ * list, when the user chose another entry; else the keys, when a script or an older version set them, and the list
+ * follows. Nothing is written when they agree, so a window that only opens changes no setting. Returns whether it
+ * wrote. Called for every update, and by the list's own callback while Properties is open. */
+static bool sync_order(obs_data_t *settings)
+{
+	long long key = obs_data_get_int(settings, S_SORT_KEY);
+	if (key != PL_SORT_LIST && key != PL_SORT_NAME)
+		key = PL_SORT_DATE;
+	long long from_keys = key * 2 + (obs_data_get_bool(settings, S_SORT_DESCENDING) ? 1 : 0);
+	long long order = obs_data_get_int(settings, S_ORDER);
+	long long synced = obs_data_get_int(settings, S_ORDER_SYNCED);
+	bool order_valid = order >= 0 && order <= 5;
+	if (order_valid && order != synced) {
+		if (order != from_keys) {
+			obs_data_set_int(settings, S_SORT_KEY, order / 2);
+			obs_data_set_bool(settings, S_SORT_DESCENDING, order % 2 == 1);
+		}
+		obs_data_set_int(settings, S_ORDER_SYNCED, order);
+		return true;
+	}
+	if (order != from_keys || synced != from_keys) {
+		obs_data_set_int(settings, S_ORDER, from_keys);
+		obs_data_set_int(settings, S_ORDER_SYNCED, from_keys);
+		return true;
+	}
+	return false;
+}
+
+static bool order_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
+	return sync_order(settings);
+}
+
+/* R-UX-2: the Status block follows an edit of the Playlist at once. The edit reaches the source half a second later,
+ * so the block is built from the window's own settings (build_status_block). On the UI thread, like every callback
+ * of Properties; nothing is pushed into the window from a worker (R-BEH-2). */
+static bool playlist_modified(void *data, obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	show_status_block(data, obs_properties_get(props, S_ROW_STATUS), settings);
 	return true;
 }
 
@@ -2974,12 +3441,12 @@ static bool apply_waiting_clicked(obs_properties_t *props, obs_property_t *prope
 	UNUSED_PARAMETER(props);
 	UNUSED_PARAMETER(property);
 	struct media_playlist_source *mps = data;
-	obs_log(LOG_INFO, "apply waiting changes now: the folders apply the lists they kept");
+	obs_log(LOG_INFO, "apply waiting changes: the folders and playlists apply the lists they kept");
 	os_atomic_set_bool(&mps->release_held, true);
 	return false;
 }
 
-/* The shared "Folder and playlist options" group (R-LIST-3, D-7, R-UX-7): one set of options for every folder row of
+/* The shared "Folders and playlist files" group (R-LIST-3, D-7, R-UX-7): one set of options for every folder row of
  * the source, with the ranges of PLAN section 3.4 */
 static void add_folder_options(obs_properties_t *props, struct media_playlist_source *mps)
 {
@@ -2991,11 +3458,17 @@ static void add_folder_options(obs_properties_t *props, struct media_playlist_so
 	p = obs_properties_add_text(group, S_EXTENSION_FILTER, T_EXTENSION_FILTER, OBS_TEXT_DEFAULT);
 	obs_property_set_long_description(p, T_EXTENSION_FILTER_TOOLTIP);
 
-	p = obs_properties_add_list(group, S_SORT_KEY, T_SORT_KEY, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(p, T_SORT_KEY_DATE, PL_SORT_DATE);
-	obs_property_list_add_int(p, T_SORT_KEY_NAME, PL_SORT_NAME);
-	obs_property_list_add_int(p, T_SORT_KEY_LIST, PL_SORT_LIST);
-	obs_properties_add_bool(group, S_SORT_DESCENDING, T_SORT_DESCENDING);
+	/* one list for the sort key and its direction, every pair of them: two controls were easy to misread, and
+	 * "Descending" meant nothing without the row above it */
+	p = obs_properties_add_list(group, S_ORDER, T_ORDER, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, T_ORDER_NAME_ASCENDING, PL_SORT_NAME * 2);
+	obs_property_list_add_int(p, T_ORDER_NAME_DESCENDING, PL_SORT_NAME * 2 + 1);
+	obs_property_list_add_int(p, T_ORDER_DATE_ASCENDING, PL_SORT_DATE * 2);
+	obs_property_list_add_int(p, T_ORDER_DATE_DESCENDING, PL_SORT_DATE * 2 + 1);
+	obs_property_list_add_int(p, T_ORDER_LIST_ASCENDING, PL_SORT_LIST * 2);
+	obs_property_list_add_int(p, T_ORDER_LIST_DESCENDING, PL_SORT_LIST * 2 + 1);
+	obs_property_set_long_description(p, T_ORDER_TOOLTIP);
+	obs_property_set_modified_callback(p, order_modified);
 
 	p = obs_properties_add_list(group, S_CONTAINER_MODE, T_CONTAINER_MODE, OBS_COMBO_TYPE_LIST,
 				    OBS_COMBO_FORMAT_INT);
@@ -3029,17 +3502,21 @@ static void add_folder_options(obs_properties_t *props, struct media_playlist_so
 	obs_properties_add_group(props, S_FOLDER_OPTIONS, T_FOLDER_OPTIONS, OBS_GROUP_NORMAL, group);
 }
 
+/* The Properties window (R-UX-10), top to bottom: that changes go live; the Playlist and its Status with Refresh; Loop
+ * and Shuffle; what plays now and next; the jump to an item; then, only with "Show advanced options" ticked, the
+ * options few people change; where the hotkeys are; the version. A new source opens on the one thing to do: press
+ * "+" at the Playlist. No setting changed its name or its meaning, so saved scenes are untouched. */
 static obs_properties_t *mps_properties(void *data)
 {
 	obs_properties_t *props = obs_properties_create();
 	struct media_playlist_source *mps = data;
 	struct dstr filter = {0};
-	struct dstr exts = {0};
 	struct dstr path = {0};
 	obs_property_t *p;
 
-	obs_properties_add_bool(props, S_LOOP, T_LOOP);
-	obs_properties_add_bool(props, S_SHUFFLE, T_SHUFFLE);
+	/* R-UX-3: nothing here waits for OK; said first, where it is read before anything is touched */
+	p = obs_properties_add_text(props, S_LIVE_NOTE, T_LIVE_NOTE, OBS_TEXT_INFO);
+	obs_property_text_set_info_type(p, OBS_TEXT_INFO_WARNING);
 
 	// get last directory opened for editable list
 	if (mps) {
@@ -3056,25 +3533,6 @@ static obs_properties_t *mps_properties(void *data)
 		}
 		pthread_mutex_unlock(&mps->mutex);
 	}
-
-	p = obs_properties_add_list(props, S_VISIBILITY_BEHAVIOR, T_VISIBILITY_BEHAVIOR, OBS_COMBO_TYPE_LIST,
-				    OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(p, T_VISIBILITY_BEHAVIOR_STOP_RESTART, VISIBILITY_BEHAVIOR_STOP_RESTART);
-	obs_property_list_add_int(p, T_VISIBILITY_BEHAVIOR_STOP_PLAY_NEXT, VISIBILITY_BEHAVIOR_STOP_PLAY_NEXT);
-	obs_property_list_add_int(p, T_VISIBILITY_BEHAVIOR_PAUSE_UNPAUSE, VISIBILITY_BEHAVIOR_PAUSE_UNPAUSE);
-	obs_property_list_add_int(p, T_VISIBILITY_BEHAVIOR_ALWAYS_PLAY, VISIBILITY_BEHAVIOR_ALWAYS_PLAY);
-
-	p = obs_properties_add_list(props, S_RESTART_BEHAVIOR, T_RESTART_BEHAVIOR, OBS_COMBO_TYPE_LIST,
-				    OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(p, T_RESTART_BEHAVIOR_CURRENT_FILE, RESTART_BEHAVIOR_CURRENT_FILE);
-	obs_property_list_add_int(p, T_RESTART_BEHAVIOR_FIRST_FILE, RESTART_BEHAVIOR_FIRST_FILE);
-	/* R-UX-5: it also decides what plays when a source that restarts on show is shown again (mps_activate) */
-	obs_property_set_long_description(p, T_RESTART_BEHAVIOR_TOOLTIP);
-
-	obs_properties_add_bool(props, S_FFMPEG_HW_DECODE, T_USE_HARDWARE_DECODING);
-
-	p = obs_properties_add_bool(props, S_FFMPEG_CLOSE_WHEN_INACTIVE, T_FFMPEG_CLOSE_WHEN_INACTIVE);
-	obs_property_set_long_description(p, T_FFMPEG_CLOSE_WHEN_INACTIVE_TOOLTIP);
 
 	dstr_copy(&filter, obs_module_text("MediaFileFilter.AllMediaFiles"));
 	dstr_cat(&filter, media_filter);
@@ -3093,23 +3551,27 @@ static obs_properties_t *mps_properties(void *data)
 					     filter.array, path.array);
 	dstr_free(&path);
 	dstr_free(&filter);
-	dstr_free(&exts);
+	/* R-UX-2: the Status block below follows an edit of the list (playlist_modified) */
+	if (mps)
+		obs_property_set_modified_callback2(p, playlist_modified, mps);
 
-	/* R-LIST-5: built here, so when Properties opens and when Refresh builds it again; never pushed from a worker
-	 * (R-BEH-2) */
+	/* R-LIST-5: built here, so when Properties opens and when Refresh builds it again, and again when the list is
+	 * edited; never pushed from a worker (R-BEH-2) */
 	p = obs_properties_add_text(props, S_ROW_STATUS, T_ROW_STATUS, OBS_TEXT_INFO);
 	if (mps)
-		show_status_block(mps, p);
-
-	add_folder_options(props, mps);
-
-	p = obs_properties_add_text(props, S_CURRENT_FILE_NAME, T_CURRENT_FILE_NAME, OBS_TEXT_INFO);
-	obs_property_set_long_description(p, T_CURRENT_FILE_NAME_HELP);
+		show_status_block(mps, p, NULL);
+	/* R-UX-2: Refresh sits with what it updates, and the hint under it names all three */
 	obs_properties_add_button2(props, S_REFRESH_FILENAME, T_REFRESH_FILENAME, refresh_filename_clicked, mps);
-	/* R-UX-2: nothing here is pushed into the open window (R-BEH-2), so the window says how to update it. A name of
-	 * its own: OBS refuses a second property with the same name, and the speed warning has "". */
+	/* A name of its own: OBS refuses a second property with the same name. */
 	obs_properties_add_text(props, S_REFRESH_HINT, T_REFRESH_HINT, OBS_TEXT_INFO);
-	//update_current_filename_property(mps, p);
+
+	obs_properties_add_bool(props, S_LOOP, T_LOOP);
+	obs_properties_add_bool(props, S_SHUFFLE, T_SHUFFLE);
+
+	/* R-UX-11: what an operator needs at a glance; both show a setting the source writes (update_current_filename_
+	 * setting) */
+	obs_properties_add_text(props, S_CURRENT_FILE_NAME, T_CURRENT_FILE_NAME, OBS_TEXT_INFO);
+	obs_properties_add_text(props, S_NEXT_FILE_NAME, T_NEXT_FILE_NAME, OBS_TEXT_INFO);
 
 	p = obs_properties_add_list(props, S_SELECT_FILE, T_SELECT_FILE, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(p, T_NO_FILE_SELECTED, "0");
@@ -3121,12 +3583,44 @@ static obs_properties_t *mps_properties(void *data)
 		pthread_mutex_unlock(&mps->mutex);
 	}
 
-	obs_properties_add_button2(props, "play_selected", T_PLAY_SELECTED_FILE, play_selected_clicked, mps);
+	obs_properties_add_button2(props, S_PLAY_SELECTED, T_PLAY_SELECTED_FILE, play_selected_clicked, mps);
+
+	p = obs_properties_add_bool(props, S_SHOW_ADVANCED, T_SHOW_ADVANCED);
+	obs_property_set_modified_callback(p, show_advanced_modified);
+
+	/* ---- advanced (show_advanced_modified) ---- */
+
+	p = obs_properties_add_list(props, S_VISIBILITY_BEHAVIOR, T_VISIBILITY_BEHAVIOR, OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, T_VISIBILITY_BEHAVIOR_STOP_RESTART, VISIBILITY_BEHAVIOR_STOP_RESTART);
+	obs_property_list_add_int(p, T_VISIBILITY_BEHAVIOR_STOP_PLAY_NEXT, VISIBILITY_BEHAVIOR_STOP_PLAY_NEXT);
+	obs_property_list_add_int(p, T_VISIBILITY_BEHAVIOR_PAUSE_UNPAUSE, VISIBILITY_BEHAVIOR_PAUSE_UNPAUSE);
+	obs_property_list_add_int(p, T_VISIBILITY_BEHAVIOR_ALWAYS_PLAY, VISIBILITY_BEHAVIOR_ALWAYS_PLAY);
+	/* R-UX-13: "not in Program" is libobs's "not active": the scene is not on air, or the source is hidden in it */
+	obs_property_set_long_description(p, T_VISIBILITY_BEHAVIOR_TOOLTIP);
+
+	p = obs_properties_add_list(props, S_RESTART_BEHAVIOR, T_RESTART_BEHAVIOR, OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, T_RESTART_BEHAVIOR_CURRENT_FILE, RESTART_BEHAVIOR_CURRENT_FILE);
+	obs_property_list_add_int(p, T_RESTART_BEHAVIOR_FIRST_FILE, RESTART_BEHAVIOR_FIRST_FILE);
+	/* R-UX-5: it also decides what plays when a source that starts again in Program returns there (mps_activate) */
+	obs_property_set_long_description(p, T_RESTART_BEHAVIOR_TOOLTIP);
+
+	p = obs_properties_add_bool(props, S_FFMPEG_HW_DECODE, T_USE_HARDWARE_DECODING);
+	obs_property_set_long_description(p, T_USE_HARDWARE_DECODING_TOOLTIP);
+
+	p = obs_properties_add_bool(props, S_FFMPEG_CLOSE_WHEN_INACTIVE, T_FFMPEG_CLOSE_WHEN_INACTIVE);
+	obs_property_set_long_description(p, T_FFMPEG_CLOSE_WHEN_INACTIVE_TOOLTIP);
+
+	add_folder_options(props, mps);
 
 	p = obs_properties_add_int_slider(props, S_SPEED, T_SPEED, 1, 200, 1);
 	obs_property_int_set_suffix(p, "%");
-	p = obs_properties_add_text(props, "", T_SPEED_WARNING, OBS_TEXT_INFO);
+	/* R-UX-3: said at the control that does it */
+	p = obs_properties_add_text(props, S_SPEED_WARNING, T_SPEED_WARNING, OBS_TEXT_INFO);
 	obs_property_text_set_info_type(p, OBS_TEXT_INFO_WARNING);
+
+	/* ---- always shown again ---- */
 
 	/* R-UX-6: where the hotkeys are set, and that they act only while the source is shown (R-UP-42) */
 	obs_properties_add_text(props, S_HOTKEYS_HINT, T_HOTKEYS_HINT, OBS_TEXT_INFO);
@@ -3221,6 +3715,7 @@ static void add_file(struct darray *array, const char *path, const char *id, enu
 	data->kind = kind;
 	data->is_folder = kind != PL_ROW_FILE;
 	data->awaiting = data->is_folder;
+	data->awaiting_since_ns = data->is_folder ? os_gettime_ns() : 0;
 	da_init(data->folder_items);
 
 	*array = new_files.da;
@@ -3325,6 +3820,8 @@ static void mps_update(void *data, obs_data_t *settings)
 	/* before the migration, which names the current row by its uuid */
 	assign_missing_row_uuids(settings);
 	migrate_settings(settings);
+	/* the Order list of Properties and the two settings it stands for, brought to agree before they are read */
+	sync_order(settings);
 	da_init(new_files);
 
 	mps->visibility_behavior = obs_data_get_int(settings, S_VISIBILITY_BEHAVIOR);

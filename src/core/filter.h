@@ -37,8 +37,9 @@ struct pl_filter {
 };
 
 /* Reads the option text: extensions separated by spaces (tabs, commas and semicolons are read as spaces too), each
- * lower-cased with a leading "." or "*." removed, duplicates dropped. An empty text gives an empty filter, which
- * admits nothing. */
+ * lower-cased with a leading "." or "*." removed, duplicates dropped. A text with no extension in it (empty, or
+ * only separators) gives PL_FILTER_DEFAULT: an emptied field in Properties plays the usual types rather than nothing,
+ * which had no way back short of resetting every setting. */
 void pl_filter_parse(struct pl_filter *filter, const char *text);
 void pl_filter_free(struct pl_filter *filter);
 /* Whether the name's whole extension (after the last dot of its last path component) is in the filter, ignoring

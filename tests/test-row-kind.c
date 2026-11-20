@@ -120,9 +120,14 @@ static void test_order(void)
 
 static void test_empty_filter(void)
 {
-	/* an empty filter admits nothing, so even a media name goes to the disk */
+	/* an empty filter field is the usual types (core/filter.h), so a media name is a file without the disk */
 	struct pl_filter filter;
 	pl_filter_parse(&filter, "");
+	expect(&filter, "C:/media/ep1.mp4", false, PL_ROW_FILE, 0);
+	expect(&filter, "C:/media/clips.mp4", false, PL_ROW_FILE, 0);
+	pl_filter_free(&filter);
+	/* a filter that names other types only: even a media name goes to the disk */
+	pl_filter_parse(&filter, "xyz");
 	expect(&filter, "C:/media/ep1.mp4", false, PL_ROW_FILE, 1);
 	expect(&filter, "C:/media/clips.mp4", false, PL_ROW_FOLDER, 1);
 	pl_filter_free(&filter);

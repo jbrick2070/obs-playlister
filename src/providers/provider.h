@@ -52,6 +52,9 @@ struct pl_snapshot {
 	int64_t last_ok_unix_ms; /* the last successful listing, 0 = never (R-BEH-3) */
 	bool stale;              /* the last good list kept after a failure (R-BEH-3) */
 	size_t held_changes; /* what the kept snapshot adds, removes or rewrites (R-DIR-11); 0 when nothing is kept */
+	/* a folder: the files its listing found before the extension filter, so an empty row can say whether the
+	 * folder is empty or only holds other file types; 0 for a list */
+	size_t unfiltered_count;
 	enum pl_probe probe; /* a PL_ROW_UNKNOWN row's answer; then nothing else above but instance_id is set */
 };
 

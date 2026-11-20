@@ -61,6 +61,7 @@ struct pl_publication_status {
 	const char *message; /* NULL when there is nothing to say */
 	bool stale;          /* the last good list kept after a failure (R-BEH-3) */
 	int64_t last_ok_unix_ms;
+	size_t unfiltered_count; /* a folder: the files listed before the filter; 0 for a list */
 };
 
 enum pl_publication_result {

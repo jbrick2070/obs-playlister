@@ -601,13 +601,21 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 			break;
 		case MISSING_LOST:
 			dstr_copy(message, pl_text("RowError.FolderGone",
-						   "the folder went away (deleted, share offline or drive removed)"));
+						   "folder not found (deleted, drive removed or share offline)"));
 			break;
 		default:
 			dstr_copy(message, pl_text("RowError.FolderNotFound", "folder not found, or not a folder"));
 			break;
 		}
 		status->stale = p->listed;
+		/* what happens next (R-UX-4): a missing folder is opened again on the folder check, and every 10 s with the
+		 * check off (core/folder-state.c) */
+		char seconds[24];
+		snprintf(seconds, sizeof(seconds), "%u",
+			 p->options.folder_check_enabled ? p->options.folder_check_interval_s : 10u);
+		dstr_cat(message, "; ");
+		pl_text_cat(message, pl_text("RowStatus.CheckingAgain", "checking again every %1 s"),
+			    (const char *[]){seconds}, 1);
 	}
 	char number[24];
 	size_t denied = pl_gate_denied_count(&p->gate);
@@ -627,7 +635,7 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 		snprintf(number, sizeof(number), "%zu", p->cloud_count);
 		pl_text_cat(message,
 			    pl_text("RowWarning.CloudOnly",
-				    "%1 cloud-only files not downloaded; mark the folder Always keep on this device"),
+				    "%1 files are only in the cloud; set the folder to always stay on this computer"),
 			    (const char *[]){number}, 1);
 	}
 	if (p->over_limit) {
@@ -644,6 +652,7 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 	status->level = level;
 	status->message = message->array;
 	status->last_ok_unix_ms = p->last_ok_unix_ms;
+	status->unfiltered_count = p->files.num;
 }
 
 static void free_pending(struct darray *array)

@@ -58,6 +58,8 @@ target_sources(
     src/plugin-main.c
     src/playlist.h
     src/obs/playlister-source.h
+    src/obs/vendor.h
+    src/obs/vendor.c
     src/obs/playlister-source.c
     src/obs/player.h
     src/obs/player.c

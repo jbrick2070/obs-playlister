@@ -168,6 +168,7 @@ static struct pl_snapshot *build_snapshot(struct pl_publication *publication,
 	snapshot->status_message = status->message ? bstrdup(status->message) : NULL;
 	snapshot->stale = status->stale;
 	snapshot->last_ok_unix_ms = status->last_ok_unix_ms;
+	snapshot->unfiltered_count = status->unfiltered_count;
 	snapshot->held_changes = (size_t)os_atomic_load_long(&publication->held_changes);
 	return snapshot;
 }
@@ -196,6 +197,8 @@ static char *snapshot_signature(const struct pl_snapshot *snapshot)
 		  snapshot->held_changes, (int)snapshot->level,
 		  snapshot->status_message ? snapshot->status_message : "", snapshot->stale,
 		  snapshot->initial_scan_complete);
+	/* only whether there are any: the receiver says "no files of the types to play" for an empty row with some */
+	dstr_catf(&signature, "unfiltered %d\n", snapshot->unfiltered_count > 0);
 	/* which keys are pending, not only how many: the receiver keeps its own copy (R-DIR-4, R-KEY-2); sorted, so a
 	 * change in listing order alone is no change */
 	char **pending = bmalloc((snapshot->pending_count ? snapshot->pending_count : 1) * sizeof(char *));

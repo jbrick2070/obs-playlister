@@ -432,13 +432,14 @@ static void test_local(void)
 	provider = start(PL_ROW_PLAYLIST, pls, &options, &inbox);
 	dstr_printf(&expected, "%s" SEP "one.mp3|%s" SEP "two.mp3", folder, folder);
 	const struct pl_snapshot *dated = wait_for(&inbox, 0, shows, expected.array, "the PLS file");
-	assert(dated->level == PL_STATUS_OK && says(dated, "no dates; list order"));
+	/* that date order is list order here is not worth a note on every playlist with the default options */
+	assert(dated->level == PL_STATUS_OK && !dated->status_message);
 	options.mode = PL_MODE_NEWEST_ONLY;
 	since = inbox_count(&inbox);
 	pl_provider_set_options(provider, &options);
 	dstr_printf(&expected, "%s" SEP "two.mp3", folder);
 	const struct pl_snapshot *newest = wait_for(&inbox, since, shows, expected.array, "newest only on a PLS");
-	assert(newest->level == PL_STATUS_WARNING && says(newest, "newest means last in the list"));
+	assert(newest->level == PL_STATUS_WARNING && says(newest, "the last entries count as newest"));
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
 
@@ -660,7 +661,7 @@ static void test_classification(void)
 	struct {
 		const char *url, *type, *body, *message;
 	} errors[] = {
-		{"https://pod.example.com/feed", "application/rss+xml", "<rss/>", "feeds come in a later version"},
+		{"https://pod.example.com/feed", "application/rss+xml", "<rss/>", "a podcast feed (not supported)"},
 		{"https://pod.example.com/page", "text/html", "<!doctype html><html></html>", "a web page"},
 		{"https://pod.example.com/blob", "application/octet-stream", "\x01\x02",
 		 "content type application/octet"},

@@ -478,11 +478,12 @@ step("file row plays", 1500, 1500, nil, function()
 	check("2.9 the watched folder moved away", mark.moved == true, tostring(mark.moved))
 end)
 
-step("folder gone", 0, 20000, function() return (status_block()):find("went away", 1, true) ~= nil end, function()
+step("folder gone", 0, 20000, function() return (status_block()):find("folder not found", 1, true) ~= nil end, function()
 	local text, info_type = status_block()
 	check("2.9 a folder that went away shows the error and the time of the last list it keeps",
-		text:find("1: folder - 2 files; the folder went away", 1, true) ~= nil and
-		text:find("showing the last list, from 20", 1, true) ~= nil and info_type == 2, text)
+		text:find("1: folder - 2 files; folder not found (deleted, drive removed or share offline); checking again " ..
+			"every ", 1, true) ~= nil and
+		text:find("using the list read at 20", 1, true) ~= nil and info_type == 2, text)
 	os.rename(MOVE_FOLDER .. "-away", MOVE_FOLDER)
 end)
 
@@ -506,7 +507,8 @@ step("access denied", 0, 15000, function() return (status_block()):find("access 
 	function()
 		local text, info_type = status_block()
 		check("2.10 a folder the user may not read shows access denied as an error",
-			text == "1: folder - access denied (permissions or security software)" and info_type == 2, text)
+			text:find("1: folder - access denied (permissions or security software); checking again every ", 1,
+				true) == 1 and info_type == 2, text)
 		remove_source()
 	end)
 
@@ -629,7 +631,8 @@ end
 
 local function failed_shown()
 	local text, info_type = status_block()
-	return text:find("1: file - could not be played", 1, true) ~= nil and info_type == 2
+	return text:find("1: file ", 1, true) == 1 and text:find(" - could not be played", 1, true) ~= nil and
+		info_type == 2
 end
 
 step("hidden corrupt still", 1500, 1500, nil, function()

@@ -202,13 +202,13 @@ step("local playlist", 1000, 1000, nil, function()
 	create_source("acceptance-local-m3u", { { ROOT .. "/local.m3u", "local" } })
 end)
 
-step("local playlist listed", 0, 15000, function() return has(row_line(1), "3 files") and playing_on() end, function()
+step("local playlist listed", 0, 15000, function() return has(row_line(1), "3 items") and playing_on() end, function()
 	check("3.1 a local .m3u is a playlist row of 3 files, in list order by date sort",
-		row_line(1) == "1: playlist - 3 files; no dates; list order", row_line(1))
+		row_line(1) == "1: playlist - 3 items", row_line(1))
 	local names = listed_names()
 	check("3.1 Select File lists the entries in list order", #names == 3 and
 		in_order(names, { "clip-1.mp4", "clip-2.mp4", "clip-3.mp4" }), table.concat(names, " | "))
-	check("3.1 Select File shows the #EXTINF title", has(names[1] or "", "(First Title)"), names[1] or "")
+	check("3.1 Select File shows the #EXTINF title", has(names[1] or "", ": First Title - "), names[1] or "")
 	check("3.1 the first entry plays", playing_on() and has(current_file(), "clip-1.mp4"),
 		current_file() .. ", " .. status())
 end)
@@ -220,9 +220,9 @@ step("local playlist edited", 2000, 2000, nil, function()
 	append_file(ROOT .. "/local.m3u", "media/clip-1.mp4\r\n")
 end)
 
-step("edit joined", 0, 20000, function() return has(row_line(1), "4 files") end, function()
+step("edit joined", 0, 20000, function() return has(row_line(1), "4 items") end, function()
 	local elapsed = now_ms() - mark.edited
-	check("3.2 a line added to the .m3u joins within the folder check", has(row_line(1), "4 files") and
+	check("3.2 a line added to the .m3u joins within the folder check", has(row_line(1), "4 items") and
 		elapsed < 15000, string.format("%s after %d ms", row_line(1), elapsed))
 	check("3.2 the playing item is not restarted", playing_on() and has(current_file(), "clip-1.mp4") and
 		tm() > mark.time + elapsed / 2, string.format("%s; time %d before the edit", status(), mark.time))
@@ -236,8 +236,8 @@ end)
 
 step("file missing", 0, 20000, function() return has(row_line(1), "playlist file not found") end, function()
 	local line = row_line(1)
-	check("3.3 a deleted .m3u keeps its list and says it is not found, with the last-list time", has(line, "4 files") and
-		has(line, "playlist file not found") and line:find("showing the last list, from %d+%-%d+%-%d+ %d+:%d+:%d+") ~= nil,
+	check("3.3 a deleted .m3u keeps its list and says it is not found, with the last-list time", has(line, "4 items") and
+		has(line, "playlist file not found") and line:find("using the list read at %d+%-%d+%-%d+ %d+:%d+:%d+") ~= nil,
 		line)
 	check("3.3 playback goes on", playing_on(), status())
 	write_file(ROOT .. "/local.m3u", mark.text)
@@ -245,7 +245,7 @@ end)
 
 step("file back", 0, 20000, function() return not has(row_line(1), "not found") end, function()
 	check("3.3 the row recovers when the file is back",
-		row_line(1) == "1: playlist - 4 files; no dates; list order", row_line(1))
+		row_line(1) == "1: playlist - 4 items", row_line(1))
 	remove_source()
 end)
 
@@ -259,11 +259,11 @@ step("pls and file URLs", 1000, 1000, nil, function()
 end)
 
 step("pls and file URLs listed", 0, 15000, function()
-	return has(row_line(1), "2 files") and has(row_line(2), "2 files") and playing_on()
+	return has(row_line(1), "2 items") and has(row_line(2), "2 items") and playing_on()
 end, function()
 	local names = listed_names()
 	check("3.4 the .pls lists its entries in File order", #names == 4 and
-		in_order(names, { "clip-1.mp4 (First)", "clip-2.mp4 (Second)" }), table.concat(names, " | "))
+		in_order(names, { "First - clip-1.mp4", "Second - clip-2.mp4" }), table.concat(names, " | "))
 	check("3.4 the file: URLs are listed as the files on disk", #names == 4 and has(names[3], "clip-3.mp4") and
 		not has(names[3], "file:") and not has(names[4], "file:") and not has(names[3], "%"),
 		table.concat(names, " | "))
@@ -305,7 +305,7 @@ end)
 step("web rows answered", 0, 60000, function()
 	for n = 1, #WEB_ROWS do
 		local line = row_line(n)
-		if not has(line, " - ") or has(line, "scanning") then
+		if not has(line, " - ") or has(line, "reading") then
 			return false
 		end
 	end
@@ -315,15 +315,15 @@ end, function()
 		check(name, ok, row_line(n))
 	end
 	row(1, "3.5 a list on a server keeps only its network entry, not files on this computer",
-		has(row_line(1), "1: playlist - 1 file") and has(row_line(1), "2 lines could not be used"))
+		has(row_line(1), "1: playlist - 1 item") and has(row_line(1), "2 lines could not be used"))
 	-- relative.m3u: 5 entries resolve to addresses on the server; 2 local paths are unusable and 2 nested lists skipped
 	row(2, "3.6 an extensionless address served as audio/x-mpegurl is read as M3U",
-		has(row_line(2), "2: web address - 5 files") and has(row_line(2), "2 lines could not be used") and
+		has(row_line(2), "2: web address - 5 items") and has(row_line(2), "2 lines could not be used") and
 		has(row_line(2), "2 playlists inside the list skipped"))
 	row(3, "3.6 an extensionless address served as audio/x-scpls is read as PLS",
-		has(row_line(3), "3: web address - 3 files"))
+		has(row_line(3), "3: web address - 3 items"))
 	row(4, "3.9 a feed says feeds come in a later version",
-		has(row_line(4), "4: web address - ") and has(row_line(4), "a podcast feed: feeds come in a later version"))
+		has(row_line(4), "4: web address - ") and has(row_line(4), "a podcast feed (not supported)"))
 	row(5, "3.10 a refused connection", has(row_line(5), "the server could not be reached"))
 	row(6, "3.10 a name that does not resolve", has(row_line(6), "the server name could not be found"))
 	row(7, "3.10 HTTP 429", has(row_line(7), "the server answered HTTP 429"))
@@ -332,7 +332,7 @@ end, function()
 	row(9, "3.11 a gzip list at the cap loads", has(row_line(9), "9: web address - empty") and
 		not has(row_line(9), "16 MB"))
 	row(10, "3.11 a gzip list over the cap", has(row_line(10), "the list is over 16 MB"))
-	row(11, "3.12 five redirects load the list", has(row_line(11), "11: web address - 1 file"))
+	row(11, "3.12 five redirects load the list", has(row_line(11), "11: web address - 1 item"))
 	row(12, "3.12 a sixth redirect", has(row_line(12), "too many redirects"))
 	local _, info_type = status_block()
 	check("3.10 the failing rows make the status block an error", info_type == 2, tostring(info_type))
@@ -391,8 +391,8 @@ step("served list", 1000, 1000, nil, function()
 	create_source("acceptance-served-list", { { LIST .. "/switchable/served.m3u", "served" } })
 end)
 
-step("served list plays", 0, 20000, function() return has(row_line(1), "2 files") and playing_on() end, function()
-	check("3.14 a served list of media addresses plays", has(row_line(1), "1: playlist - 2 files") and playing_on(),
+step("served list plays", 0, 20000, function() return has(row_line(1), "2 items") and playing_on() end, function()
+	check("3.14 a served list of media addresses plays", has(row_line(1), "1: playlist - 2 items") and playing_on(),
 		row_line(1) .. ", " .. status())
 	mark.time = tm()
 	mark.changed = now_ms()
@@ -408,9 +408,9 @@ step("interval changed", 3000, 3000, nil, function()
 	mark.edited = now_ms()
 end)
 
-step("served edit joined", 0, 45000, function() return has(row_line(1), "3 files") end, function()
+step("served edit joined", 0, 45000, function() return has(row_line(1), "3 items") end, function()
 	local elapsed = now_ms() - mark.edited
-	check("3.14 an edit to a served list appears within the 30 s interval", has(row_line(1), "3 files") and
+	check("3.14 an edit to a served list appears within the 30 s interval", has(row_line(1), "3 items") and
 		elapsed <= 35000, string.format("%s after %d ms", row_line(1), elapsed))
 	check("3.14 playback goes on", playing_on(), status())
 	write_file(ROOT .. "/served.m3u.status", "429")
@@ -419,8 +419,8 @@ end)
 
 step("served list failing", 0, 45000, function() return has(row_line(1), "HTTP 429") end, function()
 	local line = row_line(1)
-	check("3.10 a 429 after a good fetch keeps the last list", has(line, "3 files") and has(line, "HTTP 429") and
-		has(line, "showing the last list"), line)
+	check("3.10 a 429 after a good fetch keeps the last list", has(line, "3 items") and has(line, "HTTP 429") and
+		has(line, "using the list read at"), line)
 	check("3.10 playback goes on through the 429", playing_on(), status())
 	os.remove(ROOT .. "/served.m3u.status")
 	remove_source()
@@ -434,20 +434,20 @@ step("locked playlist", 1000, 1000, nil, function()
 	end)
 end)
 
-step("locked playlist plays", 0, 15000, function() return has(row_line(1), "2 files") and playing_on() end,
+step("locked playlist plays", 0, 15000, function() return has(row_line(1), "2 items") and playing_on() end,
 	function()
 		append_file(ROOT .. "/locked.m3u", "media/clip-3.mp4\n")
 	end)
 
 step("change waiting", 0, 20000, function() return has(row_line(1), "1 change waiting") end, function()
 	local line = row_line(1)
-	check("3.15 an edit to a locked playlist waits", has(line, "2 files") and has(line, "1 change waiting"), line)
+	check("3.15 an edit to a locked playlist waits", has(line, "2 items") and has(line, "1 change waiting"), line)
 	press("apply_waiting_changes")
 end)
 
-step("change applied", 0, 10000, function() return has(row_line(1), "3 files") end, function()
+step("change applied", 0, 10000, function() return has(row_line(1), "3 items") end, function()
 	local line = row_line(1)
-	check("3.15 Apply waiting changes now adds it without a restart", has(line, "3 files") and
+	check("3.15 Apply waiting changes now adds it without a restart", has(line, "3 items") and
 		not has(line, "waiting") and playing_on(), line .. ", " .. status())
 	remove_source()
 end)
@@ -459,9 +459,9 @@ end)
 
 -- a server that takes the request and never answers meets the 30 s receive timeout before the 60 s deadline, which is
 -- for a body that keeps trickling in (R-REM-5)
-step("timed out", 0, 90000, function() return has(row_line(1), "timed out") end, function()
+step("timed out", 0, 90000, function() return has(row_line(1), "did not answer in time") end, function()
 	local elapsed = now_ms() - mark.created
-	check("3.13 a server that never answers times out after about 30 s", has(row_line(1), "timed out") and
+	check("3.13 a server that never answers times out after about 30 s", has(row_line(1), "did not answer in time") and
 		elapsed >= 28000 and elapsed <= 45000, string.format("%s after %d ms", row_line(1), elapsed))
 	remove_source()
 	create_source("acceptance-hang-removed", { { LIST .. "/hang", "hang" } })
