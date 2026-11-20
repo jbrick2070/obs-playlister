@@ -2558,8 +2558,8 @@ static void mps_destroy(void *data)
 
 	/* the hotkeys first: libobs releases a source's hotkeys only after this function has returned, so a key pressed
 	 * during the teardown, or after the free at its end, would call back into this source. Unregistering waits for a
-	 * callback in flight. An id that was never registered (the create error path) is libobs's invalid id, which it
-	 * ignores. */
+	 * callback in flight (libobs calls hotkeys under the lock this takes). Only if they were registered: on the
+	 * create error path the ids are still zero, which is some other hotkey's id. */
 	if (mps->hotkeys_registered) {
 		obs_hotkey_unregister(mps->play_pause_hotkey);
 		obs_hotkey_unregister(mps->restart_hotkey);
