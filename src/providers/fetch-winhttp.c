@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "core/url.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <util/bmem.h>
 #include <util/dstr.h>
@@ -300,10 +301,11 @@ static char *environment(const wchar_t *name)
 	return text;
 }
 
-/* Whether no_proxy names the host: entries separated by commas or spaces, "*" for every host, and an entry matches
- * the host itself and every host below it ("example.com", ".example.com" and "*.example.com" all match
- * "lists.example.com"), as FFmpeg and libcurl read it */
-static bool host_in_no_proxy(const char *no_proxy, const char *host)
+/* Whether no_proxy names the host and port: entries separated by commas or spaces, "*" for every host, and an entry
+ * matches the host itself and every host below it ("example.com", ".example.com" and "*.example.com" all match
+ * "lists.example.com"), as FFmpeg and libcurl read it. An entry with a port ("example.com:8080") matches that port
+ * only. An address range (10.0.0.0/8) matches nothing here. */
+static bool host_in_no_proxy(const char *no_proxy, const char *host, unsigned port)
 {
 	size_t host_length = strlen(host);
 	const char *c = no_proxy;
@@ -322,6 +324,15 @@ static bool host_in_no_proxy(const char *no_proxy, const char *host)
 			entry++;
 			length--;
 		}
+		/* a port at the end: digits after the last colon */
+		size_t digits = 0;
+		while (digits < length && entry[length - 1 - digits] >= '0' && entry[length - 1 - digits] <= '9')
+			digits++;
+		if (digits && digits < length && entry[length - 1 - digits] == ':') {
+			if ((unsigned)atoi(entry + length - digits) != port)
+				continue;
+			length -= digits + 1;
+		}
 		if (!length || length > host_length)
 			continue;
 		const char *tail = host + host_length - length;
@@ -331,35 +342,113 @@ static bool host_in_no_proxy(const char *no_proxy, const char *host)
 	return false;
 }
 
-/* fetch.h: the proxy the environment names for this request, as the "host:port" WinHTTP takes, or NULL: none is
- * named, no_proxy names the host, or the value is not a plain http proxy without a user name (then the system's
- * settings decide, as they do when nothing is named). bmem. */
-static wchar_t *environment_proxy(bool secure, const wchar_t *wide_host)
+/* A proxy variable's value as the "host:port" WinHTTP takes (bmem), or NULL when it is not set or is not a plain
+ * http proxy without a user name */
+static char *plain_proxy(const wchar_t *name)
 {
-	char *value = secure ? environment(L"https_proxy") : environment(L"http_proxy");
-	if (!value)
-		value = environment(L"all_proxy");
+	char *value = environment(name);
 	if (!value)
 		return NULL;
-	char *host = NULL;
-	os_wcs_to_utf8_ptr(wide_host, 0, &host);
-	char *no_proxy = environment(L"no_proxy");
-	bool direct = no_proxy && host && host_in_no_proxy(no_proxy, host);
-	bfree(no_proxy);
-	bfree(host);
-
 	const char *address = value;
 	if (astrcmpi_n(address, "http://", 7) == 0)
 		address += 7;
 	size_t length = strcspn(address, "/");
-	wchar_t *proxy = NULL;
-	if (!direct && length && !strstr(address, "://") && !memchr(address, '@', length)) {
-		char *plain = bstrdup_n(address, length);
-		proxy = to_wide(plain);
-		bfree(plain);
-	}
+	char *plain = NULL;
+	if (length && !strstr(address, "://") && !memchr(address, '@', length))
+		plain = bstrdup_n(address, length);
 	bfree(value);
-	return proxy;
+	return plain;
+}
+
+/* no_proxy as WinHTTP's bypass list: entries separated by ";", each host as itself and as "*.host" (WinHTTP matches
+ * a name exactly unless it has a wildcard). Its entries are hosts; nothing documents one with a port. So an entry
+ * with a port is weighed here, against the port of the address the fetch was opened with: it joins the list,
+ * without its port, when that is the port, and is left out otherwise. An address range is left out: WinHTTP has no
+ * such entry. (An address on this computer, 127.0.0.1 or localhost, WinHTTP asks directly whatever the list says.)
+ * NULL when there is nothing to bypass. bmem. */
+static wchar_t *bypass_list(const char *no_proxy, unsigned port)
+{
+	struct dstr list = {0};
+	const char *c = no_proxy ? no_proxy : "";
+	while (*c) {
+		c += strspn(c, ", \t");
+		size_t length = strcspn(c, ", \t");
+		const char *entry = c;
+		c += length;
+		if (length && entry[0] == '*') {
+			entry++;
+			length--;
+			if (!length) {
+				dstr_cat(&list, list.len ? ";*" : "*");
+				continue;
+			}
+		}
+		if (length && entry[0] == '.') {
+			entry++;
+			length--;
+		}
+		if (!length || memchr(entry, '/', length))
+			continue;
+		size_t digits = 0;
+		while (digits < length && entry[length - 1 - digits] >= '0' && entry[length - 1 - digits] <= '9')
+			digits++;
+		if (digits && digits < length && entry[length - 1 - digits] == ':') {
+			if ((unsigned)atoi(entry + length - digits) != port)
+				continue;
+			length -= digits + 1;
+			if (!length)
+				continue;
+		}
+		if (list.len)
+			dstr_cat(&list, ";");
+		dstr_ncat(&list, entry, length);
+		dstr_cat(&list, ";*.");
+		dstr_ncat(&list, entry, length);
+	}
+	wchar_t *wide = list.len ? to_wide(list.array) : NULL;
+	dstr_free(&list);
+	return wide;
+}
+
+/* fetch.h: how the session reaches its servers. With a proxy named in the environment: WinHTTP's proxy list, one
+ * proxy for each scheme that has one ("http=host:port;https=host:port"), and no_proxy as the bypass list, so every
+ * address of a redirect chain goes by its own scheme and host, as with libcurl; a scheme without a proxy is asked
+ * directly. With none named: the system's proxy settings, as before, unless no_proxy names this first address's
+ * host, which the user wants asked directly (the system's settings have a bypass list of their own for the rest).
+ * Returns the access type; *proxies and *bypass are bmem or NULL. */
+static DWORD proxy_choice(const wchar_t *wide_host, unsigned port, wchar_t **proxies, wchar_t **bypass)
+{
+	*proxies = NULL;
+	*bypass = NULL;
+	char *all = plain_proxy(L"all_proxy");
+	char *http = plain_proxy(L"http_proxy");
+	char *https = plain_proxy(L"https_proxy");
+	char *no_proxy = environment(L"no_proxy");
+	DWORD access = WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY;
+	const char *for_http = http ? http : all;
+	const char *for_https = https ? https : all;
+	if (for_http || for_https) {
+		struct dstr list = {0};
+		if (for_http)
+			dstr_printf(&list, "http=%s", for_http);
+		if (for_https)
+			dstr_catf(&list, "%shttps=%s", list.len ? ";" : "", for_https);
+		*proxies = to_wide(list.array);
+		dstr_free(&list);
+		*bypass = bypass_list(no_proxy, port);
+		access = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+	} else if (no_proxy) {
+		char *host = NULL;
+		os_wcs_to_utf8_ptr(wide_host, 0, &host);
+		if (host && host_in_no_proxy(no_proxy, host, port))
+			access = WINHTTP_ACCESS_TYPE_NO_PROXY;
+		bfree(host);
+	}
+	bfree(all);
+	bfree(http);
+	bfree(https);
+	bfree(no_proxy);
+	return access;
 }
 
 /* Whether two addresses have the same scheme, host and port, as they are written (a port left out and the same
@@ -457,11 +546,13 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 	wchar_t *agent = to_wide(options->user_agent ? options->user_agent : "obs-playlister");
 	/* fetch.h: the proxy the environment names, as the player of the items reads it; with none named, the system's
 	 * own proxy settings, as before */
-	wchar_t *proxy = environment_proxy(secure, host);
-	fetch->session =
-		WinHttpOpen(agent, proxy ? WINHTTP_ACCESS_TYPE_NAMED_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-			    proxy ? proxy : WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
-	bfree(proxy);
+	wchar_t *proxies = NULL;
+	wchar_t *bypass = NULL;
+	DWORD access = proxy_choice(host, port, &proxies, &bypass);
+	fetch->session = WinHttpOpen(agent, access, proxies ? proxies : WINHTTP_NO_PROXY_NAME,
+				     bypass ? bypass : WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+	bfree(proxies);
+	bfree(bypass);
 	bfree(agent);
 	DWORD flags = WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_REDIRECT |
 		      WINHTTP_CALLBACK_FLAG_HANDLES;

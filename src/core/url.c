@@ -618,3 +618,40 @@ void pl_content_type_split(const char *header, char **type, char **charset)
 			*charset = lowered(value, value_length);
 	}
 }
+
+void pl_url_split_credentials(const char *url, char **plain, char **user, char **password)
+{
+	*user = NULL;
+	*password = NULL;
+	const char *scheme_end = strstr(url, "://");
+	const char *authority = scheme_end ? scheme_end + 3 : NULL;
+	size_t authority_length = authority ? strcspn(authority, "/?#") : 0;
+	const char *at = NULL;
+	for (size_t i = 0; i < authority_length; i++) {
+		if (authority[i] == '@')
+			at = authority + i;
+	}
+	/* no user information, or an empty one ("https://@host/"): nothing to send */
+	if (!at || at == authority) {
+		struct dstr copy = {0};
+		dstr_copy(&copy, url);
+		if (at)
+			dstr_remove(&copy, (size_t)(authority - url), 1);
+		*plain = copy.array ? copy.array : bstrdup("");
+		return;
+	}
+	size_t info_length = (size_t)(at - authority);
+	const char *colon = memchr(authority, ':', info_length);
+	size_t user_length = colon ? (size_t)(colon - authority) : info_length;
+	char *raw_user = bstrdup_n(authority, user_length);
+	char *raw_password = colon ? bstrdup_n(colon + 1, info_length - user_length - 1) : bstrdup("");
+	*user = pl_url_percent_decode(raw_user);
+	*password = pl_url_percent_decode(raw_password);
+	bfree(raw_user);
+	bfree(raw_password);
+
+	struct dstr without = {0};
+	dstr_ncopy(&without, url, (size_t)(authority - url));
+	dstr_cat(&without, at + 1);
+	*plain = without.array;
+}

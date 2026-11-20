@@ -245,6 +245,39 @@ static void test_content_type(void)
 	expect_type("text/plain; charset=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "text/plain", NULL);
 }
 
+static void expect_split(const char *url, const char *plain, const char *user, const char *password)
+{
+	char *got_plain, *got_user, *got_password;
+	pl_url_split_credentials(url, &got_plain, &got_user, &got_password);
+	bool same = strcmp(got_plain, plain) == 0 && (user ? got_user && strcmp(got_user, user) == 0 : !got_user) &&
+		    (password ? got_password && strcmp(got_password, password) == 0 : !got_password);
+	if (!same) {
+		fprintf(stderr, "split of \"%s\": \"%s\", \"%s\", \"%s\"\n", url, got_plain,
+			got_user ? got_user : "(null)", got_password ? got_password : "(null)");
+		assert(false);
+	}
+	bfree(got_plain);
+	bfree(got_user);
+	bfree(got_password);
+}
+
+/* R-REM-9: the user name and password leave the address, so the fetcher can keep them from other hosts */
+static void test_split_credentials(void)
+{
+	expect_split("https://host/list.m3u", "https://host/list.m3u", NULL, NULL);
+	expect_split("https://user:pw@host/list.m3u?x=1", "https://host/list.m3u?x=1", "user", "pw");
+	expect_split("http://us%40er:p%3Ass@127.0.0.1:8080/a", "http://127.0.0.1:8080/a", "us@er", "p:ss");
+	expect_split("https://user@host", "https://host", "user", "");
+	expect_split("https://user:@host/", "https://host/", "user", "");
+	expect_split("https://a:b:c@host/", "https://host/", "a", "b:c");
+	/* the last "@" before the path ends the user information; one in the path or the query is not one */
+	expect_split("https://a@b:pw@host/x", "https://host/x", "a@b", "pw");
+	expect_split("https://host/x@y?z=@", "https://host/x@y?z=@", NULL, NULL);
+	expect_split("https://@host/x", "https://host/x", NULL, NULL);
+	expect_split("no scheme@here", "no scheme@here", NULL, NULL);
+	expect_split("", "", NULL, NULL);
+}
+
 static void test_file_url(void)
 {
 	file_url("file:///C:/a%20b.mp3", "C:\\a b.mp3");
@@ -336,6 +369,7 @@ int main(void)
 	test_resolve_long();
 	test_decode();
 	test_content_type();
+	test_split_credentials();
 	test_file_url();
 	test_path();
 	test_posix();

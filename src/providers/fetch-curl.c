@@ -72,6 +72,7 @@ struct pl_fetch {
 	bool paused;
 	bool done;
 	CURLcode done_result;
+	char *url;   /* the address as it was given */
 	bool opened; /* the open succeeded, so a read may follow */
 	bool read_called;
 	enum body_mode mode;
@@ -307,12 +308,17 @@ static void take_headers(struct pl_fetch *fetch)
 	fetch->info.encoded = false;
 	fetch->info.has_length = length >= 0 && !fetch->header_encoded;
 	fetch->info.content_length = fetch->info.has_length ? (uint64_t)length : 0;
-	char *final_url = NULL;
-	curl_easy_getinfo(fetch->easy, CURLINFO_EFFECTIVE_URL, &final_url);
-	fetch->info.final_url = final_url ? bstrdup(final_url) : NULL;
 	long redirects = 0;
 	curl_easy_getinfo(fetch->easy, CURLINFO_REDIRECT_COUNT, &redirects);
 	fetch->info.redirects = (uint32_t)redirects;
+	/* without a redirect the final address is the one given, user name and password included, which libcurl was
+	 * given apart (pl_fetch_open): the entries of a list on a server that asks for them resolve against it */
+	char *final_url = NULL;
+	curl_easy_getinfo(fetch->easy, CURLINFO_EFFECTIVE_URL, &final_url);
+	if (!redirects && fetch->url)
+		fetch->info.final_url = bstrdup(fetch->url);
+	else
+		fetch->info.final_url = final_url ? bstrdup(final_url) : NULL;
 }
 
 /* ---- fetch.h ---- */
@@ -343,7 +349,29 @@ struct pl_fetch *pl_fetch_open(const char *url, const struct pl_fetch_options *o
 
 	CURL *easy = fetch->easy;
 	fetch->secure = astrcmpi_n(url, "https://", 8) == 0;
-	curl_easy_setopt(easy, CURLOPT_URL, url);
+	fetch->url = bstrdup(url);
+	/* fetch.h: a user name and password in the address are taken out of it and given to libcurl apart
+	 * (CURLOPT_USERNAME, CURLOPT_PASSWORD), sent as Basic with the first request. Left inside the address they
+	 * would be lost at the first redirect that names a whole address, the same server's too, because libcurl
+	 * replaces the address then. Given apart, and with CURLOPT_UNRESTRICTED_AUTH left off, libcurl sends them
+	 * only to the scheme, host and port of this first address, also after a redirect that stays there, and to no
+	 * other (libcurl 7.83 and later compare all three; older ones the host name alone). */
+	char *plain = NULL;
+	char *user = NULL;
+	char *password = NULL;
+	pl_url_split_credentials(url, &plain, &user, &password);
+	curl_easy_setopt(easy, CURLOPT_URL, plain);
+	if (user) {
+		curl_easy_setopt(easy, CURLOPT_USERNAME, user);
+		curl_easy_setopt(easy, CURLOPT_PASSWORD, password ? password : "");
+		curl_easy_setopt(easy, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
+	}
+	/* libcurl keeps its own copies */
+	if (password)
+		memset(password, 0, strlen(password));
+	bfree(plain);
+	bfree(user);
+	bfree(password);
 	curl_easy_setopt(easy, CURLOPT_USERAGENT, options->user_agent);
 	/* plain http and https only, for the first request and every redirect (R-REM-1) */
 	if (curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https") != CURLE_OK ||
@@ -379,10 +407,6 @@ struct pl_fetch *pl_fetch_open(const char *url, const struct pl_fetch_options *o
 #endif
 	/* fetch.h: the proxy the environment names (http_proxy, https_proxy, all_proxy, with no_proxy) is used, which
 	 * is libcurl's default: no option is set for it */
-	/* fetch.h: a user name and password in the address are sent as Basic, with the first request, and after a
-	 * redirect only to the same host, port and scheme: libcurl 7.83 and later compare all three, older ones the
-	 * host name (CURLOPT_UNRESTRICTED_AUTH stays off) */
-	curl_easy_setopt(easy, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
 	curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, on_header);
 	curl_easy_setopt(easy, CURLOPT_HEADERDATA, fetch);
 	curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, on_body);
@@ -477,5 +501,6 @@ void pl_fetch_close(struct pl_fetch *fetch)
 	bfree(fetch->info.content_type);
 	bfree(fetch->info.charset);
 	bfree(fetch->info.final_url);
+	bfree(fetch->url);
 	bfree(fetch);
 }

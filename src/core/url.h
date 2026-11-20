@@ -74,3 +74,10 @@ char *pl_posix_path_resolve(const char *base_path, const char *reference);
  * anything but letters, digits, "-", "_", ".", ":" and "+", or longer than 40 characters, counts as none.
  * "Audio/X-MpegURL; charset=UTF-8" gives "audio/x-mpegurl" and "utf-8". header may be NULL. */
 void pl_content_type_split(const char *header, char **type, char **charset);
+
+/* An address without the user name and password it carries, and those two apart, "%XX" decoded: for a fetcher that
+ * must be told them separately, so that it can keep them from another host a redirect names.
+ * "https://us%40er:pw@host/x" gives "https://host/x", "us@er" and "pw". The user information is what stands between
+ * "://" and the last "@" before the path; the password what follows its first ":". *user and *password are NULL when
+ * the address has no user name (and *password is "" when it has a user name alone); *plain is always set. */
+void pl_url_split_credentials(const char *url, char **plain, char **user, char **password);

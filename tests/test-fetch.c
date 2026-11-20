@@ -188,6 +188,9 @@ static void *serve(void *param)
 				    port);
 		dstr_cat(&reply, "Content-Length: 0\r\nConnection: close\r\n\r\n");
 		send_text(s, reply.array);
+	} else if (strcmp(path, "/to-proxied") == 0) {
+		send_text(s, "HTTP/1.1 302 Found\r\nLocation: http://lists.playlister.invalid/list.m3u\r\n"
+			     "Content-Length: 0\r\nConnection: close\r\n\r\n");
 	} else if (strcmp(path, "/to-ftp") == 0) {
 		send_text(s, "HTTP/1.1 302 Found\r\nLocation: ftp://127.0.0.1/x\r\nContent-Length: 0\r\n"
 			     "Connection: close\r\n\r\n");
@@ -557,6 +560,19 @@ static void set_environment(const char *name, const char *value)
 #endif
 }
 
+/* A copy of the variable's value (malloc), or NULL when it is not set */
+static char *get_environment(const char *name)
+{
+#ifdef _WIN32
+	char *value = NULL;
+	size_t size = 0;
+	return _dupenv_s(&value, &size, name) == 0 ? value : NULL;
+#else
+	const char *value = getenv(name);
+	return value ? strdup(value) : NULL;
+#endif
+}
+
 /* fetch.h: the proxy the environment names is used, except for the hosts no_proxy names. The test's own server
  * plays the proxy: asked for an address on a host that does not exist, it answers "proxied". */
 static void test_proxy(void)
@@ -578,6 +594,44 @@ static void test_proxy(void)
 	body = body_of(url("/nolength"), &result);
 	assert(result == PL_FETCH_OK && strcmp(body, "hello") == 0);
 	bfree(body);
+	/* a redirect chain goes address by address: the first is asked directly (no_proxy), the address it redirects
+	 * to through the proxy, which is the test's own server again */
+	set_environment("http_proxy", proxy);
+	set_environment("no_proxy", "127.0.0.1");
+	body = body_of(url("/to-proxied"), &result);
+	if (result != PL_FETCH_OK || strcmp(body, "proxied") != 0) {
+		fprintf(stderr, "a redirect out of no_proxy: result %d, body \"%s\"\n", result, body ? body : "(none)");
+		assert(false);
+	}
+	bfree(body);
+#ifdef _WIN32
+	/* Windows' own reading of the variables (fetch-winhttp.c), with an address on a host that does not exist, as
+	 * WinHTTP never asks a proxy for an address on this computer: through the proxy the answer is "proxied",
+	 * directly the name is not found. A no_proxy entry with a port counts for that port only. */
+	set_environment("http_proxy", proxy);
+	set_environment("no_proxy", "example.com, lists.playlister.invalid:8080");
+	body = body_of("http://lists.playlister.invalid:8080/list.m3u", &result);
+	assert(result == PL_FETCH_NETWORK_ERROR && !body);
+	body = body_of("http://lists.playlister.invalid:8081/list.m3u", &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "proxied") == 0);
+	bfree(body);
+	/* a host below a named one is named too */
+	set_environment("no_proxy", "playlister.invalid");
+	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	assert(result == PL_FETCH_NETWORK_ERROR && !body);
+	/* only https has a proxy: an http address is asked directly; all_proxy serves the scheme that has none */
+	set_environment("http_proxy", NULL);
+	set_environment("no_proxy", NULL);
+	set_environment("https_proxy", proxy);
+	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	assert(result == PL_FETCH_NETWORK_ERROR && !body);
+	set_environment("all_proxy", proxy);
+	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "proxied") == 0);
+	bfree(body);
+	set_environment("https_proxy", NULL);
+	set_environment("all_proxy", NULL);
+#endif
 	set_environment("http_proxy", NULL);
 	set_environment("no_proxy", NULL);
 }
@@ -757,13 +811,17 @@ static void test_failures(void)
 int main(void)
 {
 	pl_test_no_crash_dialogs();
-#ifndef _WIN32
-	/* the server is on 127.0.0.1, which libcurl would ask a proxy for that the environment names (test_proxy sets
-	 * its own) */
+	/* the server is on 127.0.0.1, which a proxy the caller's environment names would be asked for (test_proxy sets
+	 * its own). The variables are cleared for the run, in both spellings, and put back at its end. */
 	const char *proxies[] = {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY",
 				 "all_proxy",  "ALL_PROXY",  "no_proxy",    "NO_PROXY"};
+	char *kept[sizeof(proxies) / sizeof(proxies[0])];
+	for (size_t i = 0; i < sizeof(proxies) / sizeof(proxies[0]); i++) {
+		kept[i] = get_environment(proxies[i]);
+	}
 	for (size_t i = 0; i < sizeof(proxies) / sizeof(proxies[0]); i++)
-		unsetenv(proxies[i]);
+		set_environment(proxies[i], NULL);
+#ifndef _WIN32
 	signal(SIGPIPE, SIG_IGN);
 #endif
 	long allocations = bnum_allocs();
@@ -782,6 +840,11 @@ int main(void)
 	stop_server(server);
 	bfree(gzip_body);
 	assert(bnum_allocs() == allocations);
+	for (size_t i = 0; i < sizeof(proxies) / sizeof(proxies[0]); i++) {
+		if (kept[i])
+			set_environment(proxies[i], kept[i]);
+		free(kept[i]);
+	}
 	printf("test-fetch: all passed\n");
 	return 0;
 }

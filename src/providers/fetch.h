@@ -32,15 +32,22 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  *   https to http is refused: a list asked for over a secure connection is never taken from an open one.
  * - A user name and password in the address (https://user:password@host/list.m3u) are sent to that server as HTTP
  *   Basic authentication, with the first request. After a redirect they count only for the origin they were given
- *   for (the same scheme, host and port): libcurl sends them on there, WinHTTP when that address asks for them
- *   (a 401). They are never sent to another host, nor from http to https or back.
+ *   for, the same scheme, host and port: never for another host, nor from http to https or back. libcurl is given
+ *   them apart from the address (CURLOPT_USERNAME and CURLOPT_PASSWORD, CURLOPT_UNRESTRICTED_AUTH off) and sends
+ *   them on within that origin by itself (7.83 and later; older ones compare the host name alone). WinHTTP drops
+ *   them at every redirect, so the request is sent once more with them when a redirect within the origin ends at
+ *   a 401.
  * - The proxy the environment names is used: http_proxy for an http address, https_proxy for an https one, all_proxy
- *   for both, except for hosts no_proxy names. That is what a list behind a proxy needs to be fetched at all, and
- *   it is where the player of its items looks too: OBS's media source plays through FFmpeg, whose http and tls
- *   protocols read http_proxy and no_proxy from the environment (libavformat/http.c and tls.c; FFmpeg's source is
- *   not part of this repository's dependencies, so this is from FFmpeg itself, not checked against OBS's build).
- *   With no proxy named, WinHTTP uses the system's proxy settings, as it did before, and libcurl none. On Windows
- *   a proxy value that is not a plain http proxy (another scheme, or a user name in it) is passed over.
+ *   for either that has none of its own, except for hosts no_proxy names. That is what a list behind a proxy needs
+ *   to be fetched at all, and it is where the player of its items looks too: OBS's media source plays through
+ *   FFmpeg, whose http and tls protocols read http_proxy and no_proxy from the environment (libavformat/http.c and
+ *   tls.c; FFmpeg's source is not part of this repository's dependencies, so this is from FFmpeg itself, not
+ *   checked against OBS's build). The choice is made for each address of a redirect chain by its own scheme and
+ *   host, by libcurl itself and on Windows by handing WinHTTP a proxy for each scheme and no_proxy as its bypass
+ *   list. With no proxy named at all, libcurl uses none and WinHTTP the system's proxy settings, as it did before,
+ *   unless no_proxy names the host of the address, which is then asked directly. On Windows a proxy value that is
+ *   not a plain http proxy (another scheme, or a user name in it) is passed over, and no_proxy takes host names,
+ *   with or without a port (a port is compared with the first address's), but no address ranges (10.0.0.0/8).
  * - Certificates are checked, always. */
 
 /* Each fetch ends in exactly one of these (R-REM-5) */
