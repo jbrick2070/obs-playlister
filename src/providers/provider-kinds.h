@@ -33,6 +33,8 @@ void pl_folder_provider_refresh_now(struct pl_folder_provider *provider);
 void pl_folder_provider_set_options(struct pl_folder_provider *provider, const struct pl_container_options *options);
 void pl_folder_provider_release_held(struct pl_folder_provider *provider);
 size_t pl_folder_provider_held_changes(struct pl_folder_provider *provider);
+void pl_folder_provider_request_stop(struct pl_folder_provider *provider);
+void pl_folder_provider_detach(struct pl_folder_provider *provider);
 void pl_folder_provider_destroy(struct pl_folder_provider *provider);
 
 /* A local playlist file or an http(s) row (provider-list.c) */
@@ -44,6 +46,8 @@ void pl_list_provider_refresh_now(struct pl_list_provider *provider);
 void pl_list_provider_set_options(struct pl_list_provider *provider, const struct pl_container_options *options);
 void pl_list_provider_release_held(struct pl_list_provider *provider);
 size_t pl_list_provider_held_changes(struct pl_list_provider *provider);
+void pl_list_provider_request_stop(struct pl_list_provider *provider);
+void pl_list_provider_detach(struct pl_list_provider *provider);
 void pl_list_provider_destroy(struct pl_list_provider *provider);
 
 /* The fetch functions list providers call (fetch.h): WinHTTP's, or a test's stand-in */

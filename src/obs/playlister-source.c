@@ -2083,8 +2083,9 @@ static void reconcile_providers(struct media_playlist_source *mps, struct darray
 	*retired_out = retired.da;
 }
 
-/* With no lock held: the retired providers are destroyed (joined), then the new ones created, each stored in its
- * registration if that still expects it (R-THR-3) */
+/* With no lock held: the retired providers are handed to the module's background thread, which joins them (this runs
+ * on the graphics thread, which must not wait for a worker inside a call on a slow share), then the new ones are
+ * created, each stored in its registration if that still expects it (R-THR-3) */
 static void start_and_stop_providers(struct media_playlist_source *mps, struct darray *starts_array,
 				     struct darray *retired_array, const struct pl_container_options *options)
 {
@@ -2092,8 +2093,11 @@ static void start_and_stop_providers(struct media_playlist_source *mps, struct d
 	DARRAY(struct pl_provider *) retired;
 	starts.da = *starts_array;
 	retired.da = *retired_array;
+	/* every one is asked to stop before any is cut off from this source */
 	for (size_t i = 0; i < retired.num; i++)
-		pl_provider_destroy(retired.array[i]);
+		pl_provider_request_stop(retired.array[i]);
+	for (size_t i = 0; i < retired.num; i++)
+		pl_provider_retire(retired.array[i]);
 	da_free(retired);
 
 	for (size_t i = 0; i < starts.num; i++) {
@@ -2131,7 +2135,7 @@ static void start_and_stop_providers(struct media_playlist_source *mps, struct d
 		}
 		pthread_mutex_unlock(&mps->mutex);
 		if (provider && !stored)
-			pl_provider_destroy(provider);
+			pl_provider_retire(provider);
 		bfree(start->row_uuid);
 		bfree(start->location);
 	}
@@ -2189,9 +2193,13 @@ static void mps_destroy(void *data)
 	struct media_playlist_source *mps = data;
 
 	/* R-THR-3: every provider first, so none publishes into a source being torn down; no lock is held, as a
-	 * worker inside its publish waits for the list lock */
+	 * worker inside its publish waits for the list lock. All are asked to stop before any is waited for, and the
+	 * wait here is only for a publish in flight: the workers are joined by the module's background thread, so a
+	 * folder on a slow share holds up neither this source's teardown nor the ones after it. */
+	for (size_t i = 0; i < mps->providers.num; i++)
+		pl_provider_request_stop(mps->providers.array[i].provider);
 	for (size_t i = 0; i < mps->providers.num; i++) {
-		pl_provider_destroy(mps->providers.array[i].provider);
+		pl_provider_retire(mps->providers.array[i].provider);
 		bfree(mps->providers.array[i].row_uuid);
 		bfree(mps->providers.array[i].location);
 	}

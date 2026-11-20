@@ -27,6 +27,19 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 void pl_gate_init(struct pl_gate *gate)
 {
 	da_init(gate->files);
+	gate->stop = NULL;
+	gate->stop_context = NULL;
+}
+
+void pl_gate_set_stop(struct pl_gate *gate, pl_gate_stop_fn stop, void *context)
+{
+	gate->stop = stop;
+	gate->stop_context = context;
+}
+
+static bool stop_requested(const struct pl_gate *gate)
+{
+	return gate->stop && gate->stop(gate->stop_context);
 }
 
 static void free_file(struct pl_gate_file *file)
@@ -136,6 +149,8 @@ void pl_gate_listing(struct pl_gate *gate, const struct pl_gate_listing *files, 
 	da_init(merged);
 	da_reserve(merged, count);
 	size_t known = 0;
+	/* once a stop is asked for, the rest is merged without opening any file */
+	bool stopped = false;
 	for (size_t i = 0; i < count; i++) {
 		const struct pl_gate_listing *seen = sorted[i];
 		/* known files sorting before this one are no longer listed */
@@ -156,10 +171,12 @@ void pl_gate_listing(struct pl_gate *gate, const struct pl_gate_listing *files, 
 		file.location = bstrdup(seen->location);
 		start_window(&file, seen->size, seen->write_ms, mono_ms);
 		/* the initial scan admits what is old and not held open at once; younger files cannot pass yet */
-		if (initial && seen->write_ms <= utc_ms && utc_ms - seen->write_ms >= PL_GATE_WINDOW_MS &&
-		    !apply_probe(&file, probe(context, seen->location), mono_ms)) {
-			free_file(&file);
-			continue;
+		if (initial && seen->write_ms <= utc_ms && utc_ms - seen->write_ms >= PL_GATE_WINDOW_MS) {
+			stopped = stopped || stop_requested(gate);
+			if (!stopped && !apply_probe(&file, probe(context, seen->location), mono_ms)) {
+				free_file(&file);
+				continue;
+			}
 		}
 		da_push_back(merged, &file);
 	}
@@ -185,6 +202,8 @@ size_t pl_gate_tick(struct pl_gate *gate, int64_t mono_ms, int64_t utc_ms, pl_sa
 		struct pl_gate_file *file = &gate->files.array[i];
 		if (file->admitted || file->deadline_ms > mono_ms)
 			continue;
+		if (stop_requested(gate))
+			break;
 
 		uint64_t size = 0;
 		int64_t write_ms = 0;

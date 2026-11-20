@@ -852,6 +852,16 @@ size_t pl_list_provider_held_changes(struct pl_list_provider *provider)
 	return pl_publication_held_changes(&provider->publication);
 }
 
+void pl_list_provider_request_stop(struct pl_list_provider *provider)
+{
+	pl_stop_set(provider->stop);
+}
+
+void pl_list_provider_detach(struct pl_list_provider *provider)
+{
+	pl_publication_detach(&provider->publication);
+}
+
 void pl_list_provider_destroy(struct pl_list_provider *provider)
 {
 	if (!provider)

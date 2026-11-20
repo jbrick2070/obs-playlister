@@ -19,7 +19,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 /* The folder provider's state machines against a fake folder. Write-complete gate (R-DIR-4): both admission paths,
  * a growing file, a stable file, a locked-but-stable file, a vanished file, a permanently locked file that holds up
  * nothing, a denied file (R-PLAT-10), batched samples, the deadline queue, sample times, the two clocks, no second
- * probe of an admitted file, renames. Watch modes (R-DIR-3): notify, overflow, rescan-only, missing, denied and
+ * probe of an admitted file, renames, a stop that ends the per-file loops. Watch modes (R-DIR-3): notify, overflow,
+ * rescan-only, missing, denied and
  * recovery, with the interval on and off. */
 
 #undef NDEBUG
@@ -401,6 +402,57 @@ static void test_rename(void)
 	pl_gate_free(&gate);
 }
 
+/* A stop asked for while the gate goes through its files (a provider being destroyed while its share is slow): no
+ * further file is probed or sampled, and nothing is lost (R-THR-3) */
+struct stop_after {
+	struct fake_folder *folder;
+	int calls; /* probes and samples allowed before the stop is set */
+};
+
+static bool stop_after_calls(void *context)
+{
+	const struct stop_after *stop = context;
+	return stop->folder->probes + stop->folder->samples >= stop->calls;
+}
+
+static void test_stop(void)
+{
+	struct fake_folder folder = {0};
+	struct pl_gate gate;
+	pl_gate_init(&gate);
+	const int64_t now = 100000;
+	add_file(&folder, "a.mp4", 1, now - 60000);
+	add_file(&folder, "b.mp4", 1, now - 60000);
+	add_file(&folder, "c.mp4", 1, now - 60000);
+	add_file(&folder, "d.mp4", 1, now - 60000);
+
+	/* the first listing: the stop comes after one probe; the other three files are kept, unprobed, as candidates */
+	struct stop_after stop = {&folder, 1};
+	pl_gate_set_stop(&gate, stop_after_calls, &stop);
+	scan(&gate, &folder, true, now);
+	assert(folder.probes == 1);
+	assert(gate.files.num == 4 && pl_gate_admitted_count(&gate) == 1 && pl_gate_pending_count(&gate) == 3);
+	assert(is_admitted(&gate, "a.mp4"));
+	assert_sorted(&gate);
+
+	/* a tick while stopped touches nothing and admits nothing; the candidates stay due */
+	assert(tick(&gate, &folder, now + W) == 0);
+	assert(folder.probes == 1 && folder.samples == 0);
+	assert(pl_gate_pending_count(&gate) == 3 && pl_gate_next_deadline(&gate) == now + W);
+
+	/* a stop in the middle of a tick: the file in hand is finished, the rest are left */
+	stop.calls = 3; /* one probe so far, so one more sample and its probe */
+	assert(tick(&gate, &folder, now + W) == 1);
+	assert(folder.samples == 1 && folder.probes == 2);
+	assert(pl_gate_pending_count(&gate) == 2);
+
+	/* without the stop everything goes on as usual */
+	pl_gate_set_stop(&gate, NULL, NULL);
+	assert(tick(&gate, &folder, now + W) == 2);
+	assert(pl_gate_pending_count(&gate) == 0);
+	pl_gate_free(&gate);
+}
+
 /* ---- watch modes ---- */
 
 static void expect_change(struct pl_watch_actions actions, enum pl_watch_mode mode, const char *reason)
@@ -580,6 +632,7 @@ int main(void)
 	test_sample_times();
 	test_future_write_times();
 	test_rename();
+	test_stop();
 	test_watch_notify_and_overflow();
 	test_watch_overflow_run();
 	test_watch_rescan_only();

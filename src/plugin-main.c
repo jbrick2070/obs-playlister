@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string.h>
 
 #include "core/text.h"
+#include "providers/provider.h"
 
 #ifdef TEST_SHUFFLER
 #include "shuffler.h"
@@ -70,6 +71,8 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
+	/* the workers of providers their sources let go of end here at the latest (R-THR-3); they look up text */
+	pl_provider_reaper_shutdown();
 	pl_text_set_lookup(NULL);
 	obs_log(LOG_INFO, "plugin unloaded");
 }

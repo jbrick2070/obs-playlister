@@ -19,6 +19,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "provider-kinds.h"
 
 #include <util/bmem.h>
+#include <util/darray.h>
+#include <util/platform.h>
+#include <util/threading.h>
+
+#include "os.h"
 
 void pl_snapshot_free(struct pl_snapshot *snapshot)
 {
@@ -95,4 +100,111 @@ void pl_provider_destroy(struct pl_provider *provider)
 	else
 		pl_list_provider_destroy(provider->list);
 	bfree(provider);
+}
+
+void pl_provider_request_stop(struct pl_provider *provider)
+{
+	if (!provider)
+		return;
+	if (provider->folder)
+		pl_folder_provider_request_stop(provider->folder);
+	else
+		pl_list_provider_request_stop(provider->list);
+}
+
+/* ---- retired providers (R-THR-3) ---- */
+
+/* One thread for the whole module joins and frees the providers handed to it, so neither the graphics thread (a list
+ * edit) nor a source's destroy waits for a worker that is inside a call on a slow or stalled share. It starts with
+ * the first retired provider and ends in pl_provider_reaper_shutdown. */
+static pthread_mutex_t reaper_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* under reaper_mutex */
+static DARRAY(struct pl_provider *) reaper_queue;
+static struct pl_thread *reaper_thread;
+static struct pl_stop *reaper_stop; /* set by the shutdown: the thread ends once the queue is empty */
+static struct pl_wake *reaper_wake; /* a provider was queued */
+static bool reaper_ending;
+
+static void reaper_main(void *unused)
+{
+	UNUSED_PARAMETER(unused);
+	os_set_thread_name("obs-playlister: retired");
+	for (;;) {
+		DARRAY(struct pl_provider *) batch;
+		pthread_mutex_lock(&reaper_mutex);
+		batch.da = reaper_queue.da;
+		da_init(reaper_queue);
+		bool ending = reaper_ending;
+		pthread_mutex_unlock(&reaper_mutex);
+
+		/* every one was asked to stop when it was retired, so they end side by side while this joins them in turn */
+		size_t taken = batch.num;
+		for (size_t i = 0; i < batch.num; i++)
+			pl_provider_destroy(batch.array[i]);
+		da_free(batch);
+		if (taken)
+			continue; /* more may have come meanwhile */
+		if (ending)
+			break;
+		pl_wait(reaper_stop, reaper_wake, PL_WAIT_FOREVER);
+	}
+}
+
+void pl_provider_retire(struct pl_provider *provider)
+{
+	if (!provider)
+		return;
+	pl_provider_request_stop(provider);
+	if (provider->folder)
+		pl_folder_provider_detach(provider->folder);
+	else
+		pl_list_provider_detach(provider->list);
+
+	bool queued = false;
+	pthread_mutex_lock(&reaper_mutex);
+	if (!reaper_thread && !reaper_ending) {
+		if (!reaper_stop)
+			reaper_stop = pl_stop_create();
+		if (!reaper_wake)
+			reaper_wake = pl_wake_create();
+		if (reaper_stop && reaper_wake)
+			reaper_thread = pl_thread_start(reaper_main, NULL, NULL);
+	}
+	if (reaper_thread && !reaper_ending) {
+		da_push_back(reaper_queue, &provider);
+		pl_wake_set(reaper_wake);
+		queued = true;
+	}
+	pthread_mutex_unlock(&reaper_mutex);
+	if (!queued)
+		pl_provider_destroy(provider);
+}
+
+void pl_provider_reaper_shutdown(void)
+{
+	pthread_mutex_lock(&reaper_mutex);
+	struct pl_thread *thread = reaper_thread;
+	if (thread) {
+		reaper_ending = true;
+		pl_stop_set(reaper_stop);
+	}
+	pthread_mutex_unlock(&reaper_mutex);
+	if (thread)
+		pl_thread_join(thread, "the retired providers");
+
+	DARRAY(struct pl_provider *) left;
+	pthread_mutex_lock(&reaper_mutex);
+	left.da = reaper_queue.da;
+	da_init(reaper_queue);
+	reaper_thread = NULL;
+	pl_stop_destroy(reaper_stop);
+	pl_wake_destroy(reaper_wake);
+	reaper_stop = NULL;
+	reaper_wake = NULL;
+	reaper_ending = false;
+	pthread_mutex_unlock(&reaper_mutex);
+	/* none in practice: a provider retired while the thread was ending is destroyed by its caller */
+	for (size_t i = 0; i < left.num; i++)
+		pl_provider_destroy(left.array[i]);
+	da_free(left);
 }

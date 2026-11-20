@@ -140,6 +140,12 @@ static bool stopping(struct pl_folder_provider *p)
 	return pl_stop_is_set(p->stop);
 }
 
+/* The gate's stop test: its per-file loops end as soon as the provider is asked to stop (R-THR-3) */
+static bool gate_stopping(void *context)
+{
+	return stopping(context);
+}
+
 /* One listing in progress: the context of the listing sink */
 struct scan {
 	struct pl_folder_provider *provider;
@@ -719,6 +725,9 @@ static void worker_main(void *data)
 			if (p->watch.mode == PL_WATCH_NOTIFY)
 				run_event(p, PL_WATCH_OPENED_ARM_FAILED);
 		}
+		/* not after a stop: the tick would sample and probe the due files first (R-THR-3) */
+		if (stopping(p))
+			break;
 		if (pl_gate_next_deadline(&p->gate) <= mono_now())
 			pl_gate_tick(&p->gate, mono_now(), pl_utc_now_ms(), pl_folder_os_sample, pl_folder_os_probe,
 				     p->os);
@@ -788,6 +797,7 @@ struct pl_folder_provider *pl_folder_provider_create(const char *location, const
 	copy_options(&p->options, &p->filter_text, options);
 	pl_filter_parse(&p->filter, p->filter_text);
 	pl_gate_init(&p->gate);
+	pl_gate_set_stop(&p->gate, gate_stopping, p);
 	da_init(p->notified_renames);
 	da_init(p->renames);
 	da_init(p->files);
@@ -840,6 +850,16 @@ void pl_folder_provider_release_held(struct pl_folder_provider *provider)
 size_t pl_folder_provider_held_changes(struct pl_folder_provider *provider)
 {
 	return pl_publication_held_changes(&provider->publication);
+}
+
+void pl_folder_provider_request_stop(struct pl_folder_provider *provider)
+{
+	pl_stop_set(provider->stop);
+}
+
+void pl_folder_provider_detach(struct pl_folder_provider *provider)
+{
+	pl_publication_detach(&provider->publication);
 }
 
 void pl_folder_provider_destroy(struct pl_folder_provider *provider)

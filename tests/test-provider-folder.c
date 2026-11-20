@@ -20,8 +20,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * through the write-complete gate, renames that keep their identity (also a file renamed twice before one listing),
  * deletions, a file rewritten in place keeping its place, view and filter changes without a new listing, lock list
  * at start, subfolders (a hidden one and a junction or symbolic link back up the tree skipped), a missing folder that
- * comes back, a change of the pending keys alone being published, and on Windows a folder through this machine's
- * admin share where it can be reached. Expected keys are written as file names and folded as the platform folds
+ * comes back, a change of the pending keys alone being published, a provider retired (ended without waiting for its
+ * worker, and never heard from again), and on Windows a folder through this machine's admin share where it can be
+ * reached. Expected keys are written as file names and folded as the platform folds
  * them (K). Each wait has a generous limit, so a slow machine only makes it slower. */
 
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(_GNU_SOURCE)
@@ -865,6 +866,55 @@ static void test_missing_folder(void)
 	bfree(parent);
 }
 
+/* R-THR-3: a retired provider is asked to stop, cut off from its owner and joined by the module's background thread.
+ * Nothing is published after the retire returns, whether the worker was idle or in the middle of its first listing,
+ * and the shutdown leaves nothing behind. */
+static void test_retire(void)
+{
+	char *folder = make_folder("retire");
+	write_file(folder, "1.mp4", 100, OLD);
+	write_file(folder, "2.mp4", 100, OLD);
+	struct pl_container_options options = default_options();
+
+	/* an idle provider */
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 21, &options, on_publish, &inbox);
+	assert(provider);
+	assert(wait_for(&inbox, 0, shows_exactly, K("1.mp4,2.mp4"), "the first listing before the retire"));
+	pl_provider_request_stop(provider);
+	pl_provider_retire(provider);
+	size_t mark = inbox_count(&inbox);
+	write_file(folder, "3.mp4", 100, OLD);
+	os_sleep_ms(1500);
+	assert(inbox_count(&inbox) == mark);
+
+	/* providers retired the moment they start, several at once: each publish callback is either done or never
+	 * made by the time its retire returns, so the owner can go at once */
+	struct inbox early[4];
+	for (size_t i = 0; i < 4; i++) {
+		inbox_init(&early[i]);
+		struct pl_provider *started =
+			pl_provider_create(PL_ROW_FOLDER, folder, "row", 30 + i, &options, on_publish, &early[i]);
+		assert(started);
+		pl_provider_retire(started);
+		size_t published = inbox_count(&early[i]);
+		assert(published <= 1);
+		inbox_free(&early[i]);
+	}
+	pl_provider_retire(NULL);
+	pl_provider_request_stop(NULL);
+
+	/* the shutdown waits for every worker and frees them; a second one has nothing to do */
+	pl_provider_reaper_shutdown();
+	pl_provider_reaper_shutdown();
+	assert(inbox_count(&inbox) == mark);
+	inbox_free(&inbox);
+	remove_folder(folder);
+	bfree(folder);
+}
+
 /* R-LIST-1 rule 5: a directory by its attributes; a file, a missing path and NULL are not */
 static void test_is_directory(void)
 {
@@ -956,6 +1006,8 @@ int main(void)
 	printf("subfolders: passed\n");
 	test_missing_folder();
 	printf("missing folder: passed\n");
+	test_retire();
+	printf("retire: passed\n");
 #ifdef _WIN32
 	test_admin_share();
 #endif

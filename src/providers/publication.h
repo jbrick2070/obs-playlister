@@ -22,11 +22,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <stddef.h>
 #include <stdint.h>
 
+#include <util/threading.h>
+
 #include "provider.h"
 
 /* What every provider does with a membership once it has built one (R-REM-7, R-BEH-4): the same display sort
  * (R-DIR-6) and mode (R-DIR-7), the "Lock list at start" hold (R-DIR-11), and a publication only when something the
- * receiver sees changed. Worker-thread only, except held_changes. */
+ * receiver sees changed. Worker-thread only, except held_changes and detach. */
 
 struct pl_publication {
 	uint64_t instance_id;
@@ -44,6 +46,9 @@ struct pl_publication {
 	size_t held_count;
 	char *held_content;
 	volatile long held_changes; /* any thread */
+	/* held around every call of publish, and by detach: once detached the receiver is never called again */
+	pthread_mutex_t owner_mutex;
+	bool detached; /* under owner_mutex */
 };
 
 /* What the provider says about the row along with a membership */
@@ -74,6 +79,12 @@ enum pl_publication_result pl_publication_update(struct pl_publication *publicat
 						 const struct pl_container_options *options, struct pl_entry *raw,
 						 size_t count, const struct pl_publication_status *status,
 						 bool release);
+
+/* Cuts the publication off from its receiver, from any thread: it waits for a publish call in flight (the receiver's
+ * own work, never the provider's file or network calls), and no publish is made after it returns; later snapshots are
+ * dropped. The caller must not hold a lock the receiver takes. For a provider whose worker is left to end by itself
+ * (pl_provider_retire). */
+void pl_publication_detach(struct pl_publication *publication);
 
 /* How many entries the kept membership adds, removes or rewrites; 0 when nothing is kept. Any thread. */
 size_t pl_publication_held_changes(struct pl_publication *publication);
