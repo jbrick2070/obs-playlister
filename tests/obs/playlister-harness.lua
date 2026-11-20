@@ -95,6 +95,11 @@ local function log_done()
 		total = 0
 	else
 		for name, places in pairs(declared) do
+			if places > 1 then
+				-- each check name is made in one place only, so a check that never runs cannot hide behind another
+				-- place that runs twice
+				log("FAIL a check name is declared in " .. places .. " places: " .. name)
+			end
 			if (runs[name] or 0) < places then
 				log("FAIL a declared check did not run: " .. name .. " (ran " .. (runs[name] or 0) .. " of " ..
 					places .. ")")
@@ -523,7 +528,7 @@ step("loop off", 300, 300, nil, function()
 end)
 
 step("last item", 500, 15000, function() return dur() == D[3] and dur() > 0 end, function()
-	check("next goes to item 3", dur() == D[3] and st() == PLAYING, status())
+	check("next goes to item 3 after the edit", dur() == D[3] and st() == PLAYING, status())
 	seek_near_end()
 end)
 
