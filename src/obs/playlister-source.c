@@ -2442,10 +2442,14 @@ static void draw_held_frame(struct media_playlist_source *mps)
 static void mps_video_render(void *data, gs_effect_t *effect)
 {
 	struct media_playlist_source *mps = data;
-	/* only the check is locked; rendering the child must not hold the list lock */
-	pthread_mutex_lock(&mps->mutex);
-	bool has_media = mps->actual_media != NULL;
-	pthread_mutex_unlock(&mps->mutex);
+	/* only the check is locked; rendering the child must not hold the list lock. And a frame never waits for that
+	 * lock: while a list change holds it (a snapshot of a large folder being installed), the answer of the last
+	 * frame stands for this one. */
+	if (pthread_mutex_trylock(&mps->mutex) == 0) {
+		mps->render_has_media = mps->actual_media != NULL;
+		pthread_mutex_unlock(&mps->mutex);
+	}
+	bool has_media = mps->render_has_media;
 
 	/* R-BEH-8: the child has a picture while libobs has a frame of it to draw; it has none from the start of a new
 	 * file until that file's first frame, and none after a stop or blank */

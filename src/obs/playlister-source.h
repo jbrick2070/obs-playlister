@@ -163,6 +163,7 @@ struct media_playlist_source {
 	 * (video_render, and video_tick while hidden), which frees the texture when a hold ends (destroy frees one left
 	 * over) */
 	struct pl_frame_hold frame_hold;
+	bool render_has_media; /* whether an item was loaded when video_render last got the list lock */
 	gs_texrender_t *held_frame;
 	enum gs_color_space held_space; /* the color space the held frame was drawn in */
 
