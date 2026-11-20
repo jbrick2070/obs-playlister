@@ -284,7 +284,11 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			char *name = NULL;
 			os_wcs_to_utf8_ptr(data.cFileName, 0, &name);
 			char *child = join_relative(relative, name);
-			bool hidden = (attributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) != 0;
+			/* hidden by attribute, or by a name starting with ".", as on Linux and macOS: a Mac leaves "._clip.mp4"
+			 * and ".DS_Store" next to the files it writes to a USB drive or a share, mostly without the hidden
+			 * attribute, and the same folder must give the same list on every system (R-DIR-5) */
+			bool hidden = (attributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) != 0 ||
+				      data.cFileName[0] == L'.';
 			if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
 				if (os->include_subfolders && !hidden) {
 					if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {

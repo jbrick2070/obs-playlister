@@ -550,6 +550,10 @@ static void test_listing_and_changes(void)
 	write_file(folder, "c.mp4.part", 10, OLD);  /* always skipped: still downloading */
 	write_file(folder, "hidden.mp4", 10, OLD);
 	char *hidden = hide(folder, "hidden.mp4");
+	/* a name starting with "." is hidden on every system (P-06): the side file a Mac writes next to a.mp4 on a USB
+	 * drive or a share, and any other dot-file, without any attribute set */
+	write_file(folder, "._a.mp4", 10, OLD);
+	write_file(folder, ".dot.mp4", 10, OLD);
 
 	struct inbox inbox;
 	inbox_init(&inbox);
@@ -567,6 +571,7 @@ static void test_listing_and_changes(void)
 	assert(strcmp(a->location, expected.array) == 0 && a->size == 100 && a->has_date && a->occurrence == 1);
 	dstr_free(&expected);
 	assert(!entry(first, K("notes.txt")) && !entry(first, K(hidden)) && !entry(first, K("desktop.ini")));
+	assert(!entry(first, K("._a.mp4")) && !entry(first, K(".dot.mp4")));
 	bfree(hidden);
 
 	/* a new file waits in the gate, then joins */
@@ -775,6 +780,9 @@ static void test_subfolders(void)
 	write_file(folder, "secret" SEP "skipped.mp4", 10, OLD);
 	char *secret = hide(folder, "secret");
 	bfree(secret);
+	/* a folder whose name starts with "." is not entered on any system (P-06) */
+	make_subfolder(folder, ".dotted");
+	write_file(folder, ".dotted" SEP "skipped.mp4", 10, OLD);
 	/* a link back to the folder itself: following it would never end */
 	if (!make_loop(folder))
 		printf("note: no link could be made here; the loop case is not covered\n");

@@ -53,6 +53,9 @@ enum pl_folder_scan {
 };
 
 /* Called for every file that is not hidden, in listing order: a folder's own files, then its subfolders depth first.
+ * Hidden means a name starting with "." on every system (so a Mac's "._name" side files and other dot-files never
+ * show), and besides that the hidden or system attribute on Windows and the Finder's hidden flag on macOS; a hidden
+ * folder is not entered.
  * relative uses '/'; name is the last part. A cloud placeholder (R-DIR-5) is reported with cloud set and is never
  * opened. skipped is called for a subfolder left out below the root, with why. */
 struct pl_folder_listing_sink {

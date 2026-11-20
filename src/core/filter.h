@@ -24,7 +24,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "entry.h"
 
 /* The extension filter of the shared container options (R-DIR-5): which file names a container admits. Names only;
- * hidden, system and cloud-only files are left out by the folder provider from their attributes. */
+ * hidden, system and cloud-only files are left out by the folder provider from their attributes, and so are names
+ * starting with "." (folder-os.h). */
 
 /* Upstream's video and audio lists plus still images (R-DIR-5) */
 #define PL_FILTER_DEFAULT \
