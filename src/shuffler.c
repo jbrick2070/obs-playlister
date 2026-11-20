@@ -32,6 +32,8 @@ history.
 
 #include "shuffler.h"
 
+#include "core/random.h"
+
 /* On auto-reshuffle, avoid selecting the same item before at least
  * NOT_SAME_BEFORE other items have been selected (between the end of the
  * previous shuffle and the start of the new shuffle). */
@@ -68,7 +70,8 @@ static inline void shuffler_determine_one_(struct shuffler *s, size_t avoid_last
 	assert(s->head < s->shuffled_files.num);
 	assert(s->shuffled_files.num - s->head > avoid_last_n);
 	size_t range_len = s->shuffled_files.num - s->head - avoid_last_n;
-	size_t selected = s->head + (rand() % range_len);
+	/* Playlister's own generator, not rand(): seeded once for every thread and even over any length (core/random.h) */
+	size_t selected = s->head + pl_random_below(range_len);
 	da_swap(s->shuffled_files, s->head, selected);
 
 	if (s->head == s->history)

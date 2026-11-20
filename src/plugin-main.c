@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 #include <string.h>
 
+#include "core/random.h"
 #include "core/text.h"
 #include "providers/provider.h"
 
@@ -62,6 +63,8 @@ bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
 	pl_text_set_lookup(locale_text);
+	/* the shuffle's random numbers, seeded once here for every thread that draws (core/random.h) */
+	pl_random_seed();
 	obs_register_source(&media_playlist_source_info);
 #ifdef TEST_SHUFFLER
 	test_shuffler();

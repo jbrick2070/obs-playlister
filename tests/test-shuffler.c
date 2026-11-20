@@ -517,7 +517,9 @@ static void test_random_operations_keep_invariant(void)
 	size_t last_id = 0;
 	shuffler_init(&shuffler);
 	da_init(rows);
+	/* the test's own choices, and the shuffler's draws, are the same on every run */
 	srand(20261024);
+	pl_random_seed_with(20261024);
 
 	for (int step = 0; step < 50000; step++) {
 		int op = rand() % 8;
