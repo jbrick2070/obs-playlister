@@ -3444,6 +3444,8 @@ static void mps_update(void *data, obs_data_t *settings)
 	const enum obs_media_state state_before = media_state(mps);
 	const enum pl_standstill stand = !mps->first_update && mps->current_media ? standstill(mps, state_before)
 										  : PL_STANDSTILL_NONE;
+	/* where the current row was, for the row that takes its place if it is deleted while the source stands still */
+	const size_t index_before = mps->current_media_index;
 
 	bool found = false;
 	if (!mps->first_update && mps->current_media) {
@@ -3555,8 +3557,13 @@ static void mps_update(void *data, obs_data_t *settings)
 	} else if (stand != PL_STANDSTILL_NONE && (!found || item_edited) && get_total_file_count(mps)) {
 		/* The current row was deleted or its path edited while the source stood still (paused, stopped on request,
 		 * or at the end of the list): nothing starts by itself. The child lets go of the old item and the position
-		 * waits on the row that took its place: a row not listed yet as it is, else the first row from there with
-		 * something to play, at its first item that may be loaded. Play or Restart loads it. */
+		 * waits on the row that took its place: the edited row itself, or after a deletion the row now at the
+		 * deleted row's place in the list (the one that followed it; the first row when it was the last). A row
+		 * not listed yet is waited on as it is; otherwise the position is the first row from there with something
+		 * to play, at its first item that may be loaded. Play or Restart loads it. After the end of the list the
+		 * position is the first row, as always there (end_reached_locked). */
+		if (!found && state_before != OBS_MEDIA_STATE_ENDED)
+			set_current_media_index(mps, index_before < mps->files.num ? index_before : 0);
 		if (!(mps->current_media->is_folder && mps->current_media->awaiting)) {
 			size_t playable = skip_empty_folder_rows(mps, mps->current_media_index, false);
 			if (playable < mps->files.num)
