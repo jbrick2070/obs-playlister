@@ -335,6 +335,46 @@ eye:
 | U.3 | A list with a missing file, then a URL that never answers (for example `http://10.255.255.1/x.mp4`), each with a playable file after it; press Refresh after each fails | the missing file reads "could not be played: it did not start"; the URL reads the reason that matches its `[obs-playlister]` log line: "skipped, as it ended before playing" gives "it did not start", "skipped, as it did not start playing within its startup window" gives "it took too long to start" (R-UX-4) | Pending |
 | U.4 | OBS in German and in Japanese (T.1, T.2), U.1 and U.2 again | the new texts are in that language and fit their controls | Pending |
 
+## Second pass (2026-11-20)
+
+REQUIREMENTS section 11c. The labels of Properties changed, so the older tables on this page use names that are
+gone: "Visibility behavior" is **When not in Program**, "A restart plays" is **Restart goes to**, "Current File" is
+**Now playing**, "Select File" and "Play Selected File" are **Play item** and **Play now**, "Hold changes until the
+next Play" is **Freeze the list during playback**, "Apply waiting changes now" is **Apply waiting changes**, "Sort
+by" and "Descending" are **Order**, "Files to play" is **Play**, "File types to play" is **File types**, and
+everything but the Playlist, Status, Loop, Shuffle, Now playing, Next and Play item is behind **Show advanced
+options**. A playlist or web address row counts "items".
+
+`ctest` covers: the Content-Type parser and the character sets (`test-url`, `test-parse-m3u`, `test-fold-key`,
+`test-provider-list`), credentials, the refused redirect and no proxy against the test's own server (`test-fetch`),
+a row of unknown kind (`test-provider-folder`), the empty File types field (`test-filter`, `test-row-kind`) and
+Italian (`check-locale-files`). The three Lua scripts in `tests/obs/` were changed to the new texts and the new
+window but have not been run since: the first run will show whether a text or a wait is off. Nothing in this
+section was run inside OBS.
+
+| # | Check | Expected | Result |
+|---|-------|----------|--------|
+| S.1 | Add a new Playlister source in a scene that is in Program; look at the window | Top to bottom: "Changes here go live at once.", Playlist, Status ("Nothing to play yet. Press + at the right of Playlist, ..."), Refresh, Loop playlist, Shuffle, Now playing, Next, Play item, Play now, Show advanced options, the hotkeys line, "Playlister 0.5.2". Nothing else | Pending |
+| S.2 | Press + at the right of Playlist, Add Files, pick two videos | Status changes at once, without Refresh, to two lines "1: new; press Refresh for its status" and "2: new; ..."; the first video plays; after Refresh: "1: file", "2: file", Now playing "1: <path>", Next "2: <path>" | Pending |
+| S.3 | Tick Show advanced options; untick it | The advanced options appear under the box and go away again; with Freeze the list during playback off there is no Apply waiting changes button, with it on there is | Pending |
+| S.4 | Studio Mode on. Add a Playlister to the Preview scene, add a file, press OK. Open Properties again | Nothing plays in Preview. Status ends with "Waiting: plays when its scene is in Program." Fade the scene to Program: it plays, and after Refresh the line is gone | Pending |
+| S.5 | Order: choose each of the six entries with a folder row of files with different dates | The Play item list (after Refresh) is in that order. Close and open OBS: the choice is kept. In the scene collection JSON `sort_key` and `sort_descending` hold it | Pending |
+| S.6 | Empty the File types field with a folder row | The folder keeps playing its video, audio and image files | Pending |
+| S.7 | A folder that holds only `.txt` files; an empty folder; a folder with files only in a subfolder, Include subfolders off | "no files of the types to play (see File types)"; "no files here yet; files in subfolders need Include subfolders" for the other two | Pending |
+| S.8 | A file row whose file was deleted, with a playable file after it; Refresh | "1: file <name> - could not be played (missing, moved, or not a format OBS can play); skipped" | Pending |
+| S.9 | A folder row; rename the folder on disk; Refresh | "folder not found (deleted, drive removed or share offline); checking again every 10 s; using the list read at <time>". Rename it back: the row recovers within the interval | Pending |
+| S.10 | Add a folder row and a file with an unusual extension (for example `.mts`) while another item plays | The picture does not stutter; both rows read "reading" for an instant at most and then "folder - N files" and "file" | Pending |
+| S.11 | Stop the source. In Properties add a row by Add Path/URL with a local path to a video whose extension is not in File types, as the only row | Nothing starts by itself; Play starts it | Pending |
+| S.12 | With obs-websocket on (Tools > WebSocket Server Settings) and a client such as obs-websocket-js: `CallVendorRequest` with vendorName `obs-playlister`, requestType `get_now_next`, no data | `sources` lists every Playlister with `playing`, `next`, `state`, `status`, `row`, `item`, `items`. Press Next in OBS: one `VendorEvent` `now_next_changed` arrives with the new names. The OBS log has "obs-websocket vendor obs-playlister: request get_now_next, event now_next_changed" at start | Pending |
+| S.13 | Shuffle on, three files, press Refresh | Next reads "chosen when it starts (Shuffle is on)"; the event has `next` empty and `next_decided` false. Press Previous, Refresh: Next names the item that follows | Pending |
+| S.14 | Bind the Next hotkey; switch to a scene without the source (not in Preview either); press it | Nothing moves; the OBS log has "hotkey Next ignored: '<name>' is not shown (...)" | Pending |
+| S.15 | A web address row for a list served as `text/plain; charset=windows-1251` with Cyrillic file names | The names are right in the Play item list | Pending |
+| S.16 | A web address row with a user name and password in it, against a server that asks for Basic authentication, on Windows and on a Mac | The list loads on both | Pending |
+| S.17 | Mac or Linux with libcurl 7.87 or later: point DNS at an address that does not answer, add a web address row, quit OBS within two seconds | OBS quits at once | Pending |
+| S.18 | OBS in Italian (Settings > General > Language, restart) | Every text of the window, the status lines and the hotkey names are Italian; nothing is cut off | Pending |
+| S.19 | OBS in German and in Russian: the whole window, advanced options shown | No label is cut off at 1080p with 150 % scaling | Pending |
+| S.20 | Run `tests/obs/run-harness.ps1` on Windows | Every check passes; `HARNESS DONE checks=` names the same number run and expected | Pending |
+
 ## macOS (0.5.2)
 
 macOS builds as one universal binary (arm64 and x86_64) and runs `ctest` on every push in CI (`macos-26`, Xcode 26;
