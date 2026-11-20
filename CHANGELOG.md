@@ -93,6 +93,8 @@ Italian.
   listed on the folder check instead of watched.
 - A hotkey pressed in the moment a source is being removed can no longer
   reach the source after it was freed.
+- A web playlist whose entries are very long addresses with thousands of
+  `/` and `../` parts no longer keeps a background thread busy for minutes.
 - A playlist is limited to 100,000 entries, and so is a folder. A list of
   millions of lines, from a web address or a local file, could ask for
   gigabytes of memory and take OBS down. The row's status says how many

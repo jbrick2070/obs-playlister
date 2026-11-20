@@ -596,8 +596,6 @@ static void refresh(struct pl_list_provider *p)
 	}
 }
 
-static int64_t interval_ms(struct pl_list_provider *p);
-
 /* Whether the row is read again on its own, and how often (R-REM-4, D-12 b) */
 static int64_t interval_ms(struct pl_list_provider *p)
 {

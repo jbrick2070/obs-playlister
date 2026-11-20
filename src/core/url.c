@@ -158,40 +158,49 @@ static void split_uri(struct uri_parts *parts, const char *text)
 	}
 }
 
-/* RFC 3986 section 5.2.4 */
+/* The output without its last segment and the "/" before it */
+static void drop_last_segment(struct dstr *out)
+{
+	size_t at = out->len;
+	while (at > 0 && out->array[at - 1] != '/')
+		at--;
+	dstr_resize(out, at > 0 ? at - 1 : 0);
+}
+
+/* RFC 3986 section 5.2.4. The input is read with a cursor and the output searched from its end, so a path costs its
+ * length: taking each segment off the front of a buffer cost the length squared, which a playlist of long paths
+ * with thousands of segments each could turn into minutes of a worker's time. */
 static void remove_dot_segments(struct dstr *out, const char *path, size_t length)
 {
 	struct dstr input = {0};
 	dstr_ncopy(&input, path, length);
 	dstr_init(out);
 
-	while (input.len) {
-		if (strncmp(input.array, "../", 3) == 0) {
-			dstr_remove(&input, 0, 3);
-		} else if (strncmp(input.array, "./", 2) == 0) {
-			dstr_remove(&input, 0, 2);
-		} else if (strncmp(input.array, "/./", 3) == 0) {
-			dstr_remove(&input, 0, 2);
-		} else if (strcmp(input.array, "/.") == 0) {
-			dstr_copy(&input, "/");
-		} else if (strncmp(input.array, "/../", 4) == 0 || strcmp(input.array, "/..") == 0) {
-			if (input.len == 3)
-				dstr_copy(&input, "/");
-			else
-				dstr_remove(&input, 0, 3);
-			char *last = out->array ? strrchr(out->array, '/') : NULL;
-			if (last)
-				dstr_resize(out, (size_t)(last - out->array));
-			else
-				dstr_resize(out, 0);
-		} else if (strcmp(input.array, ".") == 0 || strcmp(input.array, "..") == 0) {
+	const char *in = input.array ? input.array : "";
+	while (*in) {
+		if (strncmp(in, "../", 3) == 0) {
+			in += 3;
+		} else if (strncmp(in, "./", 2) == 0) {
+			in += 2;
+		} else if (strncmp(in, "/./", 3) == 0) {
+			in += 2;
+		} else if (strcmp(in, "/.") == 0) {
+			dstr_cat_ch(out, '/');
+			break;
+		} else if (strncmp(in, "/../", 4) == 0 || strcmp(in, "/..") == 0) {
+			bool last = in[3] == '\0';
+			drop_last_segment(out);
+			if (last) {
+				dstr_cat_ch(out, '/');
+				break;
+			}
+			in += 3;
+		} else if (strcmp(in, ".") == 0 || strcmp(in, "..") == 0) {
 			break;
 		} else {
-			size_t segment = strcspn(input.array + 1, "/") + 1;
-			if (input.array[0] != '/')
-				segment = strcspn(input.array, "/");
-			dstr_ncat(out, input.array, segment);
-			dstr_remove(&input, 0, segment);
+			size_t segment = in[0] == '/' ? strcspn(in + 1, "/") + 1 : strcspn(in, "/");
+			dstr_ncat(out, in, segment);
+			in += segment;
 		}
 	}
 	dstr_free(&input);

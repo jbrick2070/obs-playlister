@@ -22,7 +22,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <util/bmem.h>
+#include <util/dstr.h>
+#include <util/platform.h>
 
 #include "test-common.h"
 
@@ -153,6 +156,37 @@ static void test_resolve(void)
 	expect_text("resolve", "network path",
 		    pl_url_resolve("https://example.com/x/list.m3u", "//cdn.example.com/z.mp3"),
 		    "https://cdn.example.com/z.mp3");
+}
+
+/* P-02: a reference of thousands of segments is resolved in the time its length takes. 16,000 "a/" then 15,999 "../"
+ * leave one "a/"; taking segments off the front of a buffer made this cost seconds. */
+static void test_resolve_long(void)
+{
+	struct dstr reference = {0};
+	for (int i = 0; i < 16000; i++)
+		dstr_cat(&reference, "a/");
+	for (int i = 0; i < 15999; i++)
+		dstr_cat(&reference, "../");
+	dstr_cat(&reference, "x.mp3");
+	uint64_t start = os_gettime_ns();
+	for (int i = 0; i < 20; i++) {
+		char *resolved = pl_url_resolve("http://example.com/l/list.m3u", reference.array);
+		assert(strcmp(resolved, "http://example.com/l/a/x.mp3") == 0);
+		bfree(resolved);
+	}
+	double seconds = (double)(os_gettime_ns() - start) / 1e9;
+	if (seconds >= 2.0) {
+		fprintf(stderr, "20 long references took %.2f s\n", seconds);
+		assert(false);
+	}
+	dstr_free(&reference);
+
+	/* what the cursor must not change: the ends of the RFC's cases */
+	resolve("g/..", "http://a/b/c/");
+	resolve("g/.", "http://a/b/c/g/");
+	resolve("../../../..", "http://a/");
+	resolve("/..", "http://a/");
+	resolve("/.", "http://a/");
 }
 
 static void decode(const char *text, const char *expected)
@@ -299,6 +333,7 @@ int main(void)
 	test_extension();
 	test_redacted();
 	test_resolve();
+	test_resolve_long();
 	test_decode();
 	test_content_type();
 	test_file_url();
