@@ -74,6 +74,8 @@ HARNESS_LOG_COPY=/tmp/harness-log.txt TIMEOUT_SECONDS=600 tests/obs/run-harness.
 
 The CI job `ubuntu-obs-harness` runs it under Xvfb on every push; it passed there first on run 41258893885 (check V25). Expected keys are folded per platform (`K()` in the script).
 
+Since the 2026-11-20 review the Linux runner fails a run not only on a failed check but also when OBS has to be ended after the 30 s it gets to exit (a hang on exit), when OBS does not report `Number of memory leaks: 0`, and when the number of passed checks is not the number the script expects (`EXPECTED_CHECKS` in `playlister-harness.lua`, 124, logged with `HARNESS DONE`; change it when checks are added or removed). The verdict is in `tests/obs/harness-verdict.sh`, and `tests/obs/test-harness-verdict.sh` (a ctest on Linux and macOS) proves each of those failures is caught, from made-up logs. `run-harness.ps1` is unchanged: it still reports a leak without failing, except for the Phase 3a acceptance.
+
 | Date | OBS | Build | Result |
 |------|-----|-------|--------|
 | 2026-10-24 | 33.0.0 portable | Phase 2 step 1.2 | 23 passed, 0 failed, no memory leaks |

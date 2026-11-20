@@ -39,12 +39,18 @@ local D = {}
 local mark = {}
 local steps = {}
 local index, step_start = 1, 0
+-- How many checks a whole run makes. The runner compares it with the passes it finds in the log (run-harness.sh), so
+-- a step that stops making its checks fails the run instead of passing with fewer. When checks are added or removed,
+-- this number changes with them: the DONE line says how many ran.
+local EXPECTED_CHECKS = 124
+local checks_run = 0
 
 local function log(s)
 	obs.script_log(obs.LOG_INFO, "HARNESS " .. s)
 end
 
 local function check(name, ok, detail)
+	checks_run = checks_run + 1
 	log((ok and "PASS " or "FAIL ") .. name .. " (" .. (detail or "") .. ")")
 end
 
@@ -1408,7 +1414,7 @@ end)
 step("removed", 1500, 1500, nil, function()
 	os.remove(CORRUPT_FILE)
 	os.remove(CORRUPT_STILL)
-	log("DONE")
+	log(string.format("DONE checks=%d expected=%d", checks_run, EXPECTED_CHECKS))
 end)
 
 local function tick()

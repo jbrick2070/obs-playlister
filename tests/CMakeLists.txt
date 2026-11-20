@@ -179,6 +179,15 @@ foreach(_test IN ITEMS test-provider-folder test-provider-list)
   endif()
 endforeach()
 
+# The verdict of the OBS harness (tests/obs/run-harness.sh) against made-up logs: a run fails when OBS had to be ended
+# on exit, when a leak is reported, when a check fails and when fewer checks ran than expected. Needs only a bash.
+if(UNIX)
+  find_program(_bash bash)
+  if(_bash)
+    add_test(NAME test-harness-verdict COMMAND "${_bash}" "${CMAKE_CURRENT_SOURCE_DIR}/obs/test-harness-verdict.sh")
+  endif()
+endif()
+
 # Every locale key used in src/ is in en-US.ini (R-TST-1); the second test proves the check fails on a missing key
 add_test(
   NAME check-locale-keys

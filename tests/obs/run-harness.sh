@@ -5,7 +5,8 @@
 #
 # The Linux twin of run-harness.ps1 (PLAN Linux port step 6): runs playlister-harness.lua inside an installed OBS 33
 # with the plugin installed, and prints the results with the plugin's log lines. Exit code 0 only when every check
-# passed.
+# passed, as many checks ran as the script expects, OBS exited by itself when asked to, and it reported no memory
+# leaks (harness-verdict.sh; test-harness-verdict.sh proves each of those failures is caught).
 #
 # Everything lives in one temporary folder: OBS's whole configuration (XDG_CONFIG_HOME, so nothing of the user's is
 # read or written), three test videos made with ffmpeg (different durations, the second over 35 s, as the harness
@@ -16,11 +17,14 @@
 #   tests/obs/run-harness.sh                 # after installing the plugin (sudo cmake --install build)
 #   TIMEOUT_SECONDS=600 tests/obs/run-harness.sh
 #   HARNESS_LOG_COPY=/path/log.txt tests/obs/run-harness.sh   # keeps OBS's log (the run's folder is removed)
+#   EXPECTED_CHECKS=124 tests/obs/run-harness.sh              # instead of the number the script logs with DONE
 # Needs: obs (33 or later, with Lua scripting), ffmpeg, and Xvfb when there is no DISPLAY.
 
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=tests/obs/harness-verdict.sh
+source "${repo}/tests/obs/harness-verdict.sh"
 script="${1:-playlister-harness.lua}"
 timeout_seconds="${TIMEOUT_SECONDS:-300}"
 obs_bin="${OBS_BIN:-obs}"
@@ -161,7 +165,9 @@ for ((i = 0; i < timeout_seconds; i++)); do
 	fi
 done
 
-# a clean exit writes "Number of memory leaks"; OBS quits on SIGINT
+# a clean exit writes "Number of memory leaks"; OBS quits on SIGINT. An OBS that must be ended instead hangs on exit,
+# which fails the run (harness-verdict.sh)
+killed=false
 if kill -0 "${obs_pid}" 2> /dev/null; then
 	kill -INT "${obs_pid}" 2> /dev/null || true
 	for ((i = 0; i < 30; i++)); do
@@ -171,6 +177,7 @@ if kill -0 "${obs_pid}" 2> /dev/null; then
 	if kill -0 "${obs_pid}" 2> /dev/null; then
 		echo "OBS did not exit within 30 s; ending it"
 		kill -KILL "${obs_pid}" 2> /dev/null || true
+		killed=true
 	fi
 fi
 wait "${obs_pid}" 2> /dev/null || true
@@ -189,47 +196,4 @@ if [[ -n "${HARNESS_LOG_COPY:-}" ]]; then
 fi
 grep -E "HARNESS|\[obs-playlister\]|memory leaks|[Cc]rash" "${log}" | sed 's/^/  /' || true
 
-passes="$(grep -c "HARNESS PASS" "${log}" || true)"
-fails="$(grep -c "HARNESS FAIL" "${log}" || true)"
-failed=false
-[[ "${done}" == true ]] || failed=true
-[[ "${fails}" -eq 0 && "${passes}" -gt 0 ]] || failed=true
-# the empty, absent and linked folders are never loaded themselves (a file inside the link is), so such a load means
-# a folder row was taken for a file
-folder_pattern="\[obs-playlister\] playing .*playlister-harness-(empty|gone)-"
-folder_pattern+="|\[obs-playlister\] playing .*playlister-harness-linked-[0-9]+\.mp4$"
-folder_loads="$(grep -cE "${folder_pattern}" "${log}" || true)"
-if [[ "${folder_loads}" -gt 0 ]]; then
-	echo "FAIL a folder row was loaded as a file (${folder_loads} loads)"
-	failed=true
-fi
-if [[ "${script}" == playlister-harness.lua ]]; then
-	# R-BEH-5: the corrupt file is loaded once by each failing source and once more by Play, the corrupt still once
-	corrupt_loads="$(grep -c "\[obs-playlister\] playing .*playlister-harness-corrupt\.mp4" "${log}" || true)"
-	still_loads="$(grep -c "\[obs-playlister\] playing .*playlister-harness-corrupt\.jpg" "${log}" || true)"
-	if [[ "${corrupt_loads}" -ne 3 ]]; then
-		echo "FAIL the corrupt file was loaded ${corrupt_loads} times, not 3"
-		failed=true
-	fi
-	if [[ "${still_loads}" -ne 1 ]]; then
-		echo "FAIL the corrupt still was loaded ${still_loads} times, not once"
-		failed=true
-	fi
-	# R-UP-5: select_index with a row past the end and with -1 is ignored, and each says so in the log
-	ignored_selects="$(grep -cE "select_index: .*out of range.*ignored" "${log}" || true)"
-	if [[ "${ignored_selects}" -lt 2 ]]; then
-		echo "FAIL select_index out of range was logged ${ignored_selects} times, not at least twice"
-		failed=true
-	fi
-fi
-# as run-harness.ps1: the leak count is reported; only the Phase 3a acceptance fails on it
-if ! grep -qE "Number of memory leaks: 0$" "${log}"; then
-	if [[ "${script}" == phase3a-acceptance.lua ]]; then
-		echo "FAIL OBS did not report 0 memory leaks"
-		failed=true
-	else
-		echo "note: OBS did not report 0 memory leaks"
-	fi
-fi
-echo "summary: ${passes} passed, ${fails} failed"
-[[ "${failed}" == false ]]
+harness_verdict "${log}" "${script}" "${done}" "${killed}"
