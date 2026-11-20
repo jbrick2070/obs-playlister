@@ -655,3 +655,60 @@ void pl_url_split_credentials(const char *url, char **plain, char **user, char *
 	dstr_cat(&without, at + 1);
 	*plain = without.array;
 }
+
+/* The length of an address up to the end of its host and port, or 0 without "://" */
+static size_t origin_length(const char *url)
+{
+	const char *host = strstr(url, "://");
+	return host ? (size_t)(host + 3 - url) + strcspn(host + 3, "/?#") : 0;
+}
+
+bool pl_url_same_origin(const char *a, const char *b)
+{
+	char *plain_a, *plain_b, *user, *password;
+	pl_url_split_credentials(a, &plain_a, &user, &password);
+	bfree(user);
+	bfree(password);
+	pl_url_split_credentials(b, &plain_b, &user, &password);
+	bfree(user);
+	bfree(password);
+	size_t length_a = origin_length(plain_a);
+	size_t length_b = origin_length(plain_b);
+	bool same = length_a && length_a == length_b && astrcmpi_n(plain_a, plain_b, length_a) == 0;
+	bfree(plain_a);
+	bfree(plain_b);
+	return same;
+}
+
+char *pl_url_carry_credentials(const char *given, const char *final)
+{
+	char *plain, *user, *password;
+	pl_url_split_credentials(final, &plain, &user, &password);
+	bool has_own = user != NULL;
+	bfree(plain);
+	bfree(user);
+	bfree(password);
+	pl_url_split_credentials(given, &plain, &user, &password);
+	bool to_carry = user != NULL;
+	bfree(plain);
+	bfree(user);
+	bfree(password);
+	if (has_own || !to_carry || !pl_url_same_origin(given, final))
+		return bstrdup(final);
+
+	/* the user information as the given address writes it, "@" included: from after "://" to its last "@" before
+	 * the path */
+	const char *authority = strstr(given, "://") + 3;
+	size_t authority_length = strcspn(authority, "/?#");
+	size_t info_length = 0;
+	for (size_t i = 0; i < authority_length; i++) {
+		if (authority[i] == '@')
+			info_length = i + 1;
+	}
+	const char *final_authority = strstr(final, "://") + 3;
+	struct dstr carried = {0};
+	dstr_ncopy(&carried, final, (size_t)(final_authority - final));
+	dstr_ncat(&carried, authority, info_length);
+	dstr_cat(&carried, final_authority);
+	return carried.array;
+}

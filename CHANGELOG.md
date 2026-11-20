@@ -57,6 +57,8 @@ Italian.
 - Web lists: both the Windows and the Mac and Linux fetchers now refuse a redirect from https to http and say so,
   and send a user name and password in the address to that server, and after a redirect only to the same scheme,
   host and port. Before, Windows dropped the user name and password, and Mac and Linux followed https to http.
+  Entries such a list names by a relative address get the user name and password too while the list itself
+  came from the server they were given for, and not after a redirect to another.
 - Web lists behind a proxy: Windows now also uses the proxy the environment names (`http_proxy`, `https_proxy`,
   `all_proxy`, with `no_proxy`), as Mac and Linux did and do; with none named it uses the system's proxy settings,
   as before. OBS's media source, which plays the items, reads `http_proxy` and `no_proxy`.

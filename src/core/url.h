@@ -81,3 +81,15 @@ void pl_content_type_split(const char *header, char **type, char **charset);
  * "://" and the last "@" before the path; the password what follows its first ":". *user and *password are NULL when
  * the address has no user name (and *password is "" when it has a user name alone); *plain is always set. */
 void pl_url_split_credentials(const char *url, char **plain, char **user, char **password);
+
+/* Whether two addresses have the same scheme, host and port, as they are written (a port left out and the same port
+ * written out count as different, which errs on the side of "no"). User names, passwords, paths and queries do not
+ * count. */
+bool pl_url_same_origin(const char *a, const char *b);
+
+/* The address a fetch ended at, with the user name and password of the address it was given put back in when the two
+ * have the same origin (pl_url_same_origin) and the final one carries none of its own; otherwise a copy of the final
+ * one. A fetcher follows redirects with the credentials held apart from the address, so the address it reports has
+ * none; the entries of a list resolve against that address and are played from the same server, which asks for them
+ * again. To another origin they are never carried. */
+char *pl_url_carry_credentials(const char *given, const char *final);

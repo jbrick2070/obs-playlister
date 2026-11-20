@@ -311,12 +311,14 @@ static void take_headers(struct pl_fetch *fetch)
 	long redirects = 0;
 	curl_easy_getinfo(fetch->easy, CURLINFO_REDIRECT_COUNT, &redirects);
 	fetch->info.redirects = (uint32_t)redirects;
-	/* without a redirect the final address is the one given, user name and password included, which libcurl was
-	 * given apart (pl_fetch_open): the entries of a list on a server that asks for them resolve against it */
+	/* libcurl was given the user name and password apart from the address (pl_fetch_open), so the address it ended
+	 * at has none. They are put back while it is on the scheme, host and port they were given for, with or without
+	 * a redirect: the entries of a list resolve against this address and are played from the same server, which
+	 * asks for them again. Never on another origin (fetch.h). */
 	char *final_url = NULL;
 	curl_easy_getinfo(fetch->easy, CURLINFO_EFFECTIVE_URL, &final_url);
-	if (!redirects && fetch->url)
-		fetch->info.final_url = bstrdup(fetch->url);
+	if (final_url && fetch->url)
+		fetch->info.final_url = pl_url_carry_credentials(fetch->url, final_url);
 	else
 		fetch->info.final_url = final_url ? bstrdup(final_url) : NULL;
 }

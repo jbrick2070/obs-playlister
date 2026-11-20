@@ -301,43 +301,126 @@ static char *environment(const wchar_t *name)
 	return text;
 }
 
-/* Whether no_proxy names the host and port: entries separated by commas or spaces, "*" for every host, and an entry
- * matches the host itself and every host below it ("example.com", ".example.com" and "*.example.com" all match
- * "lists.example.com"), as FFmpeg and libcurl read it. An entry with a port ("example.com:8080") matches that port
- * only. An address range (10.0.0.0/8) matches nothing here. */
+/* One entry of no_proxy, read: a host name, an IPv4 address or an IPv6 address (bare, "fd00::5", or in brackets,
+ * "[fd00::5]"), with or without a port after it (after the brackets for IPv6: more than one colon without brackets
+ * is an address, not a port). A leading "*" or "." is dropped: "example.com", ".example.com" and "*.example.com" all
+ * name the host and every host below it. */
+struct no_proxy_entry {
+	bool all; /* a lone "*": every host */
+	const char *host;
+	size_t host_length;
+	bool has_port;
+	unsigned port;
+};
+
+/* False for what cannot be read as such: nothing, an address range (10.0.0.0/8), a port that is no number up to
+ * 65535 */
+static bool read_no_proxy_entry(const char *entry, size_t length, struct no_proxy_entry *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (length == 1 && entry[0] == '*') {
+		out->all = true;
+		return true;
+	}
+	if (length && entry[0] == '*') {
+		entry++;
+		length--;
+	}
+	if (length && entry[0] == '.') {
+		entry++;
+		length--;
+	}
+	if (!length || memchr(entry, '/', length))
+		return false;
+
+	const char *port = NULL;
+	size_t port_length = 0;
+	if (entry[0] == '[') {
+		const char *close = memchr(entry, ']', length);
+		if (!close)
+			return false;
+		out->host = entry + 1;
+		out->host_length = (size_t)(close - entry) - 1;
+		size_t rest = length - (size_t)(close + 1 - entry);
+		if (rest && close[1] != ':')
+			return false;
+		if (rest) {
+			port = close + 2;
+			port_length = rest - 1;
+			out->has_port = true;
+		}
+	} else {
+		size_t colons = 0;
+		const char *colon = NULL;
+		for (size_t i = 0; i < length; i++) {
+			if (entry[i] == ':') {
+				colons++;
+				colon = entry + i;
+			}
+		}
+		out->host = entry;
+		out->host_length = colons == 1 ? (size_t)(colon - entry) : length;
+		if (colons == 1) {
+			port = colon + 1;
+			port_length = length - out->host_length - 1;
+			out->has_port = true;
+		}
+	}
+	if (out->has_port) {
+		/* at most five digits, so the number cannot run over */
+		if (!port_length || port_length > 5)
+			return false;
+		for (size_t i = 0; i < port_length; i++) {
+			if (port[i] < '0' || port[i] > '9')
+				return false;
+			out->port = out->port * 10 + (unsigned)(port[i] - '0');
+		}
+		if (out->port > 65535)
+			return false;
+	}
+	return out->host_length > 0;
+}
+
+/* Whether no_proxy names the host and port, as FFmpeg and libcurl read it: entries separated by commas or spaces,
+ * "*" for every host, an entry for the host itself and every host below it, and an entry with a port for that port
+ * only. host may be an IPv6 address in the brackets an address writes it in. */
 static bool host_in_no_proxy(const char *no_proxy, const char *host, unsigned port)
 {
 	size_t host_length = strlen(host);
+	if (host_length >= 2 && host[0] == '[' && host[host_length - 1] == ']') {
+		host++;
+		host_length -= 2;
+	}
 	const char *c = no_proxy;
 	while (*c) {
 		c += strspn(c, ", \t");
 		size_t length = strcspn(c, ", \t");
-		const char *entry = c;
+		struct no_proxy_entry entry;
+		bool read = read_no_proxy_entry(c, length, &entry);
 		c += length;
-		if (length == 1 && entry[0] == '*')
-			return true;
-		if (length && entry[0] == '*') {
-			entry++;
-			length--;
-		}
-		if (length && entry[0] == '.') {
-			entry++;
-			length--;
-		}
-		/* a port at the end: digits after the last colon */
-		size_t digits = 0;
-		while (digits < length && entry[length - 1 - digits] >= '0' && entry[length - 1 - digits] <= '9')
-			digits++;
-		if (digits && digits < length && entry[length - 1 - digits] == ':') {
-			if ((unsigned)atoi(entry + length - digits) != port)
-				continue;
-			length -= digits + 1;
-		}
-		if (!length || length > host_length)
+		if (!read)
 			continue;
-		const char *tail = host + host_length - length;
-		if (astrcmpi_n(tail, entry, length) == 0 && (tail == host || tail[-1] == '.'))
+		if (entry.all)
 			return true;
+		if ((entry.has_port && entry.port != port) || entry.host_length > host_length)
+			continue;
+		const char *tail = host + host_length - entry.host_length;
+		if (astrcmpi_n(tail, entry.host, entry.host_length) == 0 && (tail == host || tail[-1] == '.'))
+			return true;
+	}
+	return false;
+}
+
+/* Whether no_proxy has a lone "*": no host is asked through a proxy */
+static bool no_proxy_names_all(const char *no_proxy)
+{
+	const char *c = no_proxy ? no_proxy : "";
+	while (*c) {
+		c += strspn(c, ", \t");
+		size_t length = strcspn(c, ", \t");
+		if (length == 1 && c[0] == '*')
+			return true;
+		c += length;
 	}
 	return false;
 }
@@ -360,12 +443,13 @@ static char *plain_proxy(const wchar_t *name)
 	return plain;
 }
 
-/* no_proxy as WinHTTP's bypass list: entries separated by ";", each host as itself and as "*.host" (WinHTTP matches
- * a name exactly unless it has a wildcard). Its entries are hosts; nothing documents one with a port. So an entry
- * with a port is weighed here, against the port of the address the fetch was opened with: it joins the list,
- * without its port, when that is the port, and is left out otherwise. An address range is left out: WinHTTP has no
- * such entry. (An address on this computer, 127.0.0.1 or localhost, WinHTTP asks directly whatever the list says.)
- * NULL when there is nothing to bypass. bmem. */
+/* no_proxy as WinHTTP's bypass list: entries separated by ";", each host name as itself and as "*.host" (WinHTTP
+ * matches a name exactly unless it has a wildcard), an IPv6 address in the brackets an address writes it in. Its
+ * entries are hosts; nothing documents one with a port. So an entry with a port is weighed here, against the port of
+ * the address the fetch was opened with: it joins the list, without its port, when that is the port, and is left
+ * out otherwise. An address range is left out: WinHTTP has no such entry. A lone "*" never comes here (proxy_choice
+ * asks no proxy at all then). (An address on this computer, 127.0.0.1 or localhost, WinHTTP asks directly whatever
+ * the list says.) NULL when there is nothing to bypass. bmem. */
 static wchar_t *bypass_list(const char *no_proxy, unsigned port)
 {
 	struct dstr list = {0};
@@ -373,37 +457,22 @@ static wchar_t *bypass_list(const char *no_proxy, unsigned port)
 	while (*c) {
 		c += strspn(c, ", \t");
 		size_t length = strcspn(c, ", \t");
-		const char *entry = c;
+		struct no_proxy_entry entry;
+		bool read = read_no_proxy_entry(c, length, &entry);
 		c += length;
-		if (length && entry[0] == '*') {
-			entry++;
-			length--;
-			if (!length) {
-				dstr_cat(&list, list.len ? ";*" : "*");
-				continue;
-			}
-		}
-		if (length && entry[0] == '.') {
-			entry++;
-			length--;
-		}
-		if (!length || memchr(entry, '/', length))
+		if (!read || entry.all || (entry.has_port && entry.port != port))
 			continue;
-		size_t digits = 0;
-		while (digits < length && entry[length - 1 - digits] >= '0' && entry[length - 1 - digits] <= '9')
-			digits++;
-		if (digits && digits < length && entry[length - 1 - digits] == ':') {
-			if ((unsigned)atoi(entry + length - digits) != port)
-				continue;
-			length -= digits + 1;
-			if (!length)
-				continue;
-		}
 		if (list.len)
 			dstr_cat(&list, ";");
-		dstr_ncat(&list, entry, length);
-		dstr_cat(&list, ";*.");
-		dstr_ncat(&list, entry, length);
+		if (memchr(entry.host, ':', entry.host_length)) {
+			dstr_cat(&list, "[");
+			dstr_ncat(&list, entry.host, entry.host_length);
+			dstr_cat(&list, "]");
+		} else {
+			dstr_ncat(&list, entry.host, entry.host_length);
+			dstr_cat(&list, ";*.");
+			dstr_ncat(&list, entry.host, entry.host_length);
+		}
 	}
 	wchar_t *wide = list.len ? to_wide(list.array) : NULL;
 	dstr_free(&list);
@@ -427,7 +496,11 @@ static DWORD proxy_choice(const wchar_t *wide_host, unsigned port, wchar_t **pro
 	DWORD access = WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY;
 	const char *for_http = http ? http : all;
 	const char *for_https = https ? https : all;
-	if (for_http || for_https) {
+	if (no_proxy_names_all(no_proxy)) {
+		/* a lone "*": no proxy for any address, the environment's or the system's, said in WinHTTP's own way
+		 * rather than as a bypass entry */
+		access = WINHTTP_ACCESS_TYPE_NO_PROXY;
+	} else if (for_http || for_https) {
 		struct dstr list = {0};
 		if (for_http)
 			dstr_printf(&list, "http=%s", for_http);
@@ -451,24 +524,15 @@ static DWORD proxy_choice(const wchar_t *wide_host, unsigned port, wchar_t **pro
 	return access;
 }
 
-/* Whether two addresses have the same scheme, host and port, as they are written (a port left out and the same
- * port written out count as different, which errs on the side of not sending). User names, passwords, paths and
- * queries do not count. */
-static bool same_origin(const char *a, const char *b)
+/* fetch.h: the address the fetch ended at carries the given address's user name and password while it is on the
+ * origin they were given for, as with libcurl (pl_url_carry_credentials): a list's entries resolve against it */
+static void carry_credentials(struct pl_fetch *fetch, const char *url)
 {
-	char *plain_a = pl_url_redacted(a);
-	char *plain_b = pl_url_redacted(b);
-	const char *host_a = strstr(plain_a, "://");
-	const char *host_b = strstr(plain_b, "://");
-	bool same = false;
-	if (host_a && host_b) {
-		size_t length_a = (size_t)(host_a + 3 - plain_a) + strcspn(host_a + 3, "/?#");
-		size_t length_b = (size_t)(host_b + 3 - plain_b) + strcspn(host_b + 3, "/?#");
-		same = length_a == length_b && astrcmpi_n(plain_a, plain_b, length_a) == 0;
-	}
-	bfree(plain_a);
-	bfree(plain_b);
-	return same;
+	if (!fetch->info.final_url)
+		return;
+	char *carried = pl_url_carry_credentials(url, fetch->info.final_url);
+	bfree(fetch->info.final_url);
+	fetch->info.final_url = carried;
 }
 
 /* Sends the request and waits for the response's headers */
@@ -603,13 +667,14 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 	if (result != PL_FETCH_OK)
 		goto done;
 	read_headers(fetch);
+	carry_credentials(fetch, url);
 
 	/* fetch.h: the user name and password also count after a redirect that stays with the origin they were given
 	 * for. WinHTTP sends them with the first request and drops them at every redirect, so when such a redirect
 	 * ends at a 401, the request, which now stands at the redirect's address, is sent once more with them. After
 	 * a redirect to another origin they are never sent. */
 	if (user && fetch->info.status == 401 && fetch->info.redirects > 0 && fetch->info.final_url &&
-	    same_origin(url, fetch->info.final_url)) {
+	    pl_url_same_origin(url, fetch->info.final_url)) {
 		if (!WinHttpSetCredentials(fetch->request, WINHTTP_AUTH_TARGET_SERVER, WINHTTP_AUTH_SCHEME_BASIC, user,
 					   password ? password : L"", NULL)) {
 			result = failure(fetch, GetLastError(), false);
@@ -624,6 +689,7 @@ static enum pl_fetch_result start(struct pl_fetch *fetch, const char *url, const
 		if (result != PL_FETCH_OK)
 			goto done;
 		read_headers(fetch);
+		carry_credentials(fetch, url);
 		/* a further redirect of the second request is not followed with them either: only its own count shows */
 		if (fetch->info.redirects < redirects_before)
 			fetch->info.redirects = redirects_before;

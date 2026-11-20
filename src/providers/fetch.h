@@ -99,8 +99,10 @@ struct pl_fetch_info {
 	char *charset;      /* the Content-Type's charset parameter, lower-cased; NULL when absent (R-REM-1) */
 	bool has_length;
 	uint64_t content_length;
-	bool encoded;    /* a Content-Encoding header came with the response */
-	char *final_url; /* the URL after redirects (the base for relative entries); NULL when no response came */
+	bool encoded; /* a Content-Encoding header came with the response */
+	/* the URL after redirects (the base for relative entries); NULL when no response came. It has the given
+	 * address's user name and password while it is on the same scheme, host and port, and never otherwise. */
+	char *final_url;
 	uint32_t redirects;
 	uint32_t error; /* the PL_FETCH_LIBRARY or operating-system error code behind a failure; 0 when none */
 	enum pl_fetch_failure failure; /* that code sorted; OTHER when none */

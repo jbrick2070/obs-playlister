@@ -548,6 +548,41 @@ static void test_credentials(void)
 	}
 }
 
+/* fetch.h: the address a fetch ended at has the user name and password back while it is on the origin they were
+ * given for, so the entries of a list there are asked for with them too; on another origin it has none */
+static void test_final_url_credentials(void)
+{
+	struct pl_fetch_options options;
+	options_for_test(&options);
+	char address[256];
+	char expected[256];
+	enum pl_fetch_result result;
+	const struct {
+		const char *route;
+		bool carried;
+		uint16_t *final_port;
+		const char *final_host;
+	} cases[] = {
+		{"needed", true, &port, "127.0.0.1"},     {"relative", true, &port, "127.0.0.1"},
+		{"same", true, &port, "127.0.0.1"},       {"port", false, &second_port, "127.0.0.1"},
+		{"elsewhere", false, &port, "localhost"},
+	};
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		snprintf(address, sizeof(address), "http://us%%40er:p%%3Ass@127.0.0.1:%u/auth-%s", port,
+			 cases[i].route);
+		snprintf(expected, sizeof(expected), "http://%s%s:%u/auth-needed",
+			 cases[i].carried ? "us%40er:p%3Ass@" : "", cases[i].final_host, *cases[i].final_port);
+		struct pl_fetch *fetch = pl_fetch_open(address, &options, &result);
+		const char *final_url = pl_fetch_get_info(fetch)->final_url;
+		if (!final_url || strcmp(final_url, expected) != 0) {
+			fprintf(stderr, "final address, case \"%s\": \"%s\", expected \"%s\"\n", cases[i].route,
+				final_url ? final_url : "(none)", expected);
+			assert(false);
+		}
+		close_and_check(fetch);
+	}
+}
+
 static void set_environment(const char *name, const char *value)
 {
 #ifdef _WIN32
@@ -619,6 +654,20 @@ static void test_proxy(void)
 	set_environment("no_proxy", "playlister.invalid");
 	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
 	assert(result == PL_FETCH_NETWORK_ERROR && !body);
+	/* a lone "*" names every host; a port that is no port names none, and does not run a number over */
+	set_environment("no_proxy", "example.com, *");
+	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	assert(result == PL_FETCH_NETWORK_ERROR && !body);
+	set_environment("no_proxy", "lists.playlister.invalid:99999999999999999999, lists.playlister.invalid:65536");
+	body = body_of("http://lists.playlister.invalid/list.m3u", &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "proxied") == 0);
+	bfree(body);
+	/* an IPv6 address in no_proxy, bare or in brackets, is an address and not a host with a port: with another
+	 * address or another port named, this one is asked through the proxy */
+	set_environment("no_proxy", "fd00::6, [fd00::5]:8081, fd00::5:8080");
+	body = body_of("http://[fd00::5]:8080/list.m3u", &result);
+	assert(result == PL_FETCH_OK && strcmp(body, "proxied") == 0);
+	bfree(body);
 	/* only https has a proxy: an http address is asked directly; all_proxy serves the scheme that has none */
 	set_environment("http_proxy", NULL);
 	set_environment("no_proxy", NULL);
@@ -831,6 +880,7 @@ int main(void)
 	test_ok();
 	test_redirects();
 	test_credentials();
+	test_final_url_credentials();
 	test_proxy();
 	test_status();
 	test_sizes();

@@ -220,8 +220,8 @@ for http addresses, `https_proxy` for https, `all_proxy` for either that has
 none of its own, and `no_proxy` for hosts to reach directly), for each address
 of a redirect chain by itself. With none named, Windows uses the system's
 proxy settings (but reaches a host named in `no_proxy` directly) and macOS and
-Linux use none. On Windows `no_proxy` takes host names, with or without a
-port (a port is compared with the list address's own, not with one a redirect
+Linux use none. On Windows `no_proxy` takes host names and addresses (IPv6 bare or in
+brackets), with or without a port, and `*` for every host (a port is compared with the list address's own, not with one a redirect
 leads to); address ranges such as `10.0.0.0/8` are not supported there. The items of a list are
 played by OBS's own media source (FFmpeg), which looks at `http_proxy` and
 `no_proxy` only, so set those for the items to play as well.

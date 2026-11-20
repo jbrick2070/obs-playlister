@@ -278,6 +278,34 @@ static void test_split_credentials(void)
 	expect_split("", "", NULL, NULL);
 }
 
+static void expect_carried(const char *given, const char *final, const char *expected)
+{
+	expect_text("carry credentials", final, pl_url_carry_credentials(given, final), expected);
+}
+
+/* R-REM-9: the address a fetch ended at gets the given address's user name and password back only on the same
+ * scheme, host and port */
+static void test_carry_credentials(void)
+{
+	assert(pl_url_same_origin("http://u:p@Host:80/a?x", "HTTP://host:80/b#c"));
+	assert(!pl_url_same_origin("http://host/a", "https://host/a"));
+	assert(!pl_url_same_origin("http://host/a", "http://host:8080/a"));
+	assert(!pl_url_same_origin("http://host/a", "http://host.example/a"));
+	assert(!pl_url_same_origin("no scheme", "no scheme"));
+
+	expect_carried("https://us%40er:p%3Ass@host/list", "https://host/lists/2026.m3u",
+		       "https://us%40er:p%3Ass@host/lists/2026.m3u");
+	expect_carried("https://user@host:8443/list", "https://HOST:8443/x", "https://user@HOST:8443/x");
+	/* another scheme, port or host: never */
+	expect_carried("http://user:pw@host/list", "https://host/list", "https://host/list");
+	expect_carried("https://user:pw@host/list", "https://host:8443/list", "https://host:8443/list");
+	expect_carried("https://user:pw@host/list", "https://cdn.host/list", "https://cdn.host/list");
+	/* nothing to carry, or the final address has its own */
+	expect_carried("https://host/list", "https://host/x", "https://host/x");
+	expect_carried("https://user:pw@host/list", "https://other:pw2@host/x", "https://other:pw2@host/x");
+	expect_carried("https://user:pw@host/list", "https://user:pw@host/list", "https://user:pw@host/list");
+}
+
 static void test_file_url(void)
 {
 	file_url("file:///C:/a%20b.mp3", "C:\\a b.mp3");
@@ -370,6 +398,7 @@ int main(void)
 	test_decode();
 	test_content_type();
 	test_split_credentials();
+	test_carry_credentials();
 	test_file_url();
 	test_path();
 	test_posix();
