@@ -31,6 +31,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "shuffler.h"
 #include "core/audio-queue.h"
 #include "core/frame-hold.h"
+#include "core/standstill.h"
 #include "core/startup.h"
 #include "providers/provider.h"
 
@@ -115,6 +116,12 @@ struct media_playlist_source {
 	/* enum obs_media_state; read without the list lock (video_tick, the hotkey, get_state/duration/time): only through
 	 * media_state() and set_media_state() */
 	volatile long state;
+	/* Under the list lock. stopped_by_request: the STOPPED state came from a stop that was asked for (Stop, a hide)
+	 * or from a list change that took the item away while nothing played, not from having nothing to play; a list
+	 * change then starts nothing (core/standstill.h). play_on_show: the item went away while the source was paused
+	 * because it was hidden; showing it plays from the position. */
+	bool stopped_by_request;
+	bool play_on_show;
 	enum visibility_behavior visibility_behavior;
 	enum restart_behavior restart_behavior;
 

@@ -84,6 +84,8 @@ obs_playlister_add_test(test-startup test-startup.c "${_core}/startup.c")
 obs_playlister_add_test(test-frame-hold test-frame-hold.c "${_core}/frame-hold.c")
 # The size a source reports while it is not playing (R-BEH-7)
 obs_playlister_add_test(test-source-size test-source-size.c "${_core}/source-size.c")
+# What a list change does to a source that is paused, stopped or at the end of its list
+obs_playlister_add_test(test-standstill test-standstill.c "${_core}/standstill.c")
 # Playlists (R-REM-1): URL and path resolution, M3U and PLS against fixtures
 obs_playlister_add_test(test-url test-url.c "${_core}/url.c")
 # User-visible text by locale key, with English when no locale is loaded, and placeholders (R-I18N-1, R-I18N-2)

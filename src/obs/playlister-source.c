@@ -60,6 +60,7 @@ static bool hold_shown(struct media_playlist_source *mps);
 static bool state_stopped(enum obs_media_state state);
 static bool picture_on_screen(struct media_playlist_source *mps);
 static void drop_playing_copy(struct media_playlist_source *mps);
+static enum obs_media_state media_state(struct media_playlist_source *mps);
 
 static bool select_index_proc_(struct media_playlist_source *mps, size_t media_index, size_t folder_item_index);
 
@@ -485,6 +486,40 @@ static void clear_media_source(void *data)
 	/* nothing is playing now; get_state and video_render go by this (R-UP-78). Callers hold the list lock. */
 	mps->actual_media = NULL;
 	set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
+	/* stopped for want of anything to play: a list change that brings something starts it */
+	mps->stopped_by_request = false;
+	mps->play_on_show = false;
+}
+
+/* How the source stands should a list change take its loaded item away (core/standstill.h). The caller holds the
+ * list lock. */
+static enum pl_standstill standstill(struct media_playlist_source *mps, enum obs_media_state state)
+{
+	struct pl_standstill_input input = {
+		.playback = state == OBS_MEDIA_STATE_PAUSED    ? PL_PLAYBACK_PAUSED
+			    : state == OBS_MEDIA_STATE_ENDED   ? PL_PLAYBACK_ENDED
+			    : state == OBS_MEDIA_STATE_PLAYING ? PL_PLAYBACK_PLAYING
+							       : PL_PLAYBACK_STOPPED,
+		.stopped_by_request = mps->stopped_by_request,
+		.pause_when_hidden = mps->visibility_behavior == VISIBILITY_BEHAVIOR_PAUSE_UNPAUSE,
+		.active = obs_source_active(mps->source),
+	};
+	return pl_standstill_decide(&input);
+}
+
+/* The loaded item went away while the source stood still (decision is not PL_STANDSTILL_NONE): the child lets go of
+ * it, so it can never be resumed with sound and no picture, and nothing loads; the position, which the caller has
+ * set or sets, waits for Play or Restart. After the end of the list the state stays ENDED, which keeps that
+ * position on the first item (apply_snapshot). The caller holds the list lock. */
+static void park_position(struct media_playlist_source *mps, enum obs_media_state state, enum pl_standstill decision)
+{
+	pl_player_clear(&mps->player);
+	mps->actual_media = NULL;
+	if (state != OBS_MEDIA_STATE_ENDED)
+		set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
+	mps->stopped_by_request = true;
+	mps->play_on_show = decision == PL_STANDSTILL_PARK_TO_SHOW;
+	cancel_resume(mps);
 }
 
 /* Checks if the media source has to be updated, because updating its
@@ -517,6 +552,8 @@ static void update_media_source(void *data, bool forced)
 		 * everything failed is lifted (R-BEH-5) */
 		cancel_resume(mps);
 		mps->all_failed = false;
+		mps->stopped_by_request = false;
+		mps->play_on_show = false;
 	}
 	/* what plays now is an item of the list; an evicted item's copy is done with (R-DIR-8) */
 	drop_playing_copy(mps);
@@ -729,7 +766,7 @@ static void set_media_state(void *data, enum obs_media_state state)
 }
 
 /* The source's own media state; read without the list lock by video_tick, the hotkey and the media callbacks */
-static inline enum obs_media_state media_state(struct media_playlist_source *mps)
+static enum obs_media_state media_state(struct media_playlist_source *mps)
 {
 	return (enum obs_media_state)os_atomic_load_long(&mps->state);
 }
@@ -1183,6 +1220,8 @@ static bool restart_playing_copy(struct media_playlist_source *mps)
 	set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 	cancel_resume(mps);
 	mps->all_failed = false;
+	mps->stopped_by_request = false;
+	mps->play_on_show = false;
 	return true;
 }
 
@@ -1337,9 +1376,11 @@ static void mps_stop(void *data)
 	if (media_state(mps) != OBS_MEDIA_STATE_ENDED)
 		set_media_state(mps, OBS_MEDIA_STATE_STOPPED);
 	/* a user stop: a folder row that settles later does not start by itself (R-KEY-2), nor does a list change after
-	 * everything failed (R-BEH-5) */
+	 * everything failed (R-BEH-5), nor an edit of the current row (core/standstill.h) */
 	cancel_resume(mps);
 	mps->all_failed = false;
+	mps->stopped_by_request = true;
+	mps->play_on_show = false;
 	pthread_mutex_unlock(&mps->mutex);
 }
 
@@ -1517,8 +1558,18 @@ static void mps_activate(void *data)
 		/* a plain unpause, as upstream: a source the user stopped stays stopped when it is shown again. Our own
 		 * state counts too, because the hide's pause may still be on its way to the child. */
 		pthread_mutex_lock(&mps->mutex);
-		if (media_state(mps) == OBS_MEDIA_STATE_PAUSED ||
-		    obs_source_media_get_state(mps->current_media_source) == OBS_MEDIA_STATE_PAUSED) {
+		if (mps->play_on_show) {
+			/* the paused item went away while the source was hidden: there is nothing to unpause, so the item
+			 * the position waits on plays (core/standstill.h) */
+			mps->play_on_show = false;
+			if (point_at_playable_item(mps)) {
+				os_atomic_set_bool(&mps->release_held, true);
+				update_media_source(mps, true);
+			}
+		} else if (mps->actual_media &&
+			   (media_state(mps) == OBS_MEDIA_STATE_PAUSED ||
+			    obs_source_media_get_state(mps->current_media_source) == OBS_MEDIA_STATE_PAUSED)) {
+			/* only with an item loaded: after a clear the child still reports the state of the media it had */
 			pl_player_play_pause(&mps->player, false);
 			set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
 		}
@@ -1968,6 +2019,15 @@ static void apply_snapshot(void *owner, struct pl_snapshot *snapshot)
 				remember_item(mps, mps->current_folder_item_index < row->folder_items.num
 							   ? &row->folder_items.array[mps->current_folder_item_index]
 							   : NULL);
+			}
+			/* a paused item that is gone must not stay loaded: Play would resume it, with its sound and no
+			 * picture, and its end would then skip the item the position is on. The child lets go of it, and
+			 * Play loads from the position (core/standstill.h). */
+			if (state == OBS_MEDIA_STATE_PAUSED) {
+				obs_log(LOG_INFO,
+					"row %zu: the paused item is gone; Play goes on from the one that followed",
+					row_index + 1);
+				park_position(mps, state, standstill(mps, state));
 			}
 			mark_save_dirty(mps);
 			if (!mps->actual_media || mps->actual_media != &mps->playing_copy)
@@ -3374,6 +3434,13 @@ static void mps_update(void *data, obs_data_t *settings)
 		mps->current_item_occurrence = occurrence >= 1 && occurrence <= UINT32_MAX ? (uint32_t)occurrence : 1;
 	}
 
+	/* how the source stands before this update changes anything: paused, stopped on request or at the end of the
+	 * list, an edit that takes the current row away or changes its path loads nothing (core/standstill.h). Not on the
+	 * first update, and not with an empty list, where the change is what starts playback. */
+	const enum obs_media_state state_before = media_state(mps);
+	const enum pl_standstill stand = !mps->first_update && mps->current_media ? standstill(mps, state_before)
+										  : PL_STANDSTILL_NONE;
+
 	bool found = false;
 	if (!mps->first_update && mps->current_media) {
 		// check for current_media->id only if media isn't changed, allowing scripts to set the index.
@@ -3422,7 +3489,9 @@ static void mps_update(void *data, obs_data_t *settings)
 		if (target_index >= new_files.num)
 			target_index = 0;
 		struct media_file_data *target = new_files.num ? &new_files.array[target_index] : NULL;
-		if (target && target->is_folder && target->awaiting) {
+		/* standing still, the position only moves there (below): no wait that would start the row once listed */
+		bool parks = stand != PL_STANDSTILL_NONE && (!found || item_edited);
+		if (target && target->is_folder && target->awaiting && !parks) {
 			/* the saved or playing item's key, unless the row is not the one it was kept for */
 			bool same_row = mps->first_update ? resumed_row : found && !item_edited;
 			start_resume(mps, target->id, same_row ? mps->current_item_key : NULL,
@@ -3479,6 +3548,23 @@ static void mps_update(void *data, obs_data_t *settings)
 			clear_media_source(mps);
 		else if (mps->resume.row_unavailable && folder_row(mps, mps->resume.row_uuid, &resume_index))
 			resume_after_row(mps, resume_index);
+	} else if (stand != PL_STANDSTILL_NONE && (!found || item_edited) && get_total_file_count(mps)) {
+		/* The current row was deleted or its path edited while the source stood still (paused, stopped on request,
+		 * or at the end of the list): nothing starts by itself. The child lets go of the old item and the position
+		 * waits on the row that took its place: a row not listed yet as it is, else the first row from there with
+		 * something to play, at its first item that may be loaded. Play or Restart loads it. */
+		if (!(mps->current_media->is_folder && mps->current_media->awaiting)) {
+			size_t playable = skip_empty_folder_rows(mps, mps->current_media_index, false);
+			if (playable < mps->files.num)
+				set_current_media_index(mps, playable);
+		}
+		size_t first = mps->current_media->is_folder ? loadable_item(mps, mps->current_media, 0, false)
+							     : DARRAY_INVALID;
+		mps->current_folder_item_index = first != DARRAY_INVALID ? first : 0;
+		remember_item(mps, first != DARRAY_INVALID ? &mps->current_media->folder_items.array[first] : NULL);
+		park_position(mps, state_before, stand);
+		obs_log(LOG_INFO, "the current row was removed or changed while nothing played; Play starts at row %zu",
+			mps->current_media_index + 1);
 	} else if (get_total_file_count(mps)) {
 		if (item_edited) {
 			mps->current_folder_item_index = 0;
@@ -3522,6 +3608,10 @@ static void mps_update(void *data, obs_data_t *settings)
 			/* Clear if last file is a folder and is empty */
 			if (mps->current_media->is_folder && mps->current_media->folder_items.num == 0) {
 				clear_media_source(mps);
+			} else if (stand != PL_STANDSTILL_NONE) {
+				/* the remembered item of the current folder row is gone, and the source stands still: the
+				 * position stays on the item found above, and nothing loads (core/standstill.h) */
+				park_position(mps, state_before, stand);
 			} else {
 				update_media_source(mps, true);
 				remember_item(mps, mps->actual_media);

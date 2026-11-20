@@ -99,6 +99,8 @@ target_sources(
     src/core/sort.c
     src/core/source-size.h
     src/core/source-size.c
+    src/core/standstill.h
+    src/core/standstill.c
     src/core/startup.h
     src/core/startup.c
     src/core/text.h
