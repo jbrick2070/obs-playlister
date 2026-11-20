@@ -108,8 +108,9 @@ static void test_numbers(void)
 	PARSE_TEXT("same number", "[playlist]\nFile01=a.mp3\nFile1=b.mp3\nTitle1=A\nTitle01=B\n", "C:\\L\\x.pls", first,
 		   0, 1);
 
-	/* 200000 entries in reverse order come out in order, quickly (one sort, no scan per line) */
-	const size_t count = 200000;
+	/* as many entries as a list may have (P-02), in reverse order, come out in order, quickly (one sort, no scan per
+	 * line) */
+	const size_t count = PL_MAX_ENTRIES;
 	struct dstr text = {0};
 	dstr_reserve(&text, count * 24);
 	dstr_cat(&text, "[playlist]\n");
@@ -122,11 +123,32 @@ static void test_numbers(void)
 	double seconds = (double)(os_gettime_ns() - start) / 1e9;
 	assert(result.count == count && result.unusable_lines == 0);
 	assert(strcmp(result.entries[0].location, "C:\\L\\1.mp3") == 0);
-	assert(strcmp(result.entries[count - 1].location, "C:\\L\\200000.mp3") == 0);
+	assert(strcmp(result.entries[count - 1].location, "C:\\L\\100000.mp3") == 0);
 	if (seconds > 5.0) {
-		fprintf(stderr, "200000 entries took %.1f s\n", seconds);
+		fprintf(stderr, "%zu entries took %.1f s\n", count, seconds);
 		assert(false);
 	}
+	pl_list_result_free(&result);
+	dstr_free(&text);
+}
+
+/* P-02: at most PL_MAX_ENTRIES entries; File lines after them are counted, and their Title lines dropped */
+static void test_entry_limit(void)
+{
+	const size_t extra = 5;
+	struct dstr text = {0};
+	dstr_copy(&text, "[playlist]\n");
+	for (size_t i = 1; i <= PL_MAX_ENTRIES + extra; i++)
+		dstr_catf(&text, "File%zu=%zu.mp3\nTitle%zu=T\n", i, i, i);
+	struct pl_list_source source = {"C:\\Lists\\big.pls", NULL, NULL};
+	struct pl_list_result result;
+	pl_parse_pls(&result, text.array, text.len, &source);
+	assert(result.count == PL_MAX_ENTRIES);
+	assert(result.over_limit == extra);
+	assert(result.unusable_lines == 0);
+	assert(strcmp(result.entries[0].location, "C:\\Lists\\1.mp3") == 0);
+	assert(strcmp(result.entries[PL_MAX_ENTRIES - 1].location, "C:\\Lists\\100000.mp3") == 0);
+	assert(result.entries[PL_MAX_ENTRIES - 1].title && strcmp(result.entries[PL_MAX_ENTRIES - 1].title, "T") == 0);
 	pl_list_result_free(&result);
 	dstr_free(&text);
 }
@@ -138,6 +160,7 @@ int main(void)
 	test_fixtures();
 	test_text();
 	test_numbers();
+	test_entry_limit();
 	assert(bnum_allocs() == allocations);
 	printf("test-parse-pls: all passed\n");
 	return 0;

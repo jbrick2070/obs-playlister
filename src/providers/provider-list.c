@@ -574,6 +574,9 @@ static void refresh(struct pl_list_provider *p)
 	/* R-DIR-10: once for each list read, what date order and the newest modes mean without dates */
 	bool fresh = p->fresh;
 	p->fresh = false;
+	if (fresh && p->parsed.over_limit)
+		obs_log(LOG_WARNING, "list %s: over %d entries; the %zu after them are left out", p->log_location,
+			PL_MAX_ENTRIES, p->parsed.over_limit);
 	bool dated = false;
 	for (size_t i = 0; i < p->parsed.count && !dated; i++)
 		dated = p->parsed.entries[i].has_date;
@@ -630,6 +633,18 @@ static void fill_status(struct pl_list_provider *p, const struct pl_entry *entri
 		level = PL_STATUS_ERROR;
 		dstr_copy(message, p->error);
 		status->stale = p->has_list;
+	}
+	if (p->shape == SHAPE_LIST && p->has_list && p->parsed.over_limit) {
+		if (level == PL_STATUS_OK)
+			level = PL_STATUS_WARNING;
+		if (message->len)
+			dstr_cat(message, "; ");
+		char over[24];
+		char limit[24];
+		snprintf(over, sizeof(over), "%zu", p->parsed.over_limit);
+		snprintf(limit, sizeof(limit), "%d", PL_MAX_ENTRIES);
+		pl_text_cat(message, pl_text("RowWarning.OverLimit", PL_OVER_LIMIT_TEXT), (const char *[]){over, limit},
+			    2);
 	}
 	if (p->shape == SHAPE_LIST && p->has_list && (p->parsed.unusable_lines || p->parsed.nested_playlists)) {
 		if (level == PL_STATUS_OK)

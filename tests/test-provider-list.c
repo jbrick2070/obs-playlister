@@ -810,6 +810,35 @@ static void test_review_cases(void)
 	dstr_free(&expected);
 }
 
+/* P-02: a playlist over the entry limit shows the first PL_MAX_ENTRIES entries and says how many it left out */
+static void test_entry_limit(void)
+{
+	make_folder("limit");
+	struct dstr text = {0};
+	for (size_t i = 0; i < PL_MAX_ENTRIES + 3; i++)
+		dstr_catf(&text, "%zu.mp3\n", i);
+	write_file("big.m3u", text.array);
+	dstr_free(&text);
+	char *path = path_of("big.m3u");
+
+	struct pl_container_options options;
+	default_options(&options);
+	options.folder_check_enabled = false;
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_provider *provider = start(PL_ROW_PLAYLIST, path, &options, &inbox);
+	const struct pl_snapshot *snapshot =
+		wait_for(&inbox, 0, says, "3 more entries left out (the limit is 100000)", "the entry limit said");
+	assert(snapshot);
+	assert(snapshot->count == PL_MAX_ENTRIES && snapshot->visible_count == PL_MAX_ENTRIES);
+	assert(snapshot->level == PL_STATUS_WARNING && !snapshot->stale);
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	os_unlink(path);
+	os_rmdir(folder);
+	bfree(path);
+}
+
 static void test_destroy_while_fetching(void)
 {
 	/* the fetch hangs; destroy returns at once and nothing is published afterwards (R-THR-3, R-REM-5) */
@@ -850,6 +879,7 @@ int main(void)
 	test_log_redacts_urls();
 	test_classification();
 	test_review_cases();
+	test_entry_limit();
 	test_destroy_while_fetching();
 
 	assert(os_atomic_load_long(&fetches_open) == 0);

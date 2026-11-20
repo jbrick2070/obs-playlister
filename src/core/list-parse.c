@@ -210,6 +210,11 @@ void pl_list_builder_unusable(struct pl_list_builder *builder)
 	builder->result->unusable_lines++;
 }
 
+void pl_list_builder_over_limit(struct pl_list_builder *builder)
+{
+	builder->result->over_limit++;
+}
+
 static bool is_url_base(const char *base)
 {
 	return pl_url_scheme_length(base) > 0;
@@ -306,6 +311,12 @@ void pl_list_builder_add(struct pl_list_builder *builder, const char *reference,
 {
 	if (!reference_length)
 		return;
+	/* past the limit a reference is counted and nothing else: not resolved, not kept */
+	entry_array_t *entries = builder->entries;
+	if (entries->num >= PL_MAX_ENTRIES) {
+		builder->result->over_limit++;
+		return;
+	}
 	if (reference_length > PL_LIST_MAX_LINE || memchr(reference, '\0', reference_length)) {
 		builder->result->unusable_lines++;
 		return;
@@ -347,7 +358,6 @@ void pl_list_builder_add(struct pl_list_builder *builder, const char *reference,
 	entry.key = builder->source->key ? builder->source->key(location, builder->source->key_context)
 					 : bstrdup(location);
 
-	entry_array_t *entries = builder->entries;
 	da_push_back(*entries, &entry);
 }
 
@@ -360,6 +370,7 @@ void pl_list_builder_stream(struct pl_list_builder *builder)
 	/* the lines it skipped were never entries of this result */
 	builder->result->nested_playlists = 0;
 	builder->result->unusable_lines = 0;
+	builder->result->over_limit = 0;
 
 	const char *base = builder->source->base;
 	struct pl_entry entry = {0};

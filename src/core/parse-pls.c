@@ -89,6 +89,10 @@ void pl_parse_pls(struct pl_list_result *result, const char *data, size_t size, 
 
 	DARRAY(struct pls_line) lines;
 	da_init(lines);
+	/* the lines kept for sorting are limited as the entries are: a File line past the limit is counted, a Title line
+	 * past it dropped */
+	size_t file_lines = 0;
+	size_t title_lines = 0;
 	bool in_playlist = true;
 	const char *line;
 	size_t length;
@@ -134,6 +138,15 @@ void pl_parse_pls(struct pl_list_result *result, const char *data, size_t size, 
 			pl_list_builder_unusable(&builder);
 			continue;
 		}
+
+		if (is_file && file_lines >= PL_MAX_ENTRIES) {
+			pl_list_builder_over_limit(&builder);
+			continue;
+		}
+		if (!is_file && title_lines >= PL_MAX_ENTRIES)
+			continue;
+		file_lines += is_file;
+		title_lines += !is_file;
 
 		struct pls_line *record = da_push_back_new(lines);
 		record->number = number;

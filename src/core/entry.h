@@ -50,6 +50,11 @@ struct pl_entry {
 	uint64_t size;        /* 0 when unknown */
 };
 
+/* The most entries one container row takes (a playlist's entries, a folder's files). Anything past it is left out
+ * and counted, and the row's status says how many: a list of millions of lines, from a web address or a local file,
+ * would otherwise ask for gigabytes of memory and take OBS down with it. */
+#define PL_MAX_ENTRIES 100000
+
 /* Frees the entry's strings and zeroes it */
 void pl_entry_free(struct pl_entry *entry);
 /* A deep copy: dst gets its own strings */

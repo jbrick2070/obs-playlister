@@ -105,6 +105,7 @@ struct pl_folder_provider {
 	bool listed;
 	bool gate_fed;
 	size_t cloud_count;
+	size_t over_limit; /* files the last listing left out as over PL_MAX_ENTRIES */
 	int64_t last_ok_unix_ms;
 	struct pl_publication publication; /* what the receiver was given, and the lock (R-DIR-11) */
 };
@@ -152,6 +153,7 @@ struct scan {
 	DARRAY(struct listed_file) files;
 	uint32_t ordinal;
 	size_t cloud;
+	size_t over_limit; /* files after the first PL_MAX_ENTRIES, left out */
 };
 
 /* Each skipped subfolder is logged once (R-DIR-1) */
@@ -180,6 +182,11 @@ static void add_listed_file(void *context, const char *relative, const char *nam
 			scan->cloud++;
 		return;
 	}
+	/* a folder is limited as a playlist is; what comes after the limit, in listing order, is only counted */
+	if (scan->files.num >= PL_MAX_ENTRIES) {
+		scan->over_limit++;
+		return;
+	}
 	struct listed_file *file = da_push_back_new(scan->files);
 	struct dstr location = {0};
 	dstr_copy(&location, p->location);
@@ -195,7 +202,7 @@ static void add_listed_file(void *context, const char *relative, const char *nam
 
 /* Lists the folder (and its subfolders when the option is on) without opening any file (R-DIR-1); the last good
  * listing is replaced only by a complete one */
-static enum pl_folder_scan scan_folder(struct pl_folder_provider *p, size_t *cloud_count)
+static enum pl_folder_scan scan_folder(struct pl_folder_provider *p, size_t *cloud_count, size_t *over_limit)
 {
 	struct scan scan = {.provider = p};
 	da_init(scan.files);
@@ -208,6 +215,7 @@ static enum pl_folder_scan scan_folder(struct pl_folder_provider *p, size_t *clo
 	free_listing(&p->files.da);
 	p->files.da = scan.files.da;
 	*cloud_count = scan.cloud;
+	*over_limit = scan.over_limit;
 	return PL_FOLDER_SCAN_OK;
 }
 
@@ -411,10 +419,15 @@ static void take_completed_changes(struct pl_folder_provider *p)
 static enum pl_folder_scan rescan(struct pl_folder_provider *p)
 {
 	size_t cloud = 0;
-	enum pl_folder_scan result = scan_folder(p, &cloud);
+	size_t over_limit = 0;
+	enum pl_folder_scan result = scan_folder(p, &cloud, &over_limit);
 	if (result != PL_FOLDER_SCAN_OK)
 		return result;
+	if (over_limit && !p->over_limit)
+		obs_log(LOG_WARNING, "folder %s: over %d files; the %zu after them are left out", p->location,
+			PL_MAX_ENTRIES, over_limit);
 	p->cloud_count = cloud;
+	p->over_limit = over_limit;
 	p->listed = true;
 	p->last_ok_unix_ms = pl_utc_now_ms();
 	/* a rename the listing already shows moves the admitted file before the gate sees the new name as new */
@@ -608,6 +621,17 @@ static void fill_status(struct pl_folder_provider *p, struct pl_publication_stat
 			    pl_text("RowWarning.CloudOnly",
 				    "%1 cloud-only files not downloaded; mark the folder Always keep on this device"),
 			    (const char *[]){number}, 1);
+	}
+	if (p->over_limit) {
+		if (level == PL_STATUS_OK)
+			level = PL_STATUS_WARNING;
+		if (message->len)
+			dstr_cat(message, "; ");
+		char limit[24];
+		snprintf(number, sizeof(number), "%zu", p->over_limit);
+		snprintf(limit, sizeof(limit), "%d", PL_MAX_ENTRIES);
+		pl_text_cat(message, pl_text("RowWarning.OverLimit", PL_OVER_LIMIT_TEXT),
+			    (const char *[]){number, limit}, 2);
 	}
 	status->level = level;
 	status->message = message->array;

@@ -39,6 +39,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #define PL_ACCESS_DENIED_FILES_KEY "RowError.AccessDeniedToFilesPermissions"
 #endif
 
+/* A row with more entries than PL_MAX_ENTRIES (core/entry.h), the English of RowWarning.OverLimit: %1 is how many
+ * were left out, %2 the limit */
+#define PL_OVER_LIMIT_TEXT "%1 more entries left out (the limit is %2)"
+
 /* ---- signals and waits ---- */
 
 /* Manual reset: once set it stays set, and every wait on it returns at once. */
