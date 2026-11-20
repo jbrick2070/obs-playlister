@@ -44,6 +44,10 @@ function Build {
         . $Utility.FullName
     }
 
+    # the product's name for the log groups below, from the same file the packaging script reads it from
+    $BuildSpec = Get-Content -Path "${ProjectRoot}/buildspec.json" -Raw | ConvertFrom-Json
+    $ProductName = $BuildSpec.name
+
     Push-Location -Stack BuildTemp
     Ensure-Location $ProjectRoot
 
