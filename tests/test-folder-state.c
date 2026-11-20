@@ -453,6 +453,36 @@ static void test_stop(void)
 	pl_gate_free(&gate);
 }
 
+/* P-07: the rescan after a change waits for the folder to be quiet, but not for ever */
+static void test_debounce(void)
+{
+	const int64_t first = 100000;
+	/* one notification: listed half a second later */
+	assert(pl_debounce_due(first, first) == first + PL_DEBOUNCE_QUIET_MS);
+	/* more notifications push it back, each by the quiet time from when it came */
+	assert(pl_debounce_due(first, first + 300) == first + 300 + PL_DEBOUNCE_QUIET_MS);
+	assert(pl_debounce_due(first, first + 2000) == first + 2000 + PL_DEBOUNCE_QUIET_MS);
+	/* but never past the limit: a file written without a pause is listed every PL_DEBOUNCE_MAX_MS */
+	assert(pl_debounce_due(first, first + PL_DEBOUNCE_MAX_MS - 100) == first + PL_DEBOUNCE_MAX_MS);
+	assert(pl_debounce_due(first, first + PL_DEBOUNCE_MAX_MS + 50) == first + PL_DEBOUNCE_MAX_MS);
+
+	/* a writer that notifies every 100 ms for a minute: 12 listings, where a fixed half second gave 100 or more */
+	int listings = 0;
+	int64_t burst_first = 0;
+	int64_t due = 0;
+	for (int64_t now = first; now < first + 60000; now += 100) {
+		if (due && now >= due) {
+			listings++;
+			due = 0;
+		}
+		if (!due)
+			burst_first = now;
+		due = pl_debounce_due(burst_first, now);
+	}
+	assert(listings >= 11 && listings <= 12);
+	assert(PL_DEBOUNCE_QUIET_MS < PL_DEBOUNCE_MAX_MS);
+}
+
 /* ---- watch modes ---- */
 
 static void expect_change(struct pl_watch_actions actions, enum pl_watch_mode mode, const char *reason)
@@ -633,6 +663,7 @@ int main(void)
 	test_future_write_times();
 	test_rename();
 	test_stop();
+	test_debounce();
 	test_watch_notify_and_overflow();
 	test_watch_overflow_run();
 	test_watch_rescan_only();

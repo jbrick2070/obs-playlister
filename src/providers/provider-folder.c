@@ -42,7 +42,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "os.h"
 #include "publication.h"
 
-#define DEBOUNCE_MS 500
 #define MAX_CHAINED_EVENTS 8
 
 /* One file as the last listing saw it. Every name the always-skip list and the attributes let through is kept, so a
@@ -97,6 +96,7 @@ struct pl_folder_provider {
 	struct pl_folder_os *os; /* the listing, the probe and the watch */
 	bool arm_failed;         /* re-arming failed (in a rescan or after a notification); the main loop reports it */
 	int64_t debounce_ms;     /* when the debounced rescan is due; 0 when none is */
+	int64_t debounce_first_ms; /* when the first notification came that the due rescan answers */
 	enum missing_cause missing;
 	DARRAY(struct rename_pair) notified_renames; /* paired events since the last listing (relative names) */
 	DARRAY(struct rename_pair) renames;          /* carried to the next publication: key to key */
@@ -403,6 +403,16 @@ static void note_rename(void *context, const char *old_relative, const char *new
 
 /* ---- the watch modes (R-DIR-3) ---- */
 
+/* A notification with changes came: the rescan waits until the folder is quiet, up to a limit (pl_debounce_due), so
+ * a file being written does not have the whole tree listed twice a second */
+static void debounce_change(struct pl_folder_provider *p)
+{
+	int64_t now = mono_now();
+	if (!p->debounce_ms)
+		p->debounce_first_ms = now;
+	p->debounce_ms = pl_debounce_due(p->debounce_first_ms, now);
+}
+
 /* Takes in a notification that completed with changes while the worker was busy, so the renames it reports are known
  * before the listing reaches the gate; anything else is left for the main loop */
 static void take_completed_changes(struct pl_folder_provider *p)
@@ -412,8 +422,7 @@ static void take_completed_changes(struct pl_folder_provider *p)
 	pl_watch_notified(&p->watch);
 	/* the watch machine hears of a failed re-arm from the main loop */
 	p->arm_failed = !pl_folder_os_arm(p->os);
-	if (!p->debounce_ms)
-		p->debounce_ms = mono_now() + DEBOUNCE_MS;
+	debounce_change(p);
 }
 
 static enum pl_folder_scan rescan(struct pl_folder_provider *p)
@@ -532,8 +541,7 @@ static void on_notification(struct pl_folder_provider *p)
 	 * waits for this change's debounced rescan (worker_main) */
 	if (!pl_folder_os_arm(p->os))
 		p->arm_failed = true;
-	if (!p->debounce_ms)
-		p->debounce_ms = mono_now() + DEBOUNCE_MS;
+	debounce_change(p);
 }
 
 /* ---- snapshots ---- */

@@ -297,6 +297,15 @@ size_t pl_gate_denied_count(const struct pl_gate *gate)
 	return denied;
 }
 
+/* ---- The debounce of change notifications ---- */
+
+int64_t pl_debounce_due(int64_t first_ms, int64_t mono_ms)
+{
+	int64_t quiet = mono_ms + PL_DEBOUNCE_QUIET_MS;
+	int64_t latest = first_ms + PL_DEBOUNCE_MAX_MS;
+	return quiet < latest ? quiet : latest;
+}
+
 /* ---- Watch modes ---- */
 
 #define SAFETY_RESCAN_MS 60000 /* notify mode with the check interval off */

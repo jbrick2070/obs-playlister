@@ -125,6 +125,20 @@ size_t pl_gate_admitted_count(const struct pl_gate *gate);
 /* Candidates whose last probe was refused; above 0 the row shows "access denied" (R-PLAT-10) */
 size_t pl_gate_denied_count(const struct pl_gate *gate);
 
+/* ---- The debounce of change notifications (R-DIR-2) ---- */
+
+/* A change is listed once the folder has been quiet this long, so a burst of notifications is one listing */
+#define PL_DEBOUNCE_QUIET_MS 500
+/* and at the latest this long after the first notification of the burst, so a folder that is never quiet (a file
+ * being recorded or copied into it sends a notification for every write) is still listed, every few seconds rather
+ * than twice a second: a listing reads every file's size and time, and tells nothing new about a file that is only
+ * growing, which the gate samples by itself */
+#define PL_DEBOUNCE_MAX_MS 5000
+
+/* When the listing for a change notified at mono_ms is due; first_ms is when the first notification came that no
+ * listing has followed yet (mono_ms itself for the first one) */
+int64_t pl_debounce_due(int64_t first_ms, int64_t mono_ms);
+
 /* ---- Watch modes (R-DIR-3) ---- */
 
 #define PL_WATCH_INTERVAL_MIN_S 2
