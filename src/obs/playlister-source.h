@@ -112,6 +112,7 @@ struct media_playlist_source {
 	obs_hotkey_id stop_hotkey;
 	obs_hotkey_id next_hotkey;
 	obs_hotkey_id prev_hotkey;
+	bool hotkeys_registered; /* destroy unregisters them, before anything is torn down */
 
 	/* enum obs_media_state; read without the list lock (video_tick, the hotkey, get_state/duration/time): only through
 	 * media_state() and set_media_state() */

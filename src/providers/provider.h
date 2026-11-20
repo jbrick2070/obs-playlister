@@ -80,7 +80,8 @@ struct pl_provider *pl_provider_create(enum pl_row_kind kind, const char *locati
 				       uint64_t instance_id, const struct pl_container_options *options,
 				       pl_publish_fn publish, void *owner);
 
-/* Lists the container again now (the Properties Refresh button) */
+/* Lists the container again now, without waiting for its interval. The plugin has no caller today (the Properties
+ * Refresh button only builds Properties again from what the providers last published); the tests use it. */
 void pl_provider_refresh_now(struct pl_provider *provider);
 
 /* Filter, sort, direction, mode, N, the folder check, lock-list-at-start and the refresh interval, applied to the

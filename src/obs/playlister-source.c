@@ -100,14 +100,11 @@ static void mps_deactivate(void *data);
 static void *mps_create(obs_data_t *settings, obs_source_t *source);
 static void mps_destroy(void *data);
 static void mps_video_render(void *data, gs_effect_t *effect);
-static bool mps_audio_render(void *data, uint64_t *ts_out, struct obs_source_audio_mix *audio_output, uint32_t mixers,
-			     size_t channels, size_t sample_rate);
 static void mps_video_tick(void *data, float seconds);
 static void mps_enum_sources(void *data, obs_source_enum_proc_t cb, void *param);
 static uint32_t mps_width(void *data);
 static uint32_t mps_height(void *data);
 static void mps_defaults(obs_data_t *settings);
-static void update_current_filename_property(struct media_playlist_source *mps, obs_property_t *p);
 static obs_properties_t *mps_properties(void *data);
 static void mps_update(void *data, obs_data_t *settings);
 static void mps_save(void *data, obs_data_t *settings);
@@ -131,7 +128,6 @@ struct obs_source_info media_playlist_source_info = {
 	.deactivate = mps_deactivate,
 	.video_render = mps_video_render,
 	.video_tick = mps_video_tick,
-	//.audio_render = mps_audio_render,
 	.enum_active_sources = mps_enum_sources,
 	.get_width = mps_width,
 	.get_height = mps_height,
@@ -148,7 +144,6 @@ struct obs_source_info media_playlist_source_info = {
 	.media_get_duration = mps_get_duration,
 	.media_get_time = mps_get_time,
 	.media_set_time = mps_set_time,
-	//.video_get_color_space = mps_video_get_color_space,
 };
 
 #define S_PLAYLIST "playlist"
@@ -873,7 +868,6 @@ static bool play_selected_clicked(obs_properties_t *props, obs_property_t *prope
 	show_status_block(mps, obs_properties_get(props, S_ROW_STATUS));
 	/* released after its last use (R-UP-71) */
 	obs_data_release(settings);
-	//obs_source_update_properties(mps->source);
 
 	/* R-UP-71: only a selection that was played is a move to another item */
 	if (played)
@@ -2252,6 +2246,18 @@ static void mps_destroy(void *data)
 {
 	struct media_playlist_source *mps = data;
 
+	/* the hotkeys first: libobs releases a source's hotkeys only after this function has returned, so a key pressed
+	 * during the teardown, or after the free at its end, would call back into this source. Unregistering waits for a
+	 * callback in flight. An id that was never registered (the create error path) is libobs's invalid id, which it
+	 * ignores. */
+	if (mps->hotkeys_registered) {
+		obs_hotkey_unregister(mps->play_pause_hotkey);
+		obs_hotkey_unregister(mps->restart_hotkey);
+		obs_hotkey_unregister(mps->stop_hotkey);
+		obs_hotkey_unregister(mps->next_hotkey);
+		obs_hotkey_unregister(mps->prev_hotkey);
+	}
+
 	/* R-THR-3: every provider first, so none publishes into a source being torn down; no lock is held, as a
 	 * worker inside its publish waits for the list lock. All are asked to stop before any is waited for, and the
 	 * wait here is only for a publish in flight: the workers are joined by the module's background thread, so a
@@ -2365,6 +2371,7 @@ static void *mps_create(obs_data_t *settings, obs_source_t *source)
 
 	mps->prev_hotkey = obs_hotkey_register_source(source, "OBSPlaylister.PlaylistPrev",
 						      obs_module_text("PlaylistPrev"), previous_hotkey, mps);
+	mps->hotkeys_registered = true;
 
 	proc_handler_t *ph = obs_source_get_proc_handler(source);
 	proc_handler_add(ph, "void select_index(int media_index, int folder_item_index)", select_index_proc, mps);
@@ -2483,42 +2490,6 @@ static void mps_video_render(void *data, gs_effect_t *effect)
 	}
 
 	UNUSED_PARAMETER(effect);
-}
-
-static bool mps_audio_render(void *data, uint64_t *ts_out, struct obs_source_audio_mix *audio_output, uint32_t mixers,
-			     size_t channels, size_t sample_rate)
-{
-	struct media_playlist_source *mps = data;
-	if (!mps->current_media_source)
-		return false;
-
-	struct obs_source_audio_mix child_audio;
-	uint64_t source_ts;
-
-	/*if (obs_source_audio_pending(mps->current_media_source))
-		return false;*/
-
-	source_ts = obs_source_get_audio_timestamp(mps->current_media_source);
-	if (!source_ts)
-		return false;
-
-	obs_source_get_audio_mix(mps->current_media_source, &child_audio);
-	for (size_t mix = 0; mix < MAX_AUDIO_MIXES; mix++) {
-		if ((mixers & (1 << mix)) == 0)
-			continue;
-
-		for (size_t ch = 0; ch < channels; ch++) {
-			float *out = audio_output->output[mix].data[ch];
-			float *in = child_audio.output[mix].data[ch];
-
-			memcpy(out, in, AUDIO_OUTPUT_FRAMES * MAX_AUDIO_CHANNELS * sizeof(float));
-		}
-	}
-
-	*ts_out = source_ts;
-
-	UNUSED_PARAMETER(sample_rate);
-	return true;
 }
 
 /* A still ends at once by nature (R-DIR-9) */
@@ -2716,7 +2687,6 @@ static void let_go_of_hidden_frame(struct media_playlist_source *mps)
 static void mps_video_tick(void *data, float seconds)
 {
 	struct media_playlist_source *mps = data;
-	//UNUSED_PARAMETER(data);
 	UNUSED_PARAMETER(seconds);
 
 	/* R-UP-60: every field is set, the planes past the channel count are NULL, and each chunk comes out of the
@@ -2805,51 +2775,6 @@ static void mps_video_tick(void *data, float seconds)
 			obs_source_save(mps->source);
 		}
 	}
-
-	//if (mps->restart_on_activate && mps->use_cut) {
-	//	mps->elapsed = 0.0f;
-	//	mps->cur_item = mps->randomize ? random_file(mps) : 0;
-	//	do_transition(mps, false);
-	//	mps->restart_on_activate = false;
-	//	mps->use_cut = false;
-	//	mps->stop = false;
-	//	return;
-	//}
-
-	//if (mps->pause_on_deactivate || mps->manual || mps->stop || mps->paused)
-	//	return;
-
-	///* ----------------------------------------------------- */
-	///* do transition when slide time reached                 */
-	//mps->elapsed += seconds;
-
-	//if (mps->elapsed > mps->slide_time) {
-	//	mps->elapsed -= mps->slide_time;
-
-	//	if (!mps->loop && mps->cur_item == mps->files.num - 1) {
-	//		if (mps->hide)
-	//			do_transition(mps, true);
-	//		else
-	//			do_transition(mps, false);
-
-	//		return;
-	//	}
-
-	//	if (mps->randomize) {
-	//		size_t next = mps->cur_item;
-	//		if (mps->files.num > 1) {
-	//			while (next == mps->cur_item)
-	//				next = random_file(mps);
-	//		}
-	//		mps->cur_item = next;
-
-	//	} else if (++mps->cur_item >= mps->files.num) {
-	//		mps->cur_item = 0;
-	//	}
-
-	//	if (mps->files.num)
-	//		do_transition(mps, false);
-	//}
 }
 
 static void mps_enum_sources(void *data, obs_source_enum_proc_t cb, void *param)
@@ -2949,25 +2874,6 @@ static void add_media_to_selection(obs_property_t *list, struct media_file_data 
 	obs_property_list_add_string(list, name.array, identity);
 	dstr_free(&name);
 	bfree(identity);
-}
-
-/* The caller holds the list lock (no caller today; upstream's calls are commented out) */
-static void update_current_filename_property(struct media_playlist_source *mps, obs_property_t *p)
-{
-	struct dstr long_desc = {0};
-	if (!mps || !p)
-		return;
-	if (!mps->actual_media) {
-		obs_property_set_long_description(p, " ");
-		return;
-	} else if (mps->actual_media->parent) {
-		dstr_catf(&long_desc, "%zu-%zu", mps->actual_media->parent->index + 1, mps->actual_media->index + 1);
-	} else {
-		dstr_catf(&long_desc, "%zu", mps->actual_media->index + 1);
-	}
-	dstr_catf(&long_desc, ": %s", mps->actual_media->path);
-	obs_property_set_long_description(p, long_desc.array);
-	dstr_free(&long_desc);
 }
 
 /* N is asked for only in the newest N mode (R-DIR-7) */
@@ -3329,7 +3235,6 @@ static void mps_update(void *data, obs_data_t *settings)
 	bool resumed_row = false; /* first update: the saved row was found, or there is no uuid and the index stands */
 	bool restart_on_activate = true;
 	long long new_speed;
-	//const char *mode;
 
 	/* ------------------------------------- */
 	/* get settings data */
@@ -3650,18 +3555,6 @@ static void mps_update(void *data, obs_data_t *settings)
 	for (size_t i = 0; i < option_targets.num; i++)
 		pl_provider_set_options(option_targets.array[i], &container_options);
 	da_free(option_targets);
-	/* ------------------------- */
-
-	//if (mps->files.num) {
-	//	do_transition(mps, false);
-
-	//	if (mps->manual)
-	//		set_media_state(mps, OBS_MEDIA_STATE_PAUSED);
-	//	else
-	//		set_media_state(mps, OBS_MEDIA_STATE_PLAYING);
-
-	//	obs_source_media_started(mps->source);
-	//}
 	obs_data_array_release(array);
 }
 
