@@ -110,6 +110,15 @@ char *pl_url_redacted(const char *location)
 		if (*c == '@')
 			authority = c + 1;
 	}
+	/* A password typed with a '/', '?' or '#' that is not written as "%XX" ends the authority early for a parser,
+	 * and the rest of it would show as a path. So when an '@' follows and a ':' stands anywhere before it, all of
+	 * that is taken for a user name and password, up to the last '@' of the text. This also hides the host of a
+	 * well-formed address with a ':' (a port) before an '@' in its path: showing too little is the safe side. */
+	const char *last_at = strrchr(path_start, '@');
+	if (last_at && memchr(authority, ':', (size_t)(last_at - authority))) {
+		authority = last_at + 1;
+		path_start = authority + strcspn(authority, "/?#");
+	}
 
 	struct dstr shown = {0};
 	dstr_ncopy(&shown, location, (size_t)(scheme_end + 3 - location));
@@ -128,13 +137,17 @@ void pl_location_split(const char *location, char **name, char **container)
 	if (scheme_end)
 		floor = (size_t)(authority - shown) + strcspn(authority, "/");
 
+	/* an address without a host ("file:///a.mp4"): its path starts at the root, which then is the container */
+	const bool hostless = scheme_end && floor == (size_t)(authority - shown);
+
 	size_t end = strlen(shown);
 	while (end > floor && separator(shown[end - 1]))
 		end--;
 	*container = NULL;
 	if (end == floor) {
-		/* no path: the host of an address; of anything else (a bare "/"), the text as it is */
-		*name = scheme_end ? bstrdup_n(authority, floor - (size_t)(authority - shown)) : bstrdup(shown);
+		/* no path: the host of an address; of anything else (a bare "/", "file:///"), the text as it is */
+		*name = scheme_end && !hostless ? bstrdup_n(authority, floor - (size_t)(authority - shown))
+						: bstrdup(shown);
 		bfree(shown);
 		return;
 	}
@@ -142,7 +155,9 @@ void pl_location_split(const char *location, char **name, char **container)
 	while (start > floor && !separator(shown[start - 1]))
 		start--;
 	*name = bstrdup_n(shown + start, end - start);
-	if (start > 0)
+	if (hostless && start == floor + 1)
+		*container = bstrdup_n(shown, start);
+	else if (start > 0)
 		*container = bstrdup_n(shown, start > 1 ? start - 1 : 1);
 	bfree(shown);
 }
@@ -153,14 +168,19 @@ char *pl_location_label(const char *title, const char *location)
 	char *container;
 	pl_location_split(location, &name, &container);
 	struct dstr label = {0};
-	if (title && *title)
-		dstr_printf(&label, "%s - ", title);
+	if (title && *title) {
+		/* a title may itself be an address, or hold one */
+		char *shown_title = pl_url_redacted(title);
+		dstr_printf(&label, "%s - ", shown_title);
+		bfree(shown_title);
+	}
 	dstr_cat(&label, name);
 	if (container)
 		dstr_catf(&label, " (%s)", container);
 	bfree(name);
 	bfree(container);
-	return label.array;
+	/* never NULL: a dstr that was given nothing has no array */
+	return label.array ? label.array : bstrdup("");
 }
 
 /* RFC 3986 section 3, as the resolution in section 5 needs it: each part is a slice of the text, and a part that is

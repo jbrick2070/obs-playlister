@@ -283,7 +283,7 @@ local NOT_PLAYED = " - could not be played (missing, moved, or not a format OBS 
 -- stands between them when there is more than one row, has a check of its own
 local function check_status(name, expected_text, expected_type)
 	local text, info_type = status_block()
-	text = text:gsub("\n%d+ items in all", "")
+	text = text:gsub("\n%d+ items to play", "")
 	check(name, text == expected_text and info_type == expected_type, text:gsub("\n", " | ") .. " (type " ..
 		info_type .. ")")
 end
@@ -685,7 +685,7 @@ step("play selected", 500, 15000, function() return dur() == D[1] and st() == PL
 	check_status("the status block lists each file row, the stale notice gone once a choice played",
 		"1: file\n2: file\n3: file", 0)
 	-- R-UX-21: more than one row, all of them read: what they come to, after the rows
-	check("the status block totals the rows", (status_block()) == "1: file\n2: file\n3: file\n3 items in all",
+	check("the status block totals the rows", (status_block()) == "1: file\n2: file\n3: file\n3 items to play",
 		(status_block()))
 	check("no setting holds the status block", not status_in_settings())
 	-- R-LIST-6: Properties names the running version on a line of its own, never a setting

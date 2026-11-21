@@ -22,12 +22,18 @@ Italian.
 - Status says "Waiting: plays when its scene is in Program." for a source that has items and is not on air, as a
   new source in a Studio Mode Preview scene is.
 - A hotkey pressed while the source is not shown leaves a line in the OBS log.
-- Status totals the rows: with more than one row, a line after them reads "37 items in all". It is left out while
-  a row is still being read or cannot be read, when it would not be the whole truth.
+- Status totals the rows: with more than one row, a line after them reads "37 items to play", the items the list
+  plays as it stands (a folder that plays 5 of 40 files counts 5; an item that could not be played is not
+  counted). It is left out while a row is still being read, cannot be read or plays the last list it could read,
+  when it would not be the whole truth.
 - A folder or playlist row names the files it could not play, the first three of them: "2 files could not be played
   (clip-07.mp4, intro.mov)". Before, it only counted them.
 - **Apply waiting changes** answers in Status: "The waiting changes are being applied. Press Refresh to see the
-  list.", or "No changes are waiting." Before, a press showed nothing.
+  list.", or "No changes were waiting. Press Refresh to check again." Before, a press showed nothing.
+- A password in a web address never shows in a label, a status line, a log line or a name sent to controllers,
+  also when it was typed with a "/", "?" or "#" in it, which used to leave a part of it in view. A playlist
+  entry's title that is itself such an address is treated the same.
+- An item given as `file:///a.mp4` reads "a.mp4 (file:///)" in the Play item list.
 
 ### Changed
 

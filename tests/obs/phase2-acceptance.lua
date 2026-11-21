@@ -483,14 +483,16 @@ step("folder gone", 0, 20000, function() return (status_block()):find("folder no
 	check("2.9 a folder that went away shows the error and the time of the last list it keeps",
 		text:find("1: folder - 2 files; folder not found (deleted, drive removed or share offline); checking again " ..
 			"every ", 1, true) ~= nil and
-		text:find("using the list read at 20", 1, true) ~= nil and info_type == 2, text)
+		text:find("using the list read at 20", 1, true) ~= nil and info_type == 2 and
+		-- R-UX-21: no total beside a row that plays its last good list
+		text:find("items to play", 1, true) == nil, text)
 	os.rename(MOVE_FOLDER .. "-away", MOVE_FOLDER)
 end)
 
 step("folder back", 0, 30000, function() return (status_block()):find("1: folder - 2 files\n", 1, true) == 1 end,
 	function()
 		local text, info_type = status_block()
-		check("2.9 the folder recovers when it is back", text == "1: folder - 2 files\n2: file\n3 items in all" and info_type == 0,
+		check("2.9 the folder recovers when it is back", text == "1: folder - 2 files\n2: file\n3 items to play" and info_type == 0,
 			text)
 		remove_source()
 	end)

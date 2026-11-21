@@ -499,8 +499,9 @@ static inline void reset_folder_item_index(struct media_playlist_source *mps)
  * carry (pl_location_split). bmem. */
 static char *item_name(const struct media_file_data *item)
 {
+	/* a title may itself be an address, or hold one: no password of it is shown or published */
 	if (item->entry && item->entry->title && *item->entry->title)
-		return bstrdup(item->entry->title);
+		return pl_url_redacted(item->entry->title);
 	char *name;
 	char *container;
 	pl_location_split(item->path, &name, &container);
@@ -1252,8 +1253,25 @@ static const struct media_file_data *settings_row(const struct media_playlist_so
 	return NULL;
 }
 
+/* R-UX-21: the items the list plays as it stands: what each row shows after its filter and mode, without those marked
+ * as failed. Not the files a folder holds: "1 of 5 files" counts one. The caller holds the list lock. */
+static size_t items_to_play(const struct media_playlist_source *mps)
+{
+	size_t count = 0;
+	for (size_t i = 0; i < mps->files.num; i++) {
+		const struct media_file_data *row = &mps->files.array[i];
+		if (!row->is_folder) {
+			count += !item_failed(mps, row);
+			continue;
+		}
+		for (size_t j = 0; j < row->folder_items.num; j++)
+			count += !item_failed(mps, &row->folder_items.array[j]);
+	}
+	return count;
+}
+
 /* The status block: one line per row, "N: kind - status", or what to do when there is no row (R-UX-1), then how many
- * items the rows come to (R-UX-21), a line when auto-advance stopped because nothing may play (R-BEH-5), one when
+ * items the rows play (R-UX-21), a line when auto-advance stopped because nothing may play (R-BEH-5), one when
  * the source waits for Program (R-UX-13) and one when the last Play now choice was stale (R-UP-20); returns the
  * worst level.
  *
@@ -1290,7 +1308,9 @@ static enum pl_status_level build_status_block(const struct media_playlist_sourc
 			dstr_catf(block, "%zu: %s", shown, T_ROW_STATUS_NEW_ROW);
 			continue;
 		}
-		if (row->is_folder && (row->awaiting || !row->report.listed))
+		/* a row that keeps its last good list after a failure, or is in error, is not read as it is now */
+		if (row->is_folder &&
+		    (row->awaiting || !row->report.listed || row->report.stale || row->report.level == PL_STATUS_ERROR))
 			all_read = false;
 		enum pl_status_level level = row_status(mps, row, &line);
 		if (level > worst)
@@ -1302,9 +1322,9 @@ static enum pl_status_level build_status_block(const struct media_playlist_sourc
 		dstr_copy(block, T_ROW_STATUS_EMPTY_LIST);
 	/* the lines about playback are the source's, which has not seen an edited list yet */
 	bool current = all_known && shown == mps->files.num;
-	/* R-UX-21: with more than one row, what they come to. After the rows, so that line N stays row N; and only
-	 * when it is the whole truth: every row read, and the list the one the source has. */
-	size_t total = current && shown > 1 && all_read ? get_total_file_count(mps) : 0;
+	/* R-UX-21: with more than one row, how many items they play. After the rows, so that line N stays row N; and
+	 * only when it is the whole truth: every row read and none in error, and the list the one the source has. */
+	size_t total = current && shown > 1 && all_read ? items_to_play(mps) : 0;
 	if (total > 1) {
 		dstr_cat(block, "\n");
 		cat_count(block, NULL, T_ROW_STATUS_TOTAL, total, 0);
@@ -3594,19 +3614,24 @@ static bool playlist_modified(void *data, obs_properties_t *props, obs_property_
  *
  * R-UX-22: the press is answered in Status, which is redrawn. The request is carried out at a later tick and the
  * providers publish after that, so the rows read here are still the ones from before the press: the answer is that
- * the changes are being applied and that Refresh shows them, or that none were waiting, never a new count. */
+ * the changes are being applied and that Refresh shows them, or that none were waiting, never a new count. Whether
+ * any were waiting is asked of the providers themselves, which know before a row's report does; a change a provider
+ * is finding this instant is in neither, so the other answer speaks of the moment of the press and names Refresh,
+ * and the request is made either way. */
 static bool apply_waiting_clicked(obs_properties_t *props, obs_property_t *property, void *data)
 {
 	UNUSED_PARAMETER(property);
 	struct media_playlist_source *mps = data;
 	size_t waiting = 0;
 	pthread_mutex_lock(&mps->mutex);
-	for (size_t i = 0; i < mps->files.num; i++)
-		waiting += mps->files.array[i].is_folder ? mps->files.array[i].report.held_changes : 0;
+	for (size_t i = 0; i < mps->providers.num; i++) {
+		if (mps->providers.array[i].provider)
+			waiting += pl_provider_held_changes(mps->providers.array[i].provider);
+	}
 	pthread_mutex_unlock(&mps->mutex);
 	obs_log(LOG_INFO, "apply waiting changes: the folders and playlists apply the lists they kept (%zu waiting)",
 		waiting);
-	/* asked for also when none shows as waiting: a change found this instant is not in a row's report yet */
+	/* asked for also when none is waiting: a change found this instant is not counted yet */
 	os_atomic_set_bool(&mps->release_held, true);
 	show_status_block(mps, obs_properties_get(props, S_ROW_STATUS), NULL,
 			  waiting ? T_ROW_STATUS_APPLYING : T_ROW_STATUS_NOTHING_WAITING);

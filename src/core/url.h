@@ -36,19 +36,28 @@ char *pl_url_path_extension(const char *location);
 
 /* The location as a log line shows it, as URLs can carry credentials or signed query strings: for text with "://", the
  * scheme and "://", the authority from after its last '@' (user information may itself contain '@') and the path up
- * to the first '?' or '#'; anything else, such as a local path, unchanged. A secret inside the path still shows. */
+ * to the first '?' or '#'; anything else, such as a local path, unchanged. A secret inside the path still shows.
+ *
+ * A password never shows, also one typed with a '/', '?' or '#' that is not written as "%XX", which ends the
+ * authority early for a parser: when an '@' stands after the authority as a parser reads it and a ':' anywhere before
+ * that '@', everything up to the last '@' of the text is left out as user information
+ * ("https://user:ab/cd@host/x" gives "https://host/x"). The price is a well-formed address with a port and an '@' in
+ * its path, which shows only what follows that '@'. */
 char *pl_url_redacted(const char *location);
 
 /* A location as a person reads it, in two parts (R-UX-19): the name, which is its last part (the file name; of an
  * address with no path, the host), and the container, which is what stands before the name without the separator
  * between them (the folder, or the address up to there; "/" for a file in the root; NULL when nothing stands before
- * the name). The location is redacted first (pl_url_redacted), and separators at its end are left out. */
+ * the name). The location is redacted first (pl_url_redacted), and separators at its end are left out. An address
+ * without a host keeps the root of its path as the container ("file:///a.mp4" gives "a.mp4" and "file:///"), and
+ * one that is nothing but its root is its own name ("file:///"). Neither is ever NULL but the container. */
 void pl_location_split(const char *location, char **name, char **container);
 
 /* The label of an item in a list a person picks from: the name first, then the container in brackets, as a narrow
  * list cuts a text at its end; a title, when the item has one of its own, before both.
  * "D:/shows/loops/clip-14.mp4" gives "clip-14.mp4 (D:/shows/loops)", with the title "Intro",
- * "Intro - clip-14.mp4 (D:/shows/loops)". title may be NULL. */
+ * "Intro - clip-14.mp4 (D:/shows/loops)". title may be NULL; one that is or holds an address is redacted like the
+ * location. Never NULL: "" when there is neither a title nor a name. */
 char *pl_location_label(const char *title, const char *location);
 
 /* RFC 3986 section 5.2: reference resolved against base, which must be an absolute URL; dot segments removed, scheme

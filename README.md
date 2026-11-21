@@ -136,9 +136,11 @@ number, its kind and how it is doing. For example:
   address)` when nothing played within 5 seconds (15 seconds for an address or
   a file on a network share). Playlister skips it and plays the next item.
   Nothing is drawn over the picture.
-- With more than one row, a line after the rows says what they come to:
-  `37 items in all`. It is left out while a row is still being read or cannot
-  be read.
+- With more than one row, a line after the rows says how many items the list
+  plays as it stands: `37 items to play`. A folder that plays `5 of 40 files`
+  counts 5, and an item that could not be played is not counted. The line is
+  left out while a row is still being read, cannot be read, or plays the last
+  list it could read.
 - When nothing in the list can play, a last line says so and playback stops.
   Fix the rows marked above it, or select the source and press Play in the
   source toolbar under the preview to try again.
@@ -208,7 +210,8 @@ Tick **Show advanced options** for the rest:
     **Apply waiting changes**. They also join when the source returns to
     Program, if it is set to start again or to play the next item. Status
     counts them (`3 changes waiting`); after a press of the button it says
-    that they are being applied, and **Refresh** shows the new list.
+    that they are being applied, or that none were waiting at that moment,
+    and **Refresh** shows the list as it is then.
 - **Speed** (100% / 1x, range 1% to 200% / 0.01x to 2x): playback speed.
   Changing Speed restarts the item that is playing.
 

@@ -93,6 +93,18 @@ static void test_redacted(void)
 	redacted("https://user:pw@lists.example.com/show.m3u?token=SECRET#f", "https://lists.example.com/show.m3u");
 	redacted("https://a@b@host.example.com/x", "https://host.example.com/x"); /* the last '@' ends it */
 	redacted("http://host.example.com", "http://host.example.com");
+	redacted("https://host.example.com/media/clip@2x.mp4", "https://host.example.com/media/clip@2x.mp4");
+	redacted("https://host.example.com/a?mail=me@example.org", "https://host.example.com/a");
+	/* a password with a '/', '?' or '#' that was not written as "%XX": no part of it shows */
+	redacted("https://user:ab/cd@host.example.com/x.mp4", "https://host.example.com/x.mp4");
+	redacted("https://user:p?ss@host.example.com/x.mp4", "https://host.example.com/x.mp4");
+	redacted("https://user:p#ss@host.example.com/x", "https://host.example.com/x");
+	redacted("https://user:a/b@c#d?e@host.example.com/x?q", "https://host.example.com/x");
+	redacted("https://us/er:secret@host.example.com/x", "https://host.example.com/x");
+	redacted("https://user:12/34@host.example.com/x", "https://host.example.com/x"); /* looks like a port */
+	redacted("https://user:pw@host.example.com:8080/x", "https://host.example.com:8080/x");
+	/* the price: a port and an '@' in the path cannot be told from a password with a '/' */
+	redacted("http://nas:8080/media/clip@2x.mp4", "http://2x.mp4");
 	redacted("C:\\Lists\\a.m3u", "C:\\Lists\\a.m3u");
 	redacted("/home/me/a.m3u", "/home/me/a.m3u");
 }
@@ -424,6 +436,20 @@ static void test_location(void)
 	location("https://example.com", "example.com", NULL);
 	location("https://user:pw@example.com:8080/", "example.com:8080", NULL);
 	location("rtmp://example.com?key=1", "example.com", NULL);
+	/* a password with an unencoded '/' or '#' reaches neither part */
+	location("https://user:ab/cd@example.com/x.mp4", "x.mp4", "https://example.com");
+	location("https://user:p#ss@example.com/x", "x", "https://example.com");
+	location("https://user:p#ss@example.com", "example.com", NULL);
+	/* an address without a host, as local playlists write files */
+	location("file:///D:/shows/a.mp4", "a.mp4", "file:///D:/shows");
+	location("file:///home/me/a.mp4", "a.mp4", "file:///home/me");
+	location("file:///a.mp4", "a.mp4", "file:///");
+	location("file:///", "file:///", NULL);
+	location("file://", "file://", NULL);
+	location("file://server/share/a.mp4", "a.mp4", "file://server/share");
+	location("file://localhost/a.mp4", "a.mp4", "file://localhost");
+	location("https://", "https://", NULL);
+	location("https:///a.mp4", "a.mp4", "https:///");
 
 	label(NULL, "D:/shows/loops/clip-14.mp4", "clip-14.mp4 (D:/shows/loops)");
 	label("", "D:/shows/loops/clip-14.mp4", "clip-14.mp4 (D:/shows/loops)");
@@ -431,6 +457,14 @@ static void test_location(void)
 	label(NULL, "clip.mp4", "clip.mp4");
 	label("News", "https://user:pw@example.com/radio?x=1", "News - radio (https://example.com)");
 	label(NULL, "https://example.com/", "example.com");
+	label(NULL, "file:///a.mp4", "a.mp4 (file:///)");
+	label(NULL, "file:///", "file:///");
+	/* never NULL, and a title that is an address shows no password either */
+	label(NULL, "", "");
+	label("", "", "");
+	label("https://user:pw@example.com/live", "https://user:pw@example.com/live/1.ts",
+	      "https://example.com/live - 1.ts (https://example.com/live)");
+	label("News https://user:p/w@example.com/a", "clip.mp4", "News https://example.com/a - clip.mp4");
 }
 
 int main(void)
