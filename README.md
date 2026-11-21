@@ -124,9 +124,10 @@ number, its kind and how it is doing. For example:
   added as they arrive`, `no files here yet; files in subfolders need Include
   subfolders`, or `no files of the types to play (see File types)`.
 - It can add: `waiting for 2 files to finish writing`, `3 changes waiting`
-  (see Freeze the list during playback below), `1 file could not be played`,
-  and an error with what happens next, such as `folder not found, or not a
-  folder; checking again every 10 s`. When the list cannot be read now,
+  (see Freeze the list during playback below), `1 file could not be played
+  (clip-07.mp4)` with the names of the first three such files, and an error
+  with what happens next, such as `folder not found, or not a folder; checking
+  again every 10 s`. When the list cannot be read now,
   Playlister keeps playing the last good one and says
   `using the list read at <date and time>`.
 - A file or web address that failed is named, with the likely cause:
@@ -135,6 +136,9 @@ number, its kind and how it is doing. For example:
   address)` when nothing played within 5 seconds (15 seconds for an address or
   a file on a network share). Playlister skips it and plays the next item.
   Nothing is drawn over the picture.
+- With more than one row, a line after the rows says what they come to:
+  `37 items in all`. It is left out while a row is still being read or cannot
+  be read.
 - When nothing in the list can play, a last line says so and playback stops.
   Fix the rows marked above it, or select the source and press Play in the
   source toolbar under the preview to try again.
@@ -202,7 +206,9 @@ Tick **Show advanced options** for the rest:
   - **Freeze the list during playback** (off): when on, new, changed and
     removed files wait until the next Play or Restart, or until you press
     **Apply waiting changes**. They also join when the source returns to
-    Program, if it is set to start again or to play the next item.
+    Program, if it is set to start again or to play the next item. Status
+    counts them (`3 changes waiting`); after a press of the button it says
+    that they are being applied, and **Refresh** shows the new list.
 - **Speed** (100% / 1x, range 1% to 200% / 0.01x to 2x): playback speed.
   Changing Speed restarts the item that is playing.
 

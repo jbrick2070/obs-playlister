@@ -79,7 +79,8 @@ static void end_reached_locked(struct media_playlist_source *mps);
 static void media_source_ended(void *data, calldata_t *cd);
 void mps_audio_callback(void *data, obs_source_t *source, const struct audio_data *audio_data, bool muted);
 static bool play_selected_clicked(obs_properties_t *props, obs_property_t *property, void *data);
-static void show_status_block(struct media_playlist_source *mps, obs_property_t *p, obs_data_t *edited);
+static void show_status_block(struct media_playlist_source *mps, obs_property_t *p, obs_data_t *edited,
+			      const char *note);
 static bool row_playable(const struct media_playlist_source *mps, const struct media_file_data *row);
 static size_t skip_empty_folder_rows(struct media_playlist_source *mps, size_t index, bool backward);
 
@@ -298,6 +299,9 @@ struct obs_source_info media_playlist_source_info = {
 #define T_ROW_STATUS_NOT_READ T_("RowStatus.NotRead")
 #define T_ROW_STATUS_ALL_FAILED T_("RowStatus.AllFailed")
 #define T_ROW_STATUS_EMPTY_LIST T_("RowStatus.EmptyList")
+#define T_ROW_STATUS_TOTAL T_("RowStatus.Total")
+#define T_ROW_STATUS_APPLYING T_("RowStatus.ApplyingWaiting")
+#define T_ROW_STATUS_NOTHING_WAITING T_("RowStatus.NothingWaiting")
 #define T_RESTART_BEHAVIOR_TOOLTIP T_("RestartBehavior.Tooltip")
 #define T_REFRESH_HINT T_("RefreshHint")
 #define T_HOTKEYS_HINT T_("HotkeysHint")
@@ -489,31 +493,19 @@ static inline void reset_folder_item_index(struct media_playlist_source *mps)
 	remember_item(mps, NULL);
 }
 
-/* The last part of a path or address: what a person calls the file */
-static const char *last_part(const char *path)
-{
-	const char *name = path;
-	for (const char *c = path; *c; c++) {
-		if ((*c == '/' || *c == '\\') && c[1])
-			name = c + 1;
-	}
-	return name;
-}
-
-/* What an item or a row is called where a person reads it (a failed row's status line, the Play item list, and what
- * is published for controllers, R-UX-11): a playlist entry's own title when it has one, else its file name; of a web
- * address its last part, without the user name, password and query an address can carry (pl_url_redacted). bmem. */
+/* What an item or a row is called where a person reads it (a failed row's or file's status line, and what is
+ * published for controllers, R-UX-11): a playlist entry's own title when it has one, else its file name; of a web
+ * address its last part, or its host when it has no path, without the user name, password and query an address can
+ * carry (pl_location_split). bmem. */
 static char *item_name(const struct media_file_data *item)
 {
 	if (item->entry && item->entry->title && *item->entry->title)
 		return bstrdup(item->entry->title);
-	if (item->is_url || strstr(item->path, "://")) {
-		char *shown = pl_url_redacted(item->path);
-		char *name = bstrdup(last_part(shown));
-		bfree(shown);
-		return name;
-	}
-	return bstrdup(last_part(item->path));
+	char *name;
+	char *container;
+	pl_location_split(item->path, &name, &container);
+	bfree(container);
+	return name;
 }
 
 /* The item Play or Restart would load from where the position stands, or NULL. The caller holds the list lock. */
@@ -1018,7 +1010,7 @@ static bool play_selected_clicked(obs_properties_t *props, obs_property_t *prope
 	pthread_mutex_unlock(&mps->mutex);
 	/* the click redraws the open Properties without building it again: its status block is updated here, so a
 	 * stale choice shows (R-UP-20) */
-	show_status_block(mps, obs_properties_get(props, S_ROW_STATUS), NULL);
+	show_status_block(mps, obs_properties_get(props, S_ROW_STATUS), NULL, NULL);
 	/* released after its last use (R-UP-71) */
 	obs_data_release(settings);
 
@@ -1126,12 +1118,27 @@ static void cat_last_list(struct dstr *out, int64_t unix_ms)
 	dstr_free(&text);
 }
 
-/* Items of a folder row marked failed (R-BEH-5) */
-static size_t failed_items(const struct media_playlist_source *mps, const struct media_file_data *row)
+#define FAILED_NAMES_SHOWN 3 /* a folder row names this many of its failed items; the count tells the rest */
+
+/* Items of a folder row marked failed (R-BEH-5), and the names of the first of them, "a.mp4, b.mov", with ", ..."
+ * when there are more than are named (R-UX-20): which file it was is the first thing an operator asks */
+static size_t failed_items(const struct media_playlist_source *mps, const struct media_file_data *row,
+			   struct dstr *names)
 {
 	size_t count = 0;
-	for (size_t i = 0; mps->failed.num && i < row->folder_items.num; i++)
-		count += item_failed(mps, &row->folder_items.array[i]);
+	for (size_t i = 0; mps->failed.num && i < row->folder_items.num; i++) {
+		const struct media_file_data *item = &row->folder_items.array[i];
+		if (!item_failed(mps, item))
+			continue;
+		if (++count > FAILED_NAMES_SHOWN)
+			continue;
+		char *name = item_name(item);
+		dstr_cat(names, count > 1 ? ", " : "");
+		dstr_cat(names, name);
+		bfree(name);
+	}
+	if (count > FAILED_NAMES_SHOWN)
+		dstr_cat(names, ", ...");
 	return count;
 }
 
@@ -1198,12 +1205,15 @@ static enum pl_status_level row_status(const struct media_playlist_source *mps, 
 		if (report->held_changes)
 			cat_count(next_part(&status), T_ROW_STATUS_ONE_CHANGE, T_ROW_STATUS_CHANGES,
 				  report->held_changes, 0);
-		size_t failed = failed_items(mps, row);
+		struct dstr failed_names = {0};
+		size_t failed = failed_items(mps, row, &failed_names);
 		if (failed) {
 			cat_count(next_part(&status), T_ROW_STATUS_ONE_FAILED, T_ROW_STATUS_FILES_FAILED, failed, 0);
+			dstr_catf(&status, " (%s)", failed_names.array);
 			if (level < PL_STATUS_WARNING)
 				level = PL_STATUS_WARNING;
 		}
+		dstr_free(&failed_names);
 		if (report->message)
 			dstr_cat(next_part(&status), report->message);
 		if (report->stale && report->last_ok_unix_ms)
@@ -1242,9 +1252,10 @@ static const struct media_file_data *settings_row(const struct media_playlist_so
 	return NULL;
 }
 
-/* The status block: one line per row, "N: kind - status", or what to do when there is no row (R-UX-1), then a line
- * when auto-advance stopped because nothing may play (R-BEH-5), one when the source waits for Program (R-UX-13) and
- * one when the last Play now choice was stale (R-UP-20); returns the worst level.
+/* The status block: one line per row, "N: kind - status", or what to do when there is no row (R-UX-1), then how many
+ * items the rows come to (R-UX-21), a line when auto-advance stopped because nothing may play (R-BEH-5), one when
+ * the source waits for Program (R-UX-13) and one when the last Play now choice was stale (R-UP-20); returns the
+ * worst level.
  *
  * edited is NULL for the list the source has. While Properties is open it is the window's own settings, whose
  * Playlist the user may just have changed: OBS hands an edit to the source half a second later, so the rows are
@@ -1259,6 +1270,7 @@ static enum pl_status_level build_status_block(const struct media_playlist_sourc
 	size_t count = rows ? obs_data_array_count(rows) : mps->files.num;
 	size_t shown = 0;
 	bool all_known = true;
+	bool all_read = true;
 	for (size_t i = 0; i < count; i++) {
 		const struct media_file_data *row = rows ? NULL : &mps->files.array[i];
 		if (rows) {
@@ -1278,6 +1290,8 @@ static enum pl_status_level build_status_block(const struct media_playlist_sourc
 			dstr_catf(block, "%zu: %s", shown, T_ROW_STATUS_NEW_ROW);
 			continue;
 		}
+		if (row->is_folder && (row->awaiting || !row->report.listed))
+			all_read = false;
 		enum pl_status_level level = row_status(mps, row, &line);
 		if (level > worst)
 			worst = level;
@@ -1288,6 +1302,13 @@ static enum pl_status_level build_status_block(const struct media_playlist_sourc
 		dstr_copy(block, T_ROW_STATUS_EMPTY_LIST);
 	/* the lines about playback are the source's, which has not seen an edited list yet */
 	bool current = all_known && shown == mps->files.num;
+	/* R-UX-21: with more than one row, what they come to. After the rows, so that line N stays row N; and only
+	 * when it is the whole truth: every row read, and the list the one the source has. */
+	size_t total = current && shown > 1 && all_read ? get_total_file_count(mps) : 0;
+	if (total > 1) {
+		dstr_cat(block, "\n");
+		cat_count(block, NULL, T_ROW_STATUS_TOTAL, total, 0);
+	}
 	if (current && mps->all_failed) {
 		if (block->len)
 			dstr_cat(block, "\n");
@@ -1314,8 +1335,10 @@ static enum pl_status_level build_status_block(const struct media_playlist_sourc
 /* Puts the status block into its Properties info text: as its long description, which Properties shows as plain lines
  * when the text has no value (with a value, the long description becomes a tooltip and the lines are folded), colored
  * by the worst level. Never written to the settings: Properties copies them before it builds itself, and a value
- * written while it builds makes it ask to save changes nobody made. edited: build_status_block. */
-static void show_status_block(struct media_playlist_source *mps, obs_property_t *p, obs_data_t *edited)
+ * written while it builds makes it ask to save changes nobody made. edited: build_status_block. note, when not NULL,
+ * is a last line that answers the button just pressed and is gone with the next build of the block (R-UX-22). */
+static void show_status_block(struct media_playlist_source *mps, obs_property_t *p, obs_data_t *edited,
+			      const char *note)
 {
 	if (!p)
 		return;
@@ -1323,6 +1346,10 @@ static void show_status_block(struct media_playlist_source *mps, obs_property_t 
 	pthread_mutex_lock(&mps->mutex);
 	enum pl_status_level worst = build_status_block(mps, &block, edited);
 	pthread_mutex_unlock(&mps->mutex);
+	if (note) {
+		dstr_cat(&block, "\n");
+		dstr_cat(&block, note);
+	}
 	obs_property_set_long_description(p, block.array);
 	obs_property_text_set_info_type(p, worst == PL_STATUS_ERROR     ? OBS_TEXT_INFO_ERROR
 					   : worst == PL_STATUS_WARNING ? OBS_TEXT_INFO_WARNING
@@ -3463,21 +3490,11 @@ static void add_media_to_selection(obs_property_t *list, struct media_file_data 
 		identity = pl_selection_format(data->id, 0, NULL);
 	}
 	dstr_cat(&name, ": ");
-	/* a playlist entry's own title (#EXTINF, PLS TitleN) first, then the file it names */
-	if (data->entry && data->entry->title && *data->entry->title)
-		dstr_catf(&name, "%s - ", data->entry->title);
-	/* the location as a person reads it: no user name, password or query of a web address */
-	char *shown = pl_url_redacted(data->path);
-	const char *file = last_part(shown);
-	dstr_cat(&name, file);
-	if (file > shown) {
-		/* what comes before the name, without its last separator: the folder, or the address up to there */
-		size_t before = (size_t)(file - shown) - 1;
-		dstr_cat(&name, " (");
-		dstr_ncat(&name, shown, before ? before : 1);
-		dstr_cat(&name, ")");
-	}
-	bfree(shown);
+	/* a playlist entry's own title (#EXTINF, PLS TitleN) first, then the file it names and the folder or address
+	 * that is in, as a person reads them: no user name, password or query of a web address (pl_location_label) */
+	char *label = pl_location_label(data->entry ? data->entry->title : NULL, data->path);
+	dstr_cat(&name, label);
+	bfree(label);
 	obs_property_list_add_string(list, name.array, identity);
 	dstr_free(&name);
 	bfree(identity);
@@ -3568,20 +3585,32 @@ static bool order_modified(obs_properties_t *props, obs_property_t *property, ob
 static bool playlist_modified(void *data, obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
 {
 	UNUSED_PARAMETER(property);
-	show_status_block(data, obs_properties_get(props, S_ROW_STATUS), settings);
+	show_status_block(data, obs_properties_get(props, S_ROW_STATUS), settings, NULL);
 	return true;
 }
 
 /* R-DIR-11: the lists the folders kept while locked are applied now, mid-show, without stopping; the same request
- * as a playback trigger, which video_tick hands to every provider */
+ * as a playback trigger, which video_tick hands to every provider.
+ *
+ * R-UX-22: the press is answered in Status, which is redrawn. The request is carried out at a later tick and the
+ * providers publish after that, so the rows read here are still the ones from before the press: the answer is that
+ * the changes are being applied and that Refresh shows them, or that none were waiting, never a new count. */
 static bool apply_waiting_clicked(obs_properties_t *props, obs_property_t *property, void *data)
 {
-	UNUSED_PARAMETER(props);
 	UNUSED_PARAMETER(property);
 	struct media_playlist_source *mps = data;
-	obs_log(LOG_INFO, "apply waiting changes: the folders and playlists apply the lists they kept");
+	size_t waiting = 0;
+	pthread_mutex_lock(&mps->mutex);
+	for (size_t i = 0; i < mps->files.num; i++)
+		waiting += mps->files.array[i].is_folder ? mps->files.array[i].report.held_changes : 0;
+	pthread_mutex_unlock(&mps->mutex);
+	obs_log(LOG_INFO, "apply waiting changes: the folders and playlists apply the lists they kept (%zu waiting)",
+		waiting);
+	/* asked for also when none shows as waiting: a change found this instant is not in a row's report yet */
 	os_atomic_set_bool(&mps->release_held, true);
-	return false;
+	show_status_block(mps, obs_properties_get(props, S_ROW_STATUS), NULL,
+			  waiting ? T_ROW_STATUS_APPLYING : T_ROW_STATUS_NOTHING_WAITING);
+	return true;
 }
 
 /* The shared "Folders and playlist files" group (R-LIST-3, D-7, R-UX-7): one set of options for every folder row of
@@ -3697,7 +3726,7 @@ static obs_properties_t *mps_properties(void *data)
 	 * edited; never pushed from a worker (R-BEH-2) */
 	p = obs_properties_add_text(props, S_ROW_STATUS, T_ROW_STATUS, OBS_TEXT_INFO);
 	if (mps)
-		show_status_block(mps, p, NULL);
+		show_status_block(mps, p, NULL, NULL);
 	/* R-UX-2: Refresh sits with what it updates, and the hint under it names all three */
 	obs_properties_add_button2(props, S_REFRESH_FILENAME, T_REFRESH_FILENAME, refresh_filename_clicked, mps);
 	/* A name of its own: OBS refuses a second property with the same name. */

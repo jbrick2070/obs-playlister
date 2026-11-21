@@ -22,6 +22,12 @@ Italian.
 - Status says "Waiting: plays when its scene is in Program." for a source that has items and is not on air, as a
   new source in a Studio Mode Preview scene is.
 - A hotkey pressed while the source is not shown leaves a line in the OBS log.
+- Status totals the rows: with more than one row, a line after them reads "37 items in all". It is left out while
+  a row is still being read or cannot be read, when it would not be the whole truth.
+- A folder or playlist row names the files it could not play, the first three of them: "2 files could not be played
+  (clip-07.mp4, intro.mov)". Before, it only counted them.
+- **Apply waiting changes** answers in Status: "The waiting changes are being applied. Press Refresh to see the
+  list.", or "No changes are waiting." Before, a press showed nothing.
 
 ### Changed
 
@@ -44,7 +50,11 @@ Italian.
 - An empty **File types** field means all the usual video, audio and image types. It used to make folders play
   nothing, with no way back short of resetting every setting.
 - The Play item list shows the name first and the folder after it ("2-14: clip-14.mp4 (D:/shows/loops)"), and a
-  playlist entry's own title before its file name.
+  playlist entry's own title before its file name. A web address with no path shows its host ("example.com"), not
+  a piece of its "https://".
+- The tooltip of **Freeze the list during playback** is one sentence: "New, changed and removed files wait until
+  the next Play or Restart, or until you press Apply waiting changes." What happens when the source returns to
+  Program is in the README.
 - A file or web address row that failed names its file, the likely cause and what happened: "could not be played
   (missing, moved, or not a format OBS can play); skipped". A missing folder and a list that cannot be read say
   when Playlister tries again: "checking again every 10 s". A folder with nothing to play says why: no files

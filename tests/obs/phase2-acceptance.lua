@@ -490,7 +490,8 @@ end)
 step("folder back", 0, 30000, function() return (status_block()):find("1: folder - 2 files\n", 1, true) == 1 end,
 	function()
 		local text, info_type = status_block()
-		check("2.9 the folder recovers when it is back", text == "1: folder - 2 files\n2: file" and info_type == 0, text)
+		check("2.9 the folder recovers when it is back", text == "1: folder - 2 files\n2: file\n3 items in all" and info_type == 0,
+			text)
 		remove_source()
 	end)
 

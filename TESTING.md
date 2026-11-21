@@ -379,6 +379,25 @@ section was run inside OBS.
 | S.19 | OBS in German and in Russian: the whole window, advanced options shown | No label is cut off at 1080p with 150 % scaling | Pending |
 | S.20 | Run `tests/obs/run-harness.ps1` on Windows | Every check passes; `HARNESS DONE checks=` names the same number run and expected | Pending |
 
+## Third pass (2026-11-20)
+
+REQUIREMENTS R-UX-19 to R-UX-22. `ctest` covers the label of the Play item list and the names in status lines
+(`test-url`, `test_location`) and the three new texts in all thirteen languages (`check-locale-files`). The Lua
+scripts got three new checks (the total line, a label of the Play item list, the answer to Apply waiting changes)
+and one changed text; like the rest of the second pass they have not been run. Nothing here was run inside OBS.
+
+| # | Check | Expected | Result |
+|---|-------|----------|--------|
+| P.1 | A folder row of several videos and a file row. In Properties, at the top, open the **Play item** list | Each entry reads place, name, folder: "1-2: clip-02.mp4 (D:/shows/loops)", "2: intro.mp4 (D:/shows)". In a narrow window the name is still readable | Pending |
+| P.2 | A playlist row whose `.m3u` has `#EXTINF` titles; a web address row for a stream with no path (for example `https://example.com`) | The playlist's entries read "1-1: <title> - <file name> (<folder or address>)"; the stream reads "2: example.com" | Pending |
+| P.3 | Two or more rows, all read; press **Refresh** under Status | After the row lines, one line "N items in all", N being the sum of the rows. With a single row there is no such line. Add a row for a folder that does not exist, Refresh: the line is gone | Pending |
+| P.4 | A folder row with two files that cannot play (for example text files renamed to `.mp4`) and one that can; let it play through once; Refresh | The row reads "... 3 files; 2 files could not be played (<name>, <name>)" in the warning colour | Pending |
+| P.5 | Tick **Show advanced options**, then **Freeze the list during playback**. Hover over the checkbox | The tooltip is one sentence. The button **Apply waiting changes** appears under it; untick the box and it is gone (never greyed out) | Pending |
+| P.6 | With the list frozen and a folder row playing, copy a file into the folder and delete another; wait 5 s; Refresh | The row reads "... 2 changes waiting" | Pending |
+| P.7 | Press **Apply waiting changes** | Status keeps its lines and gets a last one: "The waiting changes are being applied. Press Refresh to see the list." Playback does not stop. Press Refresh: the new file is in the Play item list, the deleted one is not, and nothing is waiting | Pending |
+| P.8 | Press **Apply waiting changes** again, with nothing waiting | The last line of Status reads "No changes are waiting." | Pending |
+| P.9 | OBS in German and in Japanese: P.3, P.7 and P.8 | The three lines are in that language | Pending |
+
 ## macOS (0.5.2)
 
 macOS builds as one universal binary (arm64 and x86_64) and runs `ctest` on every push in CI (`macos-26`, Xcode 26;
