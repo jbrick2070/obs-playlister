@@ -118,7 +118,8 @@ static bool host_and_port(const char *text, size_t length)
 				return false;
 			i++;
 		}
-		if (i == 0)
+		/* no host: a port alone (":9000", as a listener's address has it) is checked below */
+		if (i == 0 && length < 2)
 			return false;
 	}
 	if (i == length)
@@ -170,6 +171,28 @@ char *pl_url_redacted(const char *location)
 	return shown.array;
 }
 
+char *pl_text_redacted(const char *text)
+{
+	if (!strstr(text, "://"))
+		return bstrdup(text);
+	struct dstr shown = {0};
+	for (const char *c = text; *c;) {
+		size_t gap = strspn(c, " \t");
+		dstr_ncat(&shown, c, gap);
+		c += gap;
+		size_t length = strcspn(c, " \t");
+		if (!length)
+			break;
+		char *word = bstrdup_n(c, length);
+		char *shown_word = pl_url_redacted(word);
+		dstr_cat(&shown, shown_word);
+		bfree(shown_word);
+		bfree(word);
+		c += length;
+	}
+	return shown.array ? shown.array : bstrdup("");
+}
+
 void pl_location_split(const char *location, char **name, char **container)
 {
 	char *shown = pl_url_redacted(location);
@@ -212,8 +235,8 @@ char *pl_location_label(const char *title, const char *location)
 	pl_location_split(location, &name, &container);
 	struct dstr label = {0};
 	if (title && *title) {
-		/* a title may itself be an address, or hold one */
-		char *shown_title = pl_url_redacted(title);
+		/* a title may itself be an address, or hold some */
+		char *shown_title = pl_text_redacted(title);
 		dstr_printf(&label, "%s - ", shown_title);
 		bfree(shown_title);
 	}

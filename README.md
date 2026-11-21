@@ -216,18 +216,22 @@ Tick **Show advanced options** for the rest:
   Changing Speed restarts the item that is playing.
 
 Web lists: a list address may carry a user name and password
-(`https://user:password@host/list.m3u`). Playlister shows such an address
-without them, in the window, in the log and to controllers. A `/`, `?`, `#`
-or `@` in a user name or password must be written `%2F`, `%3F`, `%23` or
-`%40`, as in any web address; otherwise the address is not valid (it would
-not play either) and the user name or password may show in the window. They
-are sent to that server, and
+(`https://user:password@host/list.m3u`). They are sent to that server, and
 after a redirect only if it stays with the same scheme, host and port; never
 to another host, nor from http to https. A redirect from https to http is
 refused. A list that is not UTF-8 is read in the character set its server
 names; it is read as Windows-1252 when the server names none, or names one
 this computer cannot convert from, or the text is not valid in the one it
 names.
+
+Where a user name and password show: Playlister leaves them out of the labels
+of the **Play item** list, of **Status**, **Now playing** and **Next**, of the
+OBS log and of the names it sends to controllers. The **Playlist** list itself
+shows each address as you typed it, and the scene collection file keeps it
+that way, since that is what Playlister plays and finds the item by. A `/`,
+`?` or `#` in a user name or password must be written `%2F`, `%3F` or `%23`,
+as in any web address; otherwise the address is not valid (it would not play
+either) and the user name or password may show in those places too.
 
 Behind a proxy: Playlister uses the proxy the environment names (`http_proxy`
 for http addresses, `https_proxy` for https, `all_proxy` for either that has

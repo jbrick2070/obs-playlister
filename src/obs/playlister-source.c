@@ -499,9 +499,9 @@ static inline void reset_folder_item_index(struct media_playlist_source *mps)
  * carry (pl_location_split). bmem. */
 static char *item_name(const struct media_file_data *item)
 {
-	/* a title may itself be an address, or hold one: no password of it is shown or published */
+	/* a title may itself be an address, or hold some: no password of them is shown or published */
 	if (item->entry && item->entry->title && *item->entry->title)
-		return pl_url_redacted(item->entry->title);
+		return pl_text_redacted(item->entry->title);
 	char *name;
 	char *container;
 	pl_location_split(item->path, &name, &container);
