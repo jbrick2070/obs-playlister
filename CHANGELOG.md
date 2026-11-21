@@ -25,7 +25,7 @@ OBS yet (TESTING.md: "Second pass", "Third pass" and "macOS").
   controller such as a Stream Deck key; the same is the proc `get_now_next` and the signal `playlister_now_next`
   on the source. They carry the names of the playing and the next item, whether the next one is decided (with
   Shuffle on it is chosen only when it starts), the state, the worst row status and the item counts; never a
-  path. README, "For controllers and scripts", has the fields. The Stream Deck plugin does not show them yet.
+  path. README, "For controllers and scripts", has the fields. Fadester for OBS 1.5 shows the names on its Playlister keys.
 - Properties: a **Next** line under **Now playing**.
 - Status says "Waiting: plays when its scene is in Program." for a source that has items and is not on air, as a
   new source in a Studio Mode Preview scene is.
