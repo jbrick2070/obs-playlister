@@ -178,7 +178,7 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 `release/RelWithDebInfo/obs-playlister`, so the folder holds exactly
 `obs-playlister.dll`, `obs-playlister.pdb`, `data\manifest.json` and
 `data\locale\en-US.ini`. From Phase 2 on these run on the current build (the waiver in PLAN section 7), so the
-version expected in 1.1 and 1.2 is that build's (0.5.2 now).
+version expected in 1.1 and 1.2 is that build's (1.5.0 now).
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
@@ -298,7 +298,7 @@ folder of two or three short videos of different lengths.
 | L.8 | An http(s) .m3u on a real server, and a direct video URL | the list loads (HTTPS included); the video plays | Pending |
 | L.9 | A folder on a network share (NFS or SMB) | the row status (and the log line of the mode change) say it is a network file system; new files show up within the check interval | Pending |
 | L.10 | Hardware decoding on and off; the Properties dialog and the Browse dialog | both play; the dialogs look and work as on Windows | Pending |
-| L.11 | Open Properties of any Playlister (Linux and Windows) | the last line reads "Playlister 0.5.2" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
+| L.11 | Open Properties of any Playlister (Linux and Windows) | the last line reads "Playlister 1.5.0" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
 | L.12 | A folder row with subfolders on. Note `sysctl fs.inotify.max_queued_events`, then `sudo sysctl fs.inotify.max_queued_events=64`; in one burst create 500 files and a new subfolder in the folder, then add a video to that subfolder. Restore the sysctl afterwards | the log shows the overflow ("more changes than the buffer holds; listing it again"), and the new video joins within about 3 s, not only at the next check (R-LNX-3) | Pending |
 | L.13 | A folder row with subfolders on. Note `sysctl fs.inotify.max_user_watches`, then `sudo sysctl fs.inotify.max_user_watches=<just above the tree's folder count>`; create a new subfolder holding a video (made elsewhere and moved in). Restore the sysctl afterwards | the log says "notifications cannot be armed; rescanning instead", and the video still joins within about 3 s (the debounce plus the write-complete wait), not only at the next check (R-DIR-3) | Pending |
 
@@ -356,7 +356,7 @@ section was run inside OBS.
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
-| S.1 | Add a new Playlister source in a scene that is in Program; look at the window | Top to bottom: "Changes here go live at once.", Playlist, Status ("Nothing to play yet. Press + at the right of Playlist, ..."), Refresh, Loop playlist, Shuffle, Now playing, Next, Play item, Play now, Show advanced options, the hotkeys line, "Playlister 0.5.2". Nothing else | Pending |
+| S.1 | Add a new Playlister source in a scene that is in Program; look at the window | Top to bottom: "Changes here go live at once.", Playlist, Status ("Nothing to play yet. Press + at the right of Playlist, ..."), Refresh, Loop playlist, Shuffle, Now playing, Next, Play item, Play now, Show advanced options, the hotkeys line, "Playlister 1.5.0". Nothing else | Pending |
 | S.2 | Press + at the right of Playlist, Add Files, pick two videos | Status changes at once, without Refresh, to two lines "1: new; press Refresh for its status" and "2: new; ..."; the first video plays; after Refresh: "1: file", "2: file", Now playing "1: <path>", Next "2: <path>" | Pending |
 | S.3 | Tick Show advanced options; untick it | The advanced options appear under the box and go away again; with Freeze the list during playback off there is no Apply waiting changes button, with it on there is | Pending |
 | S.4 | Studio Mode on. Add a Playlister to the Preview scene, add a file, press OK. Open Properties again | Nothing plays in Preview. Status ends with "Waiting: plays when its scene is in Program." Fade the scene to Program: it plays, and after Refresh the line is gone | Pending |
@@ -418,7 +418,8 @@ source is created, and OBS quits with 0 memory leaks. The items below are still 
 
 Setup: a Mac with macOS 13 or later and OBS 33. Note whether it is Apple Silicon or Intel (ideally run M.1 to M.4 on
 both). Download the `.pkg` and the `.tar.xz` from the PR's macOS CI artifact or a release. A folder of two or three
-short videos of different lengths. OBS logs are in `~/Library/Application Support/obs-studio/logs/`.
+short videos of different lengths. OBS logs are in `~/Library/Application Support/obs-studio/logs/`. The heading
+names the version the Mac build came in; the items run on the current build (1.5.0 now).
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
@@ -438,6 +439,7 @@ short videos of different lengths. OBS logs are in `~/Library/Application Suppor
 | M.14 | An iCloud Drive folder with a file set to "Remove Download" (cloud only) | the file is listed but not opened or downloaded by Playlister; it plays only when OBS opens it (R-DIR-5, R-MAC-2) | Pending |
 | M.15 | A local .m3u with relative names and a `file:///` line; an http(s) .m3u on a real server; a direct video URL; an HLS stream | the entries resolve next to the list; the list loads over HTTPS; the URL and the stream play | Pending |
 | M.16 | Properties and the Browse dialog; OBS in German and Japanese (as T.1, T.2) | the dialogs look and work as on Windows; the version line reads "Playlister <version>"; the text is translated and fits | Pending |
+| M.17 | Run the `.pkg` once more and read the installer itself: the name in its title, and the last page after it has installed. Then set the Mac's language to German or Japanese (System Settings > General > Language & Region) and run it again | The installer is titled "Playlister", not "obs-playlister". The last page reads "Playlister is installed" and three steps in place of macOS's standard success text: if OBS is open, quit it and open it again; in Sources, press + and choose Playlister; press + next to Playlist and choose your files or a folder (it plays when its scene is in Program). In German or Japanese the page is in that language, and its words for Sources, Playlist and Program are the ones OBS and Playlister show in that language (1.5.0) | Pending |
 
 ## Known residual risks
 
@@ -458,6 +460,12 @@ short videos of different lengths. OBS logs are in `~/Library/Application Suppor
   feeds, HTTPS and certificate errors, and the Browse dialog's Playlists group are unverified in OBS.
 - The version was bumped to 0.5.0 (operator decision, 2026-11-01) after the Linux runtime harness passed in OBS 32.2
   on Ubuntu 24.04, with the Linux manual items L.1 to L.11 and all earlier manual items still pending.
+- The version was set to 1.5.0 (owner's decision, 2026-11-20: every product of the Fadester suite moves to 1.5 at
+  once, for one round of hand tests on Windows and Mac) before those hand tests were run: the Second pass items S.1
+  to S.20, the Third pass items P.1 to P.11, the macOS items M.1 to M.17 and all earlier manual items are still
+  pending. Until they are run, what only they cover is unverified, among it: the new Properties window as drawn, the
+  new and changed texts in thirteen languages, an address with a user name and password against a real server, and
+  the Mac installer's title and last page.
 - Linux (R-LNX-7): a worker stuck in a call on a hung network share cannot be interrupted, so closing a source then
   waits for it; the plugin logs that it is waiting after 5 s.
 - macOS (R-MAC-3): as on Linux, a worker stuck in a call on an unreachable network volume cannot be interrupted, so
@@ -468,6 +476,6 @@ short videos of different lengths. OBS logs are in `~/Library/Application Suppor
   partial file in.
 - macOS: built and `ctest`-tested in CI, and given a first check in OBS 33.0.1 on an Apple Silicon Mac (2026-11-17:
   loads, vendor requests answer, a source is created, 0 memory leaks on quit); the `.pkg` and plugin are unsigned and
-  not notarized, and the manual items M.1 to M.16 above have not been run one by one.
+  not notarized, and the manual items M.1 to M.17 above have not been run one by one.
 - Linux: the runtime harness passed in OBS 32.2 on Ubuntu 24.04 (software rendering, 2026-11-01); the manual items L.1 to L.11
   above (dialogs, real desktops, network shares, Arch) have not run.

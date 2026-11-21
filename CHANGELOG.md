@@ -6,18 +6,26 @@ version numbers are the ones in `buildspec.json`.
 
 ## [Unreleased]
 
-Fixes from the code review of 2026-11-20, the changes from the review of the Properties window of the same day, and
-Italian.
+## [1.5.0] - 2026-11-20
+
+The suite-wide step to 1.5: every product of the Fadester suite now carries version 1.5, so that one round of hand
+tests on Windows and Mac covers them together. The number is the suite's. What changed in Playlister since 0.5.2 is
+below: the fixes from the code review of 2026-11-20, the changes from the review of the Properties window of the
+same day, Italian, and a Mac installer that ends on the first three steps. None of it has been tested by hand in
+OBS yet (TESTING.md: "Second pass", "Third pass" and "macOS").
 
 ### Added
 
-- Italian (`it-IT`), the thirteenth language. Like the others it is an AI draft that no native speaker has checked.
+- Italian (`it-IT`), the thirteenth language. Like the others it is an AI draft that no native speaker has checked,
+  and no second model has reviewed it. In the eleven languages of 0.5.1 the texts added or changed since 0.5.2,
+  about half of each file, have had no second review either (the texts up to 0.5.2 had one); the head of each
+  language file says which.
 - What plays now and what comes next can be read without opening Properties. Playlister registers the
   obs-websocket vendor `obs-playlister` with the request `get_now_next` and the event `now_next_changed`, for a
   controller such as a Stream Deck key; the same is the proc `get_now_next` and the signal `playlister_now_next`
   on the source. They carry the names of the playing and the next item, whether the next one is decided (with
   Shuffle on it is chosen only when it starts), the state, the worst row status and the item counts; never a
-  path. README, "For controllers and scripts", has the fields. The Stream Deck plugin does not show them yet.
+  path. README, "For controllers and scripts", has the fields. Fadester for OBS 1.5 shows the names on its Playlister keys.
 - Properties: a **Next** line under **Now playing**.
 - Status says "Waiting: plays when its scene is in Program." for a source that has items and is not on air, as a
   new source in a Studio Mode Preview scene is.
@@ -38,6 +46,12 @@ Italian.
   or %23, as in any web address. Otherwise the address means something else: it ends at that character, so it
   may go to another server than was meant, and that part of the user name or password may show in those labels.
 - An item given as `file:///a.mp4` reads "a.mp4 (file:///)" in the Play item list.
+- macOS: the installer ends on a page of its own, "Playlister is installed", with the first three steps: if OBS is
+  open, quit it and open it again; in Sources, press + and choose Playlister; press + next to Playlist and choose
+  your files or a folder (it plays when its scene is in Program). The page stands in place of macOS's standard
+  success text and comes in the thirteen languages of the plugin; the twelve besides English are AI drafts that no
+  native speaker has checked. The package was checked with `productbuild` and `pkgutil` on a Mac; reading the page
+  in the installer is TESTING.md, M.17.
 
 ### Changed
 
@@ -54,7 +68,7 @@ Italian.
   **Apply waiting changes**, is there only while the list is frozen. "Files to play" is **Play**; "File types to
   play" is **File types**. One thing that plays is an "item" everywhere; a playlist or web address row counts
   items, a folder files. The kind "URL" reads "web address". Labels are in sentence case.
-- **Order** is one list (Name A to Z, Name Z to A, Oldest first, Newest first, As listed, As listed reversed) in
+- **Order** is one list ("Name, A to Z", "Name, Z to A", "Oldest first", "Newest first", "As listed", "As listed, reversed") in
   place of "Sort by" and "Descending". The default stays Oldest first, and `sort_key` and `sort_descending`
   stay the saved settings, so scenes and scripts are untouched.
 - An empty **File types** field means all the usual video, audio and image types. It used to make folders play
@@ -86,6 +100,7 @@ Italian.
   names none, names one this computer cannot convert from, or sends text that is not valid in the one it names.
 - README: Install comes right after the Quick start with one download per system first; where Playlister comes
   from and the feature list are at the end; the table of four players is a link to START-HERE.md.
+- macOS: the installer is titled "Playlister". It showed the project name, "obs-playlister".
 - CI: a release tag whose version is not the one in `buildspec.json` fails the release; the GitHub actions are
   pinned to commits.
 - The five strings that no code used (`NetworkCaching`, `AudioTrack`, `SubtitleEnabled`, `SubtitleTrack`,
@@ -125,14 +140,14 @@ Italian.
   `/` and `../` parts no longer keeps a background thread busy for minutes.
 - A playlist is limited to 100,000 entries, and so is a folder. A list of
   millions of lines, from a web address or a local file, could ask for
-  gigabytes of memory and take OBS down. The row's status says how many
+  gigabytes of memory and bring OBS down. The row's status says how many
   entries were left out.
 - A paused item that is deleted, or leaves its folder or playlist, is no longer
   resumed with sound and no picture, and the item after it is no longer
   skipped: Play starts the item that followed it.
 - Deleting or editing the current row while the source is stopped, paused or at
   the end of its list no longer starts playback. The position moves to the
-  row that took its place (after a deletion, the row that followed), and Play
+  row now in its place (after a deletion, the row that followed), and Play
   or Restart starts it. A source that was paused only because it is hidden
   plays from there when it is shown. Adding files to a source that had nothing
   to play still starts it.
@@ -321,7 +336,8 @@ The manual checks in OBS (TESTING.md) are still pending.
 
 - The original Media Playlist Source, renamed and built for OBS 33.
 
-[Unreleased]: https://github.com/jbrick2070/obs-playlister/compare/0.5.2...HEAD
+[Unreleased]: https://github.com/jbrick2070/obs-playlister/compare/1.5.0...HEAD
+[1.5.0]: https://github.com/jbrick2070/obs-playlister/compare/0.5.2...1.5.0
 [0.5.2]: https://github.com/jbrick2070/obs-playlister/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/jbrick2070/obs-playlister/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/jbrick2070/obs-playlister/compare/0.4.0...0.5.0

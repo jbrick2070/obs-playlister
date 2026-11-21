@@ -84,7 +84,7 @@ Security → Files and Folders** (or **Full Disk Access**) and start OBS again.
   `obs-studio` package:
 
   ```
-  git clone --branch 0.5.2 https://github.com/jbrick2070/obs-playlister.git
+  git clone --branch 1.5.0 https://github.com/jbrick2070/obs-playlister.git
   cd obs-playlister/packaging/arch
   makepkg -si
   ```
