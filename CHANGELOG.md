@@ -68,7 +68,7 @@ OBS yet (TESTING.md: "Second pass", "Third pass" and "macOS").
   **Apply waiting changes**, is there only while the list is frozen. "Files to play" is **Play**; "File types to
   play" is **File types**. One thing that plays is an "item" everywhere; a playlist or web address row counts
   items, a folder files. The kind "URL" reads "web address". Labels are in sentence case.
-- **Order** is one list (Name A to Z, Name Z to A, Oldest first, Newest first, As listed, As listed reversed) in
+- **Order** is one list ("Name, A to Z", "Name, Z to A", "Oldest first", "Newest first", "As listed", "As listed, reversed") in
   place of "Sort by" and "Descending". The default stays Oldest first, and `sort_key` and `sort_descending`
   stay the saved settings, so scenes and scripts are untouched.
 - An empty **File types** field means all the usual video, audio and image types. It used to make folders play
