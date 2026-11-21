@@ -39,6 +39,18 @@ char *pl_url_path_extension(const char *location);
  * to the first '?' or '#'; anything else, such as a local path, unchanged. A secret inside the path still shows. */
 char *pl_url_redacted(const char *location);
 
+/* A location as a person reads it, in two parts (R-UX-19): the name, which is its last part (the file name; of an
+ * address with no path, the host), and the container, which is what stands before the name without the separator
+ * between them (the folder, or the address up to there; "/" for a file in the root; NULL when nothing stands before
+ * the name). The location is redacted first (pl_url_redacted), and separators at its end are left out. */
+void pl_location_split(const char *location, char **name, char **container);
+
+/* The label of an item in a list a person picks from: the name first, then the container in brackets, as a narrow
+ * list cuts a text at its end; a title, when the item has one of its own, before both.
+ * "D:/shows/loops/clip-14.mp4" gives "clip-14.mp4 (D:/shows/loops)", with the title "Intro",
+ * "Intro - clip-14.mp4 (D:/shows/loops)". title may be NULL. */
+char *pl_location_label(const char *title, const char *location);
+
 /* RFC 3986 section 5.2: reference resolved against base, which must be an absolute URL; dot segments removed, scheme
  * and host lower-cased. A reference that is an absolute URL itself is normalized the same way. */
 char *pl_url_resolve(const char *base, const char *reference);

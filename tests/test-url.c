@@ -390,6 +390,49 @@ static void test_posix(void)
 	posix_path("/a.m3u", "b.mp3", "/b.mp3");
 }
 
+static void location(const char *text, const char *name, const char *container)
+{
+	char *found_name;
+	char *found_container;
+	pl_location_split(text, &found_name, &found_container);
+	expect_text("location name", text, found_name, name);
+	expect_text("location container", text, found_container, container);
+}
+
+static void label(const char *title, const char *text, const char *expected)
+{
+	expect_text("location label", text, pl_location_label(title, text), expected);
+}
+
+/* R-UX-19: the name a person calls an item by comes first, what it is in after it */
+static void test_location(void)
+{
+	location("D:/shows/friday/loops/clip-14.mp4", "clip-14.mp4", "D:/shows/friday/loops");
+	location("D:\\shows\\clip 14.mp4", "clip 14.mp4", "D:\\shows");
+	location("D:/clip.mp4", "clip.mp4", "D:");
+	location("\\\\server\\share\\a.mp4", "a.mp4", "\\\\server\\share");
+	location("/clip.mp4", "clip.mp4", "/");
+	location("/home/me/a b.mov", "a b.mov", "/home/me");
+	location("clip.mp4", "clip.mp4", NULL);
+	location("D:/shows/loops/", "loops", "D:/shows");
+	location("/", "/", NULL);
+	location("", "", NULL);
+	/* an address: never its user name, password or query, and its host is no file name */
+	location("https://example.com/live/stream.m3u8?token=abc", "stream.m3u8", "https://example.com/live");
+	location("https://user:pw@example.com/a.mp4", "a.mp4", "https://example.com");
+	location("https://example.com/live/", "live", "https://example.com");
+	location("https://example.com", "example.com", NULL);
+	location("https://user:pw@example.com:8080/", "example.com:8080", NULL);
+	location("rtmp://example.com?key=1", "example.com", NULL);
+
+	label(NULL, "D:/shows/loops/clip-14.mp4", "clip-14.mp4 (D:/shows/loops)");
+	label("", "D:/shows/loops/clip-14.mp4", "clip-14.mp4 (D:/shows/loops)");
+	label("Intro", "D:/shows/loops/clip-14.mp4", "Intro - clip-14.mp4 (D:/shows/loops)");
+	label(NULL, "clip.mp4", "clip.mp4");
+	label("News", "https://user:pw@example.com/radio?x=1", "News - radio (https://example.com)");
+	label(NULL, "https://example.com/", "example.com");
+}
+
 int main(void)
 {
 	pl_test_no_crash_dialogs();
@@ -397,6 +440,7 @@ int main(void)
 	test_scheme();
 	test_extension();
 	test_redacted();
+	test_location();
 	test_resolve();
 	test_resolve_long();
 	test_decode();

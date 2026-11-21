@@ -118,6 +118,51 @@ char *pl_url_redacted(const char *location)
 	return shown.array;
 }
 
+void pl_location_split(const char *location, char **name, char **container)
+{
+	char *shown = pl_url_redacted(location);
+	/* where the path starts: of an address, after its host, which is never a file name */
+	size_t floor = 0;
+	const char *scheme_end = strstr(shown, "://");
+	const char *authority = scheme_end ? scheme_end + 3 : shown;
+	if (scheme_end)
+		floor = (size_t)(authority - shown) + strcspn(authority, "/");
+
+	size_t end = strlen(shown);
+	while (end > floor && separator(shown[end - 1]))
+		end--;
+	*container = NULL;
+	if (end == floor) {
+		/* no path: the host of an address; of anything else (a bare "/"), the text as it is */
+		*name = scheme_end ? bstrdup_n(authority, floor - (size_t)(authority - shown)) : bstrdup(shown);
+		bfree(shown);
+		return;
+	}
+	size_t start = end;
+	while (start > floor && !separator(shown[start - 1]))
+		start--;
+	*name = bstrdup_n(shown + start, end - start);
+	if (start > 0)
+		*container = bstrdup_n(shown, start > 1 ? start - 1 : 1);
+	bfree(shown);
+}
+
+char *pl_location_label(const char *title, const char *location)
+{
+	char *name;
+	char *container;
+	pl_location_split(location, &name, &container);
+	struct dstr label = {0};
+	if (title && *title)
+		dstr_printf(&label, "%s - ", title);
+	dstr_cat(&label, name);
+	if (container)
+		dstr_catf(&label, " (%s)", container);
+	bfree(name);
+	bfree(container);
+	return label.array;
+}
+
 /* RFC 3986 section 3, as the resolution in section 5 needs it: each part is a slice of the text, and a part that is
  * absent differs from one that is present but empty */
 struct uri_parts {
