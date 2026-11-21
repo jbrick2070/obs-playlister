@@ -6,6 +6,10 @@ version numbers are the ones in `buildspec.json`.
 
 ## [Unreleased]
 
+### Changed
+
+- Arch Linux: `packaging/arch/PKGBUILD` builds release 1.5.0, now that it is published (it built 0.5.2).
+
 ## [1.5.0] - 2026-11-20
 
 The suite-wide step to 1.5: every product of the Fadester suite now carries version 1.5, so that one round of hand
