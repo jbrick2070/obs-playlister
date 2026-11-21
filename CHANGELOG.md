@@ -30,9 +30,11 @@ Italian.
   (clip-07.mp4, intro.mov)". Before, it only counted them.
 - **Apply waiting changes** answers in Status: "The waiting changes are being applied. Press Refresh to see the
   list.", or "No changes were waiting. Press Refresh to check again." Before, a press showed nothing.
-- A password in a web address never shows in a label, a status line, a log line or a name sent to controllers,
-  also when it was typed with a "/", "?" or "#" in it, which used to leave a part of it in view. A playlist
-  entry's title that is itself such an address is treated the same.
+- The user name and password of a web address show in no label, status line, log line or name sent to
+  controllers, and no longer in **Now playing** and **Next**, which showed the address as it was typed and saved
+  it with the scene. A playlist entry's title that is itself such an address is treated the same. A "/", "?",
+  "#" or "@" in a user name or password must be written %2F, %3F, %23 or %40, as in any web address; otherwise
+  the address is not valid (it would not play either) and it may show in the window.
 - An item given as `file:///a.mp4` reads "a.mp4 (file:///)" in the Play item list.
 
 ### Changed

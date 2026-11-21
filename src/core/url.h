@@ -38,11 +38,16 @@ char *pl_url_path_extension(const char *location);
  * scheme and "://", the authority from after its last '@' (user information may itself contain '@') and the path up
  * to the first '?' or '#'; anything else, such as a local path, unchanged. A secret inside the path still shows.
  *
- * A password never shows, also one typed with a '/', '?' or '#' that is not written as "%XX", which ends the
- * authority early for a parser: when an '@' stands after the authority as a parser reads it and a ':' anywhere before
- * that '@', everything up to the last '@' of the text is left out as user information
- * ("https://user:ab/cd@host/x" gives "https://host/x"). The price is a well-formed address with a port and an '@' in
- * its path, which shows only what follows that '@'. */
+ * The address is read by its structure (RFC 3986): the authority is the text between "://" and the first '/', '?' or
+ * '#', and the user information what stands before the last '@' inside it. A valid address is never changed beyond
+ * that: an '@' or ':' in its path or query, a port and an IPv6 host stay as they are.
+ *
+ * One kind of text that is no address is met half way (R-UX-23): a user name or password typed with a '/', '?' or '#'
+ * that is not written as "%XX" ends the authority early. When the authority then has no '@', is not empty and is no
+ * host with or without a port ("user:pa" of "https://user:pa/ss@host/x": "pa" is no port), everything up to the last
+ * '@' before the first '?' or '#' is left out as user information, or up to the last '@' of the text when none stands
+ * there: "https://host/x". Where the cut-off authority does read as a host ("user:12" of "https://user:12/34@host/x",
+ * "token" of "https://token/more@host/x") the text is left as it is, and shows. */
 char *pl_url_redacted(const char *location);
 
 /* A location as a person reads it, in two parts (R-UX-19): the name, which is its last part (the file name; of an

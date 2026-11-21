@@ -95,16 +95,36 @@ static void test_redacted(void)
 	redacted("http://host.example.com", "http://host.example.com");
 	redacted("https://host.example.com/media/clip@2x.mp4", "https://host.example.com/media/clip@2x.mp4");
 	redacted("https://host.example.com/a?mail=me@example.org", "https://host.example.com/a");
-	/* a password with a '/', '?' or '#' that was not written as "%XX": no part of it shows */
+	redacted("https://user:pw@host.example.com:8080/x", "https://host.example.com:8080/x");
+	redacted("https://user@host.example.com/x", "https://host.example.com/x");
+	redacted("https://user:p%2Fw%40x@host.example.com/x", "https://host.example.com/x");
+	/* a valid address is never changed beyond its user information: an '@' or ':' in the path or the query, a
+	 * port, an IPv6 host */
+	redacted("http://nas:8080/media/clip@2x.mp4", "http://nas:8080/media/clip@2x.mp4");
+	redacted("https://nas:8443/live?user=me@example.com", "https://nas:8443/live");
+	redacted("https://cdn.example.com/show/ep1:2/clip@2x.mp4", "https://cdn.example.com/show/ep1:2/clip@2x.mp4");
+	redacted("http://[::1]/a@b", "http://[::1]/a@b");
+	redacted("http://[::1]:8080/a@b", "http://[::1]:8080/a@b");
+	redacted("http://192.168.1.5:8096/list.m3u?t=a@b", "http://192.168.1.5:8096/list.m3u");
+	redacted("https://user:pw@nas:8443/media/12:30@studio.mp4", "https://nas:8443/media/12:30@studio.mp4");
+	redacted("https://host.example.com:/a@b", "https://host.example.com:/a@b"); /* an empty port is a port */
+	redacted("file:///home/me/a@b.mp4", "file:///home/me/a@b.mp4");
+	/* no address: a password with a '/', '?' or '#' that was not written as "%XX" cut the authority short, and
+	 * what is left of it is no host and port. All of it is left out, up to the '@'. */
 	redacted("https://user:ab/cd@host.example.com/x.mp4", "https://host.example.com/x.mp4");
+	redacted("https://user:pa/ss@host.example.com/x?mail=a@b", "https://host.example.com/x");
 	redacted("https://user:p?ss@host.example.com/x.mp4", "https://host.example.com/x.mp4");
 	redacted("https://user:p#ss@host.example.com/x", "https://host.example.com/x");
-	redacted("https://user:a/b@c#d?e@host.example.com/x?q", "https://host.example.com/x");
-	redacted("https://us/er:secret@host.example.com/x", "https://host.example.com/x");
-	redacted("https://user:12/34@host.example.com/x", "https://host.example.com/x"); /* looks like a port */
-	redacted("https://user:pw@host.example.com:8080/x", "https://host.example.com:8080/x");
-	/* the price: a port and an '@' in the path cannot be told from a password with a '/' */
-	redacted("http://nas:8080/media/clip@2x.mp4", "http://2x.mp4");
+	redacted("https://:pw/x@host.example.com/y", "https://host.example.com/y");
+	redacted("https://us er:pw/x@host.example.com/y", "https://host.example.com/y");
+	/* ... up to the last '@' before a '?' or '#': a password with an '@' as well shows what follows that */
+	redacted("https://user:a/b@c#d?e@host.example.com/x?q", "https://c");
+	/* where the cut-off authority reads as a host, or as a host and a port, the text is left as it is: these
+	 * show (README: write %2F, %3F, %23 and %40) */
+	redacted("https://user:12/34@host.example.com/x", "https://user:12/34@host.example.com/x");
+	redacted("https://us/er:secret@host.example.com/x", "https://us/er:secret@host.example.com/x");
+	redacted("https://dGVzdA/Zm9v==@host.example.com/x.mp4", "https://dGVzdA/Zm9v==@host.example.com/x.mp4");
+	redacted("https://token?x@host.example.com/x.mp4", "https://token");
 	redacted("C:\\Lists\\a.m3u", "C:\\Lists\\a.m3u");
 	redacted("/home/me/a.m3u", "/home/me/a.m3u");
 }

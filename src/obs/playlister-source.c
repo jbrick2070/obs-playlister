@@ -574,14 +574,17 @@ static const struct media_file_data *peek_next_locked(struct media_playlist_sour
 }
 
 /* An item as Now playing and Next show it: its place, "N" for a row or "N-M" for an item of a folder or playlist row,
- * then its location */
+ * then its location, of a web address without its user name, password and query (R-UX-23): the two lines are settings,
+ * so what they show is also saved. A local path is as it is. */
 static void describe_item(const struct media_file_data *item, struct dstr *text)
 {
 	if (item->parent)
 		dstr_printf(text, "%zu-%zu", item->parent->index + 1, item->index + 1);
 	else
 		dstr_printf(text, "%zu", item->index + 1);
-	dstr_catf(text, ": %s", item->path);
+	char *shown = pl_url_redacted(item->path);
+	dstr_catf(text, ": %s", shown);
+	bfree(shown);
 }
 
 /* Now playing and Next, as Properties shows them: info texts that show a setting, written here on every update, save
@@ -605,7 +608,9 @@ static void update_current_filename_setting(struct media_playlist_source *mps, o
 		return;
 	} else if (mps->actual_media == &mps->playing_copy) {
 		/* an evicted item has no place in its row's list now: the row only (R-DIR-8) */
-		dstr_catf(&long_desc, "%zu: %s", mps->actual_media->parent->index + 1, mps->actual_media->path);
+		char *shown = pl_url_redacted(mps->actual_media->path);
+		dstr_catf(&long_desc, "%zu: %s", mps->actual_media->parent->index + 1, shown);
+		bfree(shown);
 	} else {
 		describe_item(mps->actual_media, &long_desc);
 	}

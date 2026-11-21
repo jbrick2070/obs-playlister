@@ -1333,6 +1333,10 @@ step("failing rows skipped", 500, 15000, function() return dur() == D[1] and st(
 	check_status("the status block shows the failed rows as errors, with why",
 		"1: file " .. base_name(MISSING_FILE) .. NOT_PLAYED .. "\n2: file " .. base_name(CORRUPT_FILE) .. NOT_PLAYED ..
 		"\n3: file", 2)
+	-- R-UX-21: an item that could not be played is not one to play. One of the three rows plays, so there is no
+	-- total (it is shown from two on); with the failed rows counted it would read "3 items to play".
+	check("the total leaves out the rows that could not be played",
+		(status_block()):find("items to play", 1, true) == nil, (status_block()))
 	remove_source()
 end)
 

@@ -381,8 +381,9 @@ section was run inside OBS.
 
 ## Third pass (2026-11-20)
 
-REQUIREMENTS R-UX-19 to R-UX-22. `ctest` covers the label of the Play item list and the names in status lines
-(`test-url`, `test_location`), that no password shows even when it holds a "/", "?" or "#" (`test_redacted`) and the three new texts in all thirteen languages (`check-locale-files`). The Lua
+REQUIREMENTS R-UX-19 to R-UX-23. `ctest` covers the label of the Play item list and the names in status lines
+(`test-url`, `test_location`), that the user name and password of an address are left out and a valid address is otherwise shown as it is
+(`test_redacted`) and the three new texts in all thirteen languages (`check-locale-files`). The Lua
 scripts got three new checks (the total line, a label of the Play item list, the answer to Apply waiting changes)
 and one changed text; like the rest of the second pass they have not been run. Nothing here was run inside OBS.
 
@@ -397,9 +398,10 @@ and one changed text; like the rest of the second pass they have not been run. N
 | P.6 | With the list frozen and a folder row playing, copy a file into the folder and delete another; wait 5 s; Refresh | The row reads "... 2 changes waiting" | Pending |
 | P.7 | Press **Apply waiting changes** | Status keeps its lines and gets a last one: "The waiting changes are being applied. Press Refresh to see the list." Playback does not stop. Press Refresh: the new file is in the Play item list, the deleted one is not, and nothing is waiting | Pending |
 | P.8 | Press **Apply waiting changes** again, with nothing waiting | The last line of Status reads "No changes were waiting. Press Refresh to check again." | Pending |
-| P.10 | A web address row typed as `https://user:ab/cd@example.com/x.mp4` (a password with a slash in it); Refresh; open the Play item list; look at the OBS log | Status, the list and the log show `x.mp4` and `https://example.com`, never "ab" or "cd" | Pending |
-| P.11 | An `.m3u` with the entry `file:///<full path to a video>` | The Play item list shows the file name first and the `file:///...` folder after it; it plays | Pending |
 | P.9 | OBS in German and in Japanese: P.3, P.7 and P.8 | The three lines are in that language | Pending |
+| P.10 | A web address row typed as `https://user:secret@<a server you have>/<a video>`, and a web list row typed the same way; let each play; Refresh; look at Status, **Now playing**, **Next**, the Play item list and the OBS log (Help > Log Files > View Current Log); then save and open the scene collection file | None of them shows "user" or "secret": the address reads `https://<server>/<video>`. In the scene collection file, `current_file_name` and `next_file_name` hold the address without them (the Playlist row itself holds what was typed) | Pending |
+| P.10b | A file row typed as `http://<server>:8080/media/clip@2x.mp4` (a port, and an "@" in the name) | Now playing and the Play item list show the address whole | Pending |
+| P.11 | An `.m3u` with the entry `file:///<full path to a video>` | The Play item list shows the file name first and the `file:///...` folder after it; it plays | Pending |
 
 ## macOS (0.5.2)
 

@@ -216,7 +216,12 @@ Tick **Show advanced options** for the rest:
   Changing Speed restarts the item that is playing.
 
 Web lists: a list address may carry a user name and password
-(`https://user:password@host/list.m3u`). They are sent to that server, and
+(`https://user:password@host/list.m3u`). Playlister shows such an address
+without them, in the window, in the log and to controllers. A `/`, `?`, `#`
+or `@` in a user name or password must be written `%2F`, `%3F`, `%23` or
+`%40`, as in any web address; otherwise the address is not valid (it would
+not play either) and the user name or password may show in the window. They
+are sent to that server, and
 after a redirect only if it stays with the same scheme, host and port; never
 to another host, nor from http to https. A redirect from https to http is
 refused. A list that is not UTF-8 is read in the character set its server
