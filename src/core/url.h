@@ -36,8 +36,45 @@ char *pl_url_path_extension(const char *location);
 
 /* The location as a log line shows it, as URLs can carry credentials or signed query strings: for text with "://", the
  * scheme and "://", the authority from after its last '@' (user information may itself contain '@') and the path up
- * to the first '?' or '#'; anything else, such as a local path, unchanged. A secret inside the path still shows. */
+ * to the first '?' or '#'; anything else, such as a local path, unchanged. A secret inside the path still shows.
+ *
+ * The address is read by its structure (RFC 3986): the authority is the text between "://" and the first '/', '?' or
+ * '#', and the user information what stands before the last '@' inside it. A valid address is never changed beyond
+ * that: an '@' or ':' in its path or query, a port and an IPv6 host stay as they are.
+ *
+ * One kind of text that is no address is met half way (R-UX-23): a user name or password typed with a '/', '?' or '#'
+ * that is not written as "%XX" ends the authority early. When the authority then has no '@', is not empty and is no
+ * host with or without a port ("user:pa" of "https://user:pa/ss@host/x": "pa" is no port; a port without a host, as in
+ * "srt://:9000", is one), everything up to the last
+ * '@' before the first '?' or '#' is left out as user information, or up to the last '@' of the text when none stands
+ * there: "https://host/x". Where the cut-off authority does read as a host ("user:12" of "https://user:12/34@host/x",
+ * "token" of "https://token/more@host/x", ":123" of "https://:123/x@host/y") the text is a valid address for another
+ * server than was meant; it is left as it is, and shows. */
 char *pl_url_redacted(const char *location);
+
+/* Free text that may hold addresses, such as a playlist entry's title, with each of them redacted
+ * (pl_url_redacted). The text is read word by word, a word being what stands between white space (space, tab, line
+ * ends, vertical tab, form feed), so that the words around an address are left alone ("Live https://x.tv @ 8pm" stays
+ * as it is). A word that holds several addresses ("a://x,b://y") is read piece by piece: a piece ends where the
+ * scheme of the next address starts, and the punctuation between two is kept. One address is always one piece, as a
+ * ',' or ')' may stand in a password; so is an address with a space in its password two words, of which the first
+ * shows. Text without "://" comes back unchanged. Never NULL. */
+char *pl_text_redacted(const char *text);
+
+/* A location as a person reads it, in two parts (R-UX-19): the name, which is its last part (the file name; of an
+ * address with no path, the host), and the container, which is what stands before the name without the separator
+ * between them (the folder, or the address up to there; "/" for a file in the root; NULL when nothing stands before
+ * the name). The location is redacted first (pl_url_redacted), and separators at its end are left out. An address
+ * without a host keeps the root of its path as the container ("file:///a.mp4" gives "a.mp4" and "file:///"), and
+ * one that is nothing but its root is its own name ("file:///"). Neither is ever NULL but the container. */
+void pl_location_split(const char *location, char **name, char **container);
+
+/* The label of an item in a list a person picks from: the name first, then the container in brackets, as a narrow
+ * list cuts a text at its end; a title, when the item has one of its own, before both.
+ * "D:/shows/loops/clip-14.mp4" gives "clip-14.mp4 (D:/shows/loops)", with the title "Intro",
+ * "Intro - clip-14.mp4 (D:/shows/loops)". title may be NULL; one that is or holds addresses is redacted
+ * (pl_text_redacted). Never NULL: "" when there is neither a title nor a name. */
+char *pl_location_label(const char *title, const char *location);
 
 /* RFC 3986 section 5.2: reference resolved against base, which must be an absolute URL; dot segments removed, scheme
  * and host lower-cased. A reference that is an absolute URL itself is normalized the same way. */

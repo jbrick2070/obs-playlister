@@ -98,6 +98,41 @@ char *pl_url_path_extension(const char *location)
 	return extension;
 }
 
+/* Whether text is a host with or without a port, as RFC 3986 section 3.2 writes them: a registered name or an IPv4
+ * address (letters, digits, "-._~", "%XX" and the sub-delimiters; bytes above ASCII pass, as people type
+ * international names as they are) or an IP literal in brackets, then nothing or ":" and digits. Not empty. */
+static bool host_and_port(const char *text, size_t length)
+{
+	size_t i = 0;
+	if (length && text[0] == '[') {
+		while (i < length && text[i] != ']')
+			i++;
+		if (i == length || i < 2)
+			return false;
+		i++;
+	} else {
+		while (i < length && text[i] != ':') {
+			const char c = text[i];
+			if (!ascii_alpha(c) && !ascii_digit(c) && (unsigned char)c < 0x80 &&
+			    !strchr("-._~%!$&'()*+,;=", c))
+				return false;
+			i++;
+		}
+		/* no host: a port alone (":9000", as a listener's address has it) is checked below */
+		if (i == 0 && length < 2)
+			return false;
+	}
+	if (i == length)
+		return true;
+	if (text[i] != ':')
+		return false;
+	for (i++; i < length; i++) {
+		if (!ascii_digit(text[i]))
+			return false;
+	}
+	return true;
+}
+
 char *pl_url_redacted(const char *location)
 {
 	const char *scheme_end = strstr(location, "://");
@@ -110,12 +145,135 @@ char *pl_url_redacted(const char *location)
 		if (*c == '@')
 			authority = c + 1;
 	}
+	/* Not an address at all: a user name or password typed with a '/', '?' or '#' that is not written as "%XX"
+	 * ends the authority early, and what is left of it is no host ("user:pa" of "user:pa/ss@host": "pa" is no
+	 * port). Only then is the '@' looked for further on, and everything up to it left out: the last '@' of the
+	 * path, or, when the path has none, of the text. A valid address never gets here. */
+	if (authority == scheme_end + 3 && path_start > authority &&
+	    !host_and_port(authority, (size_t)(path_start - authority))) {
+		const char *last_at = NULL;
+		for (const char *c = path_start; *c && *c != '?' && *c != '#'; c++) {
+			if (*c == '@')
+				last_at = c;
+		}
+		if (!last_at)
+			last_at = strrchr(path_start, '@');
+		if (last_at) {
+			authority = last_at + 1;
+			path_start = authority + strcspn(authority, "/?#");
+		}
+	}
 
 	struct dstr shown = {0};
 	dstr_ncopy(&shown, location, (size_t)(scheme_end + 3 - location));
 	dstr_ncat(&shown, authority, (size_t)(path_start - authority));
 	dstr_ncat(&shown, path_start, strcspn(path_start, "?#"));
 	return shown.array;
+}
+
+#define TEXT_SPACE " \t\r\n\v\f"
+
+static bool scheme_char(char c)
+{
+	return ascii_alpha(c) || ascii_digit(c) || c == '+' || c == '-' || c == '.';
+}
+
+char *pl_text_redacted(const char *text)
+{
+	if (!strstr(text, "://"))
+		return bstrdup(text);
+	struct dstr shown = {0};
+	const char *mark = strstr(text, "://");
+	for (const char *c = text; *c;) {
+		size_t gap = strspn(c, TEXT_SPACE);
+		dstr_ncat(&shown, c, gap);
+		c += gap;
+		const char *word_end = c + strcspn(c, TEXT_SPACE);
+		/* A word may hold several addresses ("a://x,b://y"). Each piece runs up to where the next one's scheme
+		 * starts; the punctuation that stands between two is copied as it is, so that it is not lost with a
+		 * query. One address is one piece whatever it holds: a ',' or ')' may be part of a password. */
+		while (c < word_end) {
+			const char *end = word_end;
+			const char *between = word_end;
+			/* looked for only once it is passed, so that a long text is read once, not once a word */
+			if (mark && mark < c)
+				mark = strstr(c, "://");
+			const char *first = mark;
+			const char *next = first && first < word_end ? strstr(first + 3, "://") : NULL;
+			if (next && next < word_end) {
+				end = next;
+				while (end > first + 3 && scheme_char(end[-1]))
+					end--;
+				between = end;
+				while (between > first + 3 && strchr(",;|)]}>\"'([{<", between[-1]))
+					between--;
+			}
+			char *piece = bstrdup_n(c, (size_t)(between - c));
+			char *shown_piece = pl_url_redacted(piece);
+			dstr_cat(&shown, shown_piece);
+			dstr_ncat(&shown, between, (size_t)(end - between));
+			bfree(shown_piece);
+			bfree(piece);
+			c = end;
+		}
+	}
+	return shown.array ? shown.array : bstrdup("");
+}
+
+void pl_location_split(const char *location, char **name, char **container)
+{
+	char *shown = pl_url_redacted(location);
+	/* where the path starts: of an address, after its host, which is never a file name */
+	size_t floor = 0;
+	const char *scheme_end = strstr(shown, "://");
+	const char *authority = scheme_end ? scheme_end + 3 : shown;
+	if (scheme_end)
+		floor = (size_t)(authority - shown) + strcspn(authority, "/");
+
+	/* an address without a host ("file:///a.mp4"): its path starts at the root, which then is the container */
+	const bool hostless = scheme_end && floor == (size_t)(authority - shown);
+
+	size_t end = strlen(shown);
+	while (end > floor && separator(shown[end - 1]))
+		end--;
+	*container = NULL;
+	if (end == floor) {
+		/* no path: the host of an address; of anything else (a bare "/", "file:///"), the text as it is */
+		*name = scheme_end && !hostless ? bstrdup_n(authority, floor - (size_t)(authority - shown))
+						: bstrdup(shown);
+		bfree(shown);
+		return;
+	}
+	size_t start = end;
+	while (start > floor && !separator(shown[start - 1]))
+		start--;
+	*name = bstrdup_n(shown + start, end - start);
+	if (hostless && start == floor + 1)
+		*container = bstrdup_n(shown, start);
+	else if (start > 0)
+		*container = bstrdup_n(shown, start > 1 ? start - 1 : 1);
+	bfree(shown);
+}
+
+char *pl_location_label(const char *title, const char *location)
+{
+	char *name;
+	char *container;
+	pl_location_split(location, &name, &container);
+	struct dstr label = {0};
+	if (title && *title) {
+		/* a title may itself be an address, or hold some */
+		char *shown_title = pl_text_redacted(title);
+		dstr_printf(&label, "%s - ", shown_title);
+		bfree(shown_title);
+	}
+	dstr_cat(&label, name);
+	if (container)
+		dstr_catf(&label, " (%s)", container);
+	bfree(name);
+	bfree(container);
+	/* never NULL: a dstr that was given nothing has no array */
+	return label.array ? label.array : bstrdup("");
 }
 
 /* RFC 3986 section 3, as the resolution in section 5 needs it: each part is a slice of the text, and a part that is

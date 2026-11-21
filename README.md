@@ -124,9 +124,10 @@ number, its kind and how it is doing. For example:
   added as they arrive`, `no files here yet; files in subfolders need Include
   subfolders`, or `no files of the types to play (see File types)`.
 - It can add: `waiting for 2 files to finish writing`, `3 changes waiting`
-  (see Freeze the list during playback below), `1 file could not be played`,
-  and an error with what happens next, such as `folder not found, or not a
-  folder; checking again every 10 s`. When the list cannot be read now,
+  (see Freeze the list during playback below), `1 file could not be played
+  (clip-07.mp4)` with the names of the first three such files, and an error
+  with what happens next, such as `folder not found, or not a folder; checking
+  again every 10 s`. When the list cannot be read now,
   Playlister keeps playing the last good one and says
   `using the list read at <date and time>`.
 - A file or web address that failed is named, with the likely cause:
@@ -135,6 +136,11 @@ number, its kind and how it is doing. For example:
   address)` when nothing played within 5 seconds (15 seconds for an address or
   a file on a network share). Playlister skips it and plays the next item.
   Nothing is drawn over the picture.
+- With more than one row, a line after the rows says how many items the list
+  plays as it stands: `37 items to play`. A folder that plays `5 of 40 files`
+  counts 5, and an item that could not be played is not counted. The line is
+  left out while a row is still being read, cannot be read, or plays the last
+  list it could read.
 - When nothing in the list can play, a last line says so and playback stops.
   Fix the rows marked above it, or select the source and press Play in the
   source toolbar under the preview to try again.
@@ -202,7 +208,10 @@ Tick **Show advanced options** for the rest:
   - **Freeze the list during playback** (off): when on, new, changed and
     removed files wait until the next Play or Restart, or until you press
     **Apply waiting changes**. They also join when the source returns to
-    Program, if it is set to start again or to play the next item.
+    Program, if it is set to start again or to play the next item. Status
+    counts them (`3 changes waiting`); after a press of the button it says
+    that they are being applied, or that none were waiting at that moment,
+    and **Refresh** shows the list as it is then.
 - **Speed** (100% / 1x, range 1% to 200% / 0.01x to 2x): playback speed.
   Changing Speed restarts the item that is playing.
 
@@ -214,6 +223,16 @@ refused. A list that is not UTF-8 is read in the character set its server
 names; it is read as Windows-1252 when the server names none, or names one
 this computer cannot convert from, or the text is not valid in the one it
 names.
+
+Where a user name and password show: Playlister leaves them out of the labels
+of the **Play item** list, of **Status**, **Now playing** and **Next**, of the
+OBS log and of the names it sends to controllers. The **Playlist** list itself
+shows each address as you typed it, and the scene collection file keeps it
+that way, since that is what Playlister plays and finds the item by. Write a
+`/`, `?` or `#` in a user name or password as `%2F`, `%3F` or `%23`, as in any
+web address. Otherwise the address means something else: it ends at that
+character, so it may go to another server than you meant, and that part of
+the user name or password may show in those labels.
 
 Behind a proxy: Playlister uses the proxy the environment names (`http_proxy`
 for http addresses, `https_proxy` for https, `all_proxy` for either that has

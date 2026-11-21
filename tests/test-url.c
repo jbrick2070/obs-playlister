@@ -93,8 +93,177 @@ static void test_redacted(void)
 	redacted("https://user:pw@lists.example.com/show.m3u?token=SECRET#f", "https://lists.example.com/show.m3u");
 	redacted("https://a@b@host.example.com/x", "https://host.example.com/x"); /* the last '@' ends it */
 	redacted("http://host.example.com", "http://host.example.com");
+	redacted("https://host.example.com/media/clip@2x.mp4", "https://host.example.com/media/clip@2x.mp4");
+	redacted("https://host.example.com/a?mail=me@example.org", "https://host.example.com/a");
+	redacted("https://user:pw@host.example.com:8080/x", "https://host.example.com:8080/x");
+	redacted("https://user@host.example.com/x", "https://host.example.com/x");
+	redacted("https://user:p%2Fw%40x@host.example.com/x", "https://host.example.com/x");
+	/* a valid address is never changed beyond its user information: an '@' or ':' in the path or the query, a
+	 * port, an IPv6 host */
+	redacted("http://nas:8080/media/clip@2x.mp4", "http://nas:8080/media/clip@2x.mp4");
+	redacted("https://nas:8443/live?user=me@example.com", "https://nas:8443/live");
+	redacted("https://cdn.example.com/show/ep1:2/clip@2x.mp4", "https://cdn.example.com/show/ep1:2/clip@2x.mp4");
+	redacted("http://[::1]/a@b", "http://[::1]/a@b");
+	redacted("http://[::1]:8080/a@b", "http://[::1]:8080/a@b");
+	redacted("http://u:p@[::1]:8080/a@b", "http://[::1]:8080/a@b");
+	redacted("http://u:p@[2001:db8::1]/x?q=1", "http://[2001:db8::1]/x");
+	/* a port without a host, as a listener's address has it */
+	redacted("srt://:9000?streamid=me@x", "srt://:9000");
+	redacted("udp://:1234/a@b", "udp://:1234/a@b");
+	redacted("http://192.168.1.5:8096/list.m3u?t=a@b", "http://192.168.1.5:8096/list.m3u");
+	redacted("https://user:pw@nas:8443/media/12:30@studio.mp4", "https://nas:8443/media/12:30@studio.mp4");
+	redacted("https://host.example.com:/a@b", "https://host.example.com:/a@b"); /* an empty port is a port */
+	redacted("file:///home/me/a@b.mp4", "file:///home/me/a@b.mp4");
+	/* no address: a password with a '/', '?' or '#' that was not written as "%XX" cut the authority short, and
+	 * what is left of it is no host and port. All of it is left out, up to the '@'. */
+	redacted("https://user:ab/cd@host.example.com/x.mp4", "https://host.example.com/x.mp4");
+	redacted("https://user:pa/ss@host.example.com/x?mail=a@b", "https://host.example.com/x");
+	redacted("https://user:p?ss@host.example.com/x.mp4", "https://host.example.com/x.mp4");
+	redacted("https://user:p#ss@host.example.com/x", "https://host.example.com/x");
+	redacted("https://:pw/x@host.example.com/y", "https://host.example.com/y");
+	redacted("https://us er:pw/x@host.example.com/y", "https://host.example.com/y");
+	redacted("https://:/x@host.example.com/y", "https://host.example.com/y"); /* neither a host nor a port */
+	redacted("https://[/x@host.example.com/y", "https://host.example.com/y");
+	/* ... the last '@' of the path, so that a password with an '@' cannot show: a file name with one then reads
+	 * as the host */
+	redacted("https://user:pa/ss@host.example.com/media/clip@2x.mp4", "https://2x.mp4");
+	/* ... up to the last '@' before a '?' or '#': a password with an '@' as well shows what follows that */
+	redacted("https://user:a/b@c#d?e@host.example.com/x?q", "https://c");
+	/* where the cut-off authority reads as a host, or as a host and a port, the text is left as it is: these
+	 * show (README: write %2F, %3F, %23 and %40) */
+	redacted("https://user:12/34@host.example.com/x", "https://user:12/34@host.example.com/x");
+	redacted("https://us/er:secret@host.example.com/x", "https://us/er:secret@host.example.com/x");
+	redacted("https://dGVzdA/Zm9v==@host.example.com/x.mp4", "https://dGVzdA/Zm9v==@host.example.com/x.mp4");
+	redacted("https://token?x@host.example.com/x.mp4", "https://token");
+	redacted("https://:123/x@host.example.com/y", "https://:123/x@host.example.com/y"); /* a port, no host */
 	redacted("C:\\Lists\\a.m3u", "C:\\Lists\\a.m3u");
+	redacted("\\\\server\\share\\a@b.m3u", "\\\\server\\share\\a@b.m3u");
+	redacted("//server/share/a@b.m3u", "//server/share/a@b.m3u");
+	/* nothing depends on the case of the scheme, which is shown as typed */
+	redacted("HTTPS://U:P@HOST.EXAMPLE.COM/X", "HTTPS://HOST.EXAMPLE.COM/X");
+	/* without "://" the text is no address and is left alone, whatever it holds */
+	redacted("user:pw@host.example.com/x", "user:pw@host.example.com/x");
+	/* the least there can be */
+	redacted("", "");
+	redacted("https://", "https://");
+	redacted("file://", "file://");
+	redacted("://", "://");
+	redacted("https://@", "https://");
+	redacted("https://user:pw@", "https://");
 	redacted("/home/me/a.m3u", "/home/me/a.m3u");
+}
+
+/* no fixed buffer anywhere: a text of 100 000 bytes comes back whole, less what is left out */
+static void test_redacted_long(void)
+{
+	const size_t length = 100000;
+	const char *head = "https://user:pw@host.example.com/";
+	const char *expected_head = "https://host.example.com/";
+	char *text = bmalloc(length + 1);
+	memset(text, 'a', length);
+	memcpy(text, head, strlen(head));
+	for (size_t i = strlen(head) + 7; i < length; i += 97)
+		text[i] = i % 2 ? '@' : ':';
+	text[length] = 0;
+
+	char *shown = pl_url_redacted(text);
+	assert(shown);
+	assert(strlen(shown) == length - strlen(head) + strlen(expected_head));
+	assert(strncmp(shown, expected_head, strlen(expected_head)) == 0);
+	assert(strcmp(shown + strlen(expected_head), text + strlen(head)) == 0);
+	bfree(shown);
+
+	/* the same with the authority cut short by a '/' in the password (this writes over the '@' of the head, so
+	 * the user information has none): all of it goes, up to the last '@' of the text */
+	memcpy(text, "https://user:p/w", 16);
+	char *last_at = strrchr(text, '@');
+	assert(last_at);
+	shown = pl_url_redacted(text);
+	assert(shown && strncmp(shown, "https://", 8) == 0 && strcmp(shown + 8, last_at + 1) == 0);
+	bfree(shown);
+
+	shown = pl_text_redacted(text);
+	assert(shown && strncmp(shown, "https://", 8) == 0 && strcmp(shown + 8, last_at + 1) == 0);
+	bfree(shown);
+	char *name;
+	char *container;
+	pl_location_split(text, &name, &container);
+	assert(name);
+	bfree(name);
+	bfree(container);
+	bfree(text);
+}
+
+static void text_redacted(const char *text, const char *expected)
+{
+	expect_text("text redacted", text, pl_text_redacted(text), expected);
+}
+
+/* free text, such as a title: every address in it, and nothing else */
+static void test_text_redacted(void)
+{
+	text_redacted("", "");
+	text_redacted("Intro", "Intro");
+	text_redacted("News @ 8pm: part 1/2", "News @ 8pm: part 1/2");
+	text_redacted("https://user:pw@example.com/live?x=1", "https://example.com/live");
+	text_redacted("A https://u:p@a.example/x and https://v:q@b.example/y",
+		      "A https://a.example/x and https://b.example/y");
+	text_redacted("Live https://x.tv @ 8pm", "Live https://x.tv @ 8pm");
+	text_redacted("  two  spaces\thttps://u:p@h.example/x  ", "  two  spaces\thttps://h.example/x  ");
+	text_redacted("(https://u:p@h.example/x)", "(https://h.example/x)");
+	text_redacted("News https://user:p/w@example.com/a", "News https://example.com/a");
+	text_redacted("<https://u:p@h.example/x>", "<https://h.example/x>");
+	/* several addresses in one word: each is read, and what stands between them stays */
+	text_redacted("https://u:p@a.example/x,https://v:q@b.example/y", "https://a.example/x,https://b.example/y");
+	text_redacted("https://u:p@a.example/x;https://v:q@b.example/y;rtmp://w:r@c.example/z",
+		      "https://a.example/x;https://b.example/y;rtmp://c.example/z");
+	text_redacted("(https://u:p@a.example/x)(https://v:q@b.example/y)",
+		      "(https://a.example/x)(https://b.example/y)");
+	text_redacted("https://u:p@a.example/x|https://v:q@b.example/y", "https://a.example/x|https://b.example/y");
+	text_redacted("[a](https://u:p@a.example/x)[b](https://v:q@b.example/y)",
+		      "[a](https://a.example/x)[b](https://b.example/y)");
+	text_redacted("https://u:p@a.example/x?k=1,https://v:q@b.example/y?k=2",
+		      "https://a.example/x,https://b.example/y");
+	text_redacted("'https://u:p@a.example/x','https://v:q@b.example/y'",
+		      "'https://a.example/x','https://b.example/y'");
+	text_redacted("One: https://u:p@a.example/x,https://v:q@b.example/y Two: https://w:r@c.example/z",
+		      "One: https://a.example/x,https://b.example/y Two: https://c.example/z");
+	/* one address is one piece: a ',', ';' or ')' may stand in a password */
+	text_redacted("https://user:a,b;c)d@h.example/x", "https://h.example/x");
+	text_redacted("https://user:a,b@a.example/x,https://v:q@b.example/y",
+		      "https://a.example/x,https://b.example/y");
+	/* an address inside the query of another is read as the next one; the query before it goes, as queries do */
+	text_redacted("https://p.example/get?u=https://v:q@b.example/y", "https://p.example/gethttps://b.example/y");
+	/* any white space ends a word */
+	text_redacted("https://x.tv\nmail me@home", "https://x.tv\nmail me@home");
+	text_redacted("https://u:p@a.example/x\r\nhttps://v:q@b.example/y",
+		      "https://a.example/x\r\nhttps://b.example/y");
+}
+
+/* a title as long as a list line can be, in many words and in one */
+static void test_text_redacted_long(void)
+{
+	const char *unit = "https://u:p@a.example/x,";
+	const char *shown_unit = "https://a.example/x,";
+	const size_t count = 1500;
+	struct dstr words = {0};
+	struct dstr word = {0};
+	struct dstr expected_words = {0};
+	struct dstr expected_word = {0};
+	for (size_t i = 0; i < count; i++) {
+		dstr_cat(&word, unit);
+		dstr_cat(&expected_word, shown_unit);
+		dstr_cat(&words, unit);
+		dstr_cat(&words, " ");
+		dstr_cat(&expected_words, shown_unit);
+		dstr_cat(&expected_words, " ");
+	}
+	expect_text("text redacted", "many words", pl_text_redacted(words.array), expected_words.array);
+	expect_text("text redacted", "one long word", pl_text_redacted(word.array), expected_word.array);
+	dstr_free(&words);
+	dstr_free(&word);
+	dstr_free(&expected_words);
+	dstr_free(&expected_word);
 }
 
 static void resolve(const char *reference, const char *expected)
@@ -390,6 +559,74 @@ static void test_posix(void)
 	posix_path("/a.m3u", "b.mp3", "/b.mp3");
 }
 
+static void location(const char *text, const char *name, const char *container)
+{
+	char *found_name;
+	char *found_container;
+	pl_location_split(text, &found_name, &found_container);
+	expect_text("location name", text, found_name, name);
+	expect_text("location container", text, found_container, container);
+}
+
+static void label(const char *title, const char *text, const char *expected)
+{
+	expect_text("location label", text, pl_location_label(title, text), expected);
+}
+
+/* R-UX-19: the name a person calls an item by comes first, what it is in after it */
+static void test_location(void)
+{
+	location("D:/shows/friday/loops/clip-14.mp4", "clip-14.mp4", "D:/shows/friday/loops");
+	location("D:\\shows\\clip 14.mp4", "clip 14.mp4", "D:\\shows");
+	location("D:/clip.mp4", "clip.mp4", "D:");
+	location("\\\\server\\share\\a.mp4", "a.mp4", "\\\\server\\share");
+	location("/clip.mp4", "clip.mp4", "/");
+	location("/home/me/a b.mov", "a b.mov", "/home/me");
+	location("clip.mp4", "clip.mp4", NULL);
+	location("D:/shows/loops/", "loops", "D:/shows");
+	location("/", "/", NULL);
+	location("", "", NULL);
+	/* an address: never its user name, password or query, and its host is no file name */
+	location("https://example.com/live/stream.m3u8?token=abc", "stream.m3u8", "https://example.com/live");
+	location("https://user:pw@example.com/a.mp4", "a.mp4", "https://example.com");
+	location("https://example.com/live/", "live", "https://example.com");
+	location("https://example.com", "example.com", NULL);
+	location("https://user:pw@example.com:8080/", "example.com:8080", NULL);
+	location("rtmp://example.com?key=1", "example.com", NULL);
+	/* a password with an unencoded '/' or '#' reaches neither part */
+	location("https://user:ab/cd@example.com/x.mp4", "x.mp4", "https://example.com");
+	location("https://user:p#ss@example.com/x", "x", "https://example.com");
+	location("https://user:p#ss@example.com", "example.com", NULL);
+	/* an address without a host, as local playlists write files */
+	location("file:///D:/shows/a.mp4", "a.mp4", "file:///D:/shows");
+	location("file:///home/me/a.mp4", "a.mp4", "file:///home/me");
+	location("file:///a.mp4", "a.mp4", "file:///");
+	location("file:///", "file:///", NULL);
+	location("file://", "file://", NULL);
+	location("file://server/share/a.mp4", "a.mp4", "file://server/share");
+	location("file://localhost/a.mp4", "a.mp4", "file://localhost");
+	location("https://", "https://", NULL);
+	location("https:///a.mp4", "a.mp4", "https:///");
+
+	label(NULL, "D:/shows/loops/clip-14.mp4", "clip-14.mp4 (D:/shows/loops)");
+	label("", "D:/shows/loops/clip-14.mp4", "clip-14.mp4 (D:/shows/loops)");
+	label("Intro", "D:/shows/loops/clip-14.mp4", "Intro - clip-14.mp4 (D:/shows/loops)");
+	label(NULL, "clip.mp4", "clip.mp4");
+	label("News", "https://user:pw@example.com/radio?x=1", "News - radio (https://example.com)");
+	label(NULL, "https://example.com/", "example.com");
+	label(NULL, "file:///a.mp4", "a.mp4 (file:///)");
+	label(NULL, "file:///", "file:///");
+	/* never NULL, and a title that is an address shows no password either */
+	label(NULL, "", "");
+	label("", "", "");
+	label("https://user:pw@example.com/live", "https://user:pw@example.com/live/1.ts",
+	      "https://example.com/live - 1.ts (https://example.com/live)");
+	label("News https://user:p/w@example.com/a", "clip.mp4", "News https://example.com/a - clip.mp4");
+	label("A https://u:p@a.example/x and https://v:q@b.example/y", "clip.mp4",
+	      "A https://a.example/x and https://b.example/y - clip.mp4");
+	label("Live https://x.tv @ 8pm", "clip.mp4", "Live https://x.tv @ 8pm - clip.mp4");
+}
+
 int main(void)
 {
 	pl_test_no_crash_dialogs();
@@ -397,6 +634,10 @@ int main(void)
 	test_scheme();
 	test_extension();
 	test_redacted();
+	test_redacted_long();
+	test_text_redacted();
+	test_text_redacted_long();
+	test_location();
 	test_resolve();
 	test_resolve_long();
 	test_decode();

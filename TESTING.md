@@ -379,6 +379,32 @@ section was run inside OBS.
 | S.19 | OBS in German and in Russian: the whole window, advanced options shown | No label is cut off at 1080p with 150 % scaling | Pending |
 | S.20 | Run `tests/obs/run-harness.ps1` on Windows | Every check passes; `HARNESS DONE checks=` names the same number run and expected | Pending |
 
+## Third pass (2026-11-20)
+
+REQUIREMENTS R-UX-19 to R-UX-23. `ctest` covers the label of the Play item list and the names in status lines
+(`test-url`, `test_location`), that the user name and password of an address are left out and a valid address is otherwise shown as it is
+(`test_redacted`, `test_redacted_long` with a text of 100 000 bytes), the addresses inside a title
+(`test_text_redacted`, `test_text_redacted_long`) and the three new texts in all thirteen languages (`check-locale-files`). The Lua
+scripts got four new checks (the total line, that it leaves out rows that could not be played, a label of the
+Play item list, the answer to Apply waiting changes), one check with a new condition (no total beside a folder
+that went away) and one changed text; like the rest of the second pass they have not been run. Nothing here was run inside OBS.
+
+| # | Check | Expected | Result |
+|---|-------|----------|--------|
+| P.1 | A folder row of several videos and a file row. In Properties, at the top, open the **Play item** list | Each entry reads place, name, folder: "1-2: clip-02.mp4 (D:/shows/loops)", "2: intro.mp4 (D:/shows)". In a narrow window the name is still readable | Pending |
+| P.2 | A playlist row whose `.m3u` has `#EXTINF` titles; a web address row for a stream with no path (for example `https://example.com`) | The playlist's entries read "1-1: <title> - <file name> (<folder or address>)"; the stream reads "2: example.com" | Pending |
+| P.3 | Two or more rows, all read; press **Refresh** under Status | After the row lines, one line "N items to play", N being the sum of what the rows play. With a single row there is no such line. Add a row for a folder that does not exist, Refresh: the line is gone | Pending |
+| P.3b | A folder row and a file row, both read. Rename the folder on disk, wait for "folder not found", Refresh. Then set **Play** to "Only the newest file" with a folder of five files and a file row, Refresh | While the folder row reads "... folder not found ...; using the list read at ..." there is no "items to play" line. In the newest mode the rows read "1: folder - 1 of 5 files", "2: file" and the line reads "2 items to play" | Pending |
+| P.4 | A folder row with two files that cannot play (for example text files renamed to `.mp4`) and one that can; let it play through once; Refresh | The row reads "... 3 files; 2 files could not be played (<name>, <name>)" in the warning colour | Pending |
+| P.5 | Tick **Show advanced options**, then **Freeze the list during playback**. Hover over the checkbox | The tooltip is one sentence. The button **Apply waiting changes** appears under it; untick the box and it is gone (never greyed out) | Pending |
+| P.6 | With the list frozen and a folder row playing, copy a file into the folder and delete another; wait 5 s; Refresh | The row reads "... 2 changes waiting" | Pending |
+| P.7 | Press **Apply waiting changes** | Status keeps its lines and gets a last one: "The waiting changes are being applied. Press Refresh to see the list." Playback does not stop. Press Refresh: the new file is in the Play item list, the deleted one is not, and nothing is waiting | Pending |
+| P.8 | Press **Apply waiting changes** again, with nothing waiting | The last line of Status reads "No changes were waiting. Press Refresh to check again." | Pending |
+| P.9 | OBS in German and in Japanese: P.3, P.7 and P.8 | The three lines are in that language | Pending |
+| P.10 | A web address row typed as `https://user:secret@<a server you have>/<a video>`, and a web list row typed the same way; let each play; Refresh; look at Status, **Now playing**, **Next**, the Play item list and the OBS log (Help > Log Files > View Current Log); then save and open the scene collection file | None of them shows "user" or "secret": the address reads `https://<server>/<video>`. In the scene collection file, `current_file_name` and `next_file_name` hold the address without them (the Playlist row, `select_file` and `current_item_key` keep what was typed, so a search of the file for "secret" finds it there) | Pending |
+| P.10b | A file row typed as `http://<server>:8080/media/clip@2x.mp4` (a port, and an "@" in the name) | Now playing reads "1: http://<server>:8080/media/clip@2x.mp4", the address whole. The Play item list reads "1: clip@2x.mp4 (http://<server>:8080/media)", the name first and then where it is | Pending |
+| P.11 | An `.m3u` with the entry `file:///<full path to a video>` | The Play item list shows the file name first and the `file:///...` folder after it; it plays | Pending |
+
 ## macOS (0.5.2)
 
 macOS builds as one universal binary (arm64 and x86_64) and runs `ctest` on every push in CI (`macos-26`, Xcode 26;

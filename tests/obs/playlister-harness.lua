@@ -209,6 +209,15 @@ local function select_file_values()
 	return table.concat(values, " ")
 end
 
+-- the label of entry i of the Play item list (0 is "Choose an item")
+local function select_file_label(i)
+	local props = obs.obs_source_properties(src)
+	local list = obs.obs_properties_get(props, "select_file")
+	local label = i < obs.obs_property_list_item_count(list) and obs.obs_property_list_item_name(list, i) or ""
+	obs.obs_properties_destroy(props)
+	return label
+end
+
 -- chooses this value in Select File and presses Play Selected File, as Properties does
 local function play_selected(value)
 	local settings = obs.obs_source_get_settings(src)
@@ -270,8 +279,11 @@ end
 -- ... and says the likely cause and what happened
 local NOT_PLAYED = " - could not be played (missing, moved, or not a format OBS can play); skipped"
 
+-- the texts given here are the rows and the lines about playback; the line that totals the rows (R-UX-21), which
+-- stands between them when there is more than one row, has a check of its own
 local function check_status(name, expected_text, expected_type)
 	local text, info_type = status_block()
+	text = text:gsub("\n%d+ items to play", "")
 	check(name, text == expected_text and info_type == expected_type, text:gsub("\n", " | ") .. " (type " ..
 		info_type .. ")")
 end
@@ -672,6 +684,9 @@ step("play selected", 500, 15000, function() return dur() == D[1] and st() == PL
 	check("current file names item 1", current_file_name() == "1: " .. FILES[1], current_file_name())
 	check_status("the status block lists each file row, the stale notice gone once a choice played",
 		"1: file\n2: file\n3: file", 0)
+	-- R-UX-21: more than one row, all of them read: what they come to, after the rows
+	check("the status block totals the rows", (status_block()) == "1: file\n2: file\n3: file\n3 items to play",
+		(status_block()))
 	check("no setting holds the status block", not status_in_settings())
 	-- R-LIST-6: Properties names the running version on a line of its own, never a setting
 	local props = obs.obs_source_properties(src)
@@ -921,6 +936,9 @@ step("resume by uuid and key", 1000, 15000, function() return st() == PLAYING an
 	-- R-UP-20: a folder item is stored by its row, occurrence and key
 	check("select file stores the folder items' identities",
 		select_file_values() == K("0 f1:0: media:1:1.MP4 media:1:2.MP4 media:1:3.MP4"), select_file_values())
+	-- R-UX-19: the list shows the name first and the folder after it, as a narrow window cuts a label at its end
+	check("the Play item list shows the file name first, then its folder",
+		select_file_label(3) == "2-2: 2.mp4 (" .. MEDIA_FOLDER .. ")", select_file_label(3))
 	-- an occurrence that is not there is not swapped for another item of its key, and a folder row itself is no
 	-- item; neither plays or moves to another item
 	local before = media_next_count
@@ -1222,7 +1240,13 @@ step("a new file waits", 5000, 5000, nil, function()
 	check_status("the status block counts the waiting change", "1: folder - 5 files; 1 change waiting", 0)
 	mark.before_apply = tm()
 	mark.duration_before_apply = dur()
-	press("apply_waiting_changes")
+	-- R-UX-22: the press is answered in the Status of the open Properties, which the click redraws
+	local props = obs.obs_source_properties(src)
+	obs.obs_property_button_clicked(obs.obs_properties_get(props, "apply_waiting_changes"), src)
+	local answer = obs.obs_property_long_description(obs.obs_properties_get(props, "row_status")) or ""
+	obs.obs_properties_destroy(props)
+	check("Apply waiting changes is answered in Status", answer == "1: folder - 5 files; 1 change waiting\n" ..
+		"The waiting changes are being applied. Press Refresh to see the list.", answer)
 end)
 
 local function lists_new_file()
@@ -1309,6 +1333,10 @@ step("failing rows skipped", 500, 15000, function() return dur() == D[1] and st(
 	check_status("the status block shows the failed rows as errors, with why",
 		"1: file " .. base_name(MISSING_FILE) .. NOT_PLAYED .. "\n2: file " .. base_name(CORRUPT_FILE) .. NOT_PLAYED ..
 		"\n3: file", 2)
+	-- R-UX-21: an item that could not be played is not one to play. One of the three rows plays, so there is no
+	-- total (it is shown from two on); with the failed rows counted it would read "3 items to play".
+	check("the total leaves out the rows that could not be played",
+		(status_block()):find("items to play", 1, true) == nil, (status_block()))
 	remove_source()
 end)
 
