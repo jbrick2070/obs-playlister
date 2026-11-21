@@ -34,9 +34,9 @@ Italian.
   name sent to controllers, and no longer in **Now playing** and **Next**, which showed the address as it was
   typed and saved that text with the scene. An address inside a playlist entry's title is treated the same. The
   **Playlist** list itself still shows each address as it was typed, and the scene collection file keeps it, as
-  that is what Playlister plays and finds the item by. A "/", "?" or "#" in a user name or password must be
-  written %2F, %3F or %23, as in any web address; otherwise the address is not valid (it would not play either)
-  and the user name or password may show in those places too.
+  that is what Playlister plays and finds the item by. Write a "/", "?" or "#" in a user name or password as %2F, %3F
+  or %23, as in any web address. Otherwise the address means something else: it ends at that character, so it
+  may go to another server than was meant, and that part of the user name or password may show in those labels.
 - An item given as `file:///a.mp4` reads "a.mp4 (file:///)" in the Play item list.
 
 ### Changed

@@ -228,10 +228,11 @@ Where a user name and password show: Playlister leaves them out of the labels
 of the **Play item** list, of **Status**, **Now playing** and **Next**, of the
 OBS log and of the names it sends to controllers. The **Playlist** list itself
 shows each address as you typed it, and the scene collection file keeps it
-that way, since that is what Playlister plays and finds the item by. A `/`,
-`?` or `#` in a user name or password must be written `%2F`, `%3F` or `%23`,
-as in any web address; otherwise the address is not valid (it would not play
-either) and the user name or password may show in those places too.
+that way, since that is what Playlister plays and finds the item by. Write a
+`/`, `?` or `#` in a user name or password as `%2F`, `%3F` or `%23`, as in any
+web address. Otherwise the address means something else: it ends at that
+character, so it may go to another server than you meant, and that part of
+the user name or password may show in those labels.
 
 Behind a proxy: Playlister uses the proxy the environment names (`http_proxy`
 for http addresses, `https_proxy` for https, `all_proxy` for either that has

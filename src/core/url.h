@@ -48,13 +48,17 @@ char *pl_url_path_extension(const char *location);
  * "srt://:9000", is one), everything up to the last
  * '@' before the first '?' or '#' is left out as user information, or up to the last '@' of the text when none stands
  * there: "https://host/x". Where the cut-off authority does read as a host ("user:12" of "https://user:12/34@host/x",
- * "token" of "https://token/more@host/x") the text is left as it is, and shows. */
+ * "token" of "https://token/more@host/x", ":123" of "https://:123/x@host/y") the text is a valid address for another
+ * server than was meant; it is left as it is, and shows. */
 char *pl_url_redacted(const char *location);
 
 /* Free text that may hold addresses, such as a playlist entry's title, with each of them redacted
- * (pl_url_redacted): the text is read word by word, a word being what stands between spaces or tabs, so that every
- * address in it is seen and the words around one are left alone ("Live https://x.tv @ 8pm" stays as it is). Text
- * without "://" comes back unchanged. Never NULL. */
+ * (pl_url_redacted). The text is read word by word, a word being what stands between white space (space, tab, line
+ * ends, vertical tab, form feed), so that the words around an address are left alone ("Live https://x.tv @ 8pm" stays
+ * as it is). A word that holds several addresses ("a://x,b://y") is read piece by piece: a piece ends where the
+ * scheme of the next address starts, and the punctuation between two is kept. One address is always one piece, as a
+ * ',' or ')' may stand in a password; so is an address with a space in its password two words, of which the first
+ * shows. Text without "://" comes back unchanged. Never NULL. */
 char *pl_text_redacted(const char *text);
 
 /* A location as a person reads it, in two parts (R-UX-19): the name, which is its last part (the file name; of an

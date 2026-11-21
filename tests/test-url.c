@@ -135,6 +135,7 @@ static void test_redacted(void)
 	redacted("https://us/er:secret@host.example.com/x", "https://us/er:secret@host.example.com/x");
 	redacted("https://dGVzdA/Zm9v==@host.example.com/x.mp4", "https://dGVzdA/Zm9v==@host.example.com/x.mp4");
 	redacted("https://token?x@host.example.com/x.mp4", "https://token");
+	redacted("https://:123/x@host.example.com/y", "https://:123/x@host.example.com/y"); /* a port, no host */
 	redacted("C:\\Lists\\a.m3u", "C:\\Lists\\a.m3u");
 	redacted("\\\\server\\share\\a@b.m3u", "\\\\server\\share\\a@b.m3u");
 	redacted("//server/share/a@b.m3u", "//server/share/a@b.m3u");
@@ -142,6 +143,7 @@ static void test_redacted(void)
 	redacted("HTTPS://U:P@HOST.EXAMPLE.COM/X", "HTTPS://HOST.EXAMPLE.COM/X");
 	/* without "://" the text is no address and is left alone, whatever it holds */
 	redacted("user:pw@host.example.com/x", "user:pw@host.example.com/x");
+	/* the least there can be */
 	redacted("", "");
 	redacted("https://", "https://");
 	redacted("file://", "file://");
@@ -171,7 +173,8 @@ static void test_redacted_long(void)
 	assert(strcmp(shown + strlen(expected_head), text + strlen(head)) == 0);
 	bfree(shown);
 
-	/* the same with the authority cut short by a '/' in the password: all of it goes, up to the last '@' */
+	/* the same with the authority cut short by a '/' in the password (this writes over the '@' of the head, so
+	 * the user information has none): all of it goes, up to the last '@' of the text */
 	memcpy(text, "https://user:p/w", 16);
 	char *last_at = strrchr(text, '@');
 	assert(last_at);
@@ -209,6 +212,58 @@ static void test_text_redacted(void)
 	text_redacted("  two  spaces\thttps://u:p@h.example/x  ", "  two  spaces\thttps://h.example/x  ");
 	text_redacted("(https://u:p@h.example/x)", "(https://h.example/x)");
 	text_redacted("News https://user:p/w@example.com/a", "News https://example.com/a");
+	text_redacted("<https://u:p@h.example/x>", "<https://h.example/x>");
+	/* several addresses in one word: each is read, and what stands between them stays */
+	text_redacted("https://u:p@a.example/x,https://v:q@b.example/y", "https://a.example/x,https://b.example/y");
+	text_redacted("https://u:p@a.example/x;https://v:q@b.example/y;rtmp://w:r@c.example/z",
+		      "https://a.example/x;https://b.example/y;rtmp://c.example/z");
+	text_redacted("(https://u:p@a.example/x)(https://v:q@b.example/y)",
+		      "(https://a.example/x)(https://b.example/y)");
+	text_redacted("https://u:p@a.example/x|https://v:q@b.example/y", "https://a.example/x|https://b.example/y");
+	text_redacted("[a](https://u:p@a.example/x)[b](https://v:q@b.example/y)",
+		      "[a](https://a.example/x)[b](https://b.example/y)");
+	text_redacted("https://u:p@a.example/x?k=1,https://v:q@b.example/y?k=2",
+		      "https://a.example/x,https://b.example/y");
+	text_redacted("'https://u:p@a.example/x','https://v:q@b.example/y'",
+		      "'https://a.example/x','https://b.example/y'");
+	text_redacted("One: https://u:p@a.example/x,https://v:q@b.example/y Two: https://w:r@c.example/z",
+		      "One: https://a.example/x,https://b.example/y Two: https://c.example/z");
+	/* one address is one piece: a ',', ';' or ')' may stand in a password */
+	text_redacted("https://user:a,b;c)d@h.example/x", "https://h.example/x");
+	text_redacted("https://user:a,b@a.example/x,https://v:q@b.example/y",
+		      "https://a.example/x,https://b.example/y");
+	/* an address inside the query of another is read as the next one; the query before it goes, as queries do */
+	text_redacted("https://p.example/get?u=https://v:q@b.example/y", "https://p.example/gethttps://b.example/y");
+	/* any white space ends a word */
+	text_redacted("https://x.tv\nmail me@home", "https://x.tv\nmail me@home");
+	text_redacted("https://u:p@a.example/x\r\nhttps://v:q@b.example/y",
+		      "https://a.example/x\r\nhttps://b.example/y");
+}
+
+/* a title as long as a list line can be, in many words and in one */
+static void test_text_redacted_long(void)
+{
+	const char *unit = "https://u:p@a.example/x,";
+	const char *shown_unit = "https://a.example/x,";
+	const size_t count = 1500;
+	struct dstr words = {0};
+	struct dstr word = {0};
+	struct dstr expected_words = {0};
+	struct dstr expected_word = {0};
+	for (size_t i = 0; i < count; i++) {
+		dstr_cat(&word, unit);
+		dstr_cat(&expected_word, shown_unit);
+		dstr_cat(&words, unit);
+		dstr_cat(&words, " ");
+		dstr_cat(&expected_words, shown_unit);
+		dstr_cat(&expected_words, " ");
+	}
+	expect_text("text redacted", "many words", pl_text_redacted(words.array), expected_words.array);
+	expect_text("text redacted", "one long word", pl_text_redacted(word.array), expected_word.array);
+	dstr_free(&words);
+	dstr_free(&word);
+	dstr_free(&expected_words);
+	dstr_free(&expected_word);
 }
 
 static void resolve(const char *reference, const char *expected)
@@ -581,6 +636,7 @@ int main(void)
 	test_redacted();
 	test_redacted_long();
 	test_text_redacted();
+	test_text_redacted_long();
 	test_location();
 	test_resolve();
 	test_resolve_long();

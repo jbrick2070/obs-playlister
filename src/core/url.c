@@ -171,24 +171,51 @@ char *pl_url_redacted(const char *location)
 	return shown.array;
 }
 
+#define TEXT_SPACE " \t\r\n\v\f"
+
+static bool scheme_char(char c)
+{
+	return ascii_alpha(c) || ascii_digit(c) || c == '+' || c == '-' || c == '.';
+}
+
 char *pl_text_redacted(const char *text)
 {
 	if (!strstr(text, "://"))
 		return bstrdup(text);
 	struct dstr shown = {0};
+	const char *mark = strstr(text, "://");
 	for (const char *c = text; *c;) {
-		size_t gap = strspn(c, " \t");
+		size_t gap = strspn(c, TEXT_SPACE);
 		dstr_ncat(&shown, c, gap);
 		c += gap;
-		size_t length = strcspn(c, " \t");
-		if (!length)
-			break;
-		char *word = bstrdup_n(c, length);
-		char *shown_word = pl_url_redacted(word);
-		dstr_cat(&shown, shown_word);
-		bfree(shown_word);
-		bfree(word);
-		c += length;
+		const char *word_end = c + strcspn(c, TEXT_SPACE);
+		/* A word may hold several addresses ("a://x,b://y"). Each piece runs up to where the next one's scheme
+		 * starts; the punctuation that stands between two is copied as it is, so that it is not lost with a
+		 * query. One address is one piece whatever it holds: a ',' or ')' may be part of a password. */
+		while (c < word_end) {
+			const char *end = word_end;
+			const char *between = word_end;
+			/* looked for only once it is passed, so that a long text is read once, not once a word */
+			if (mark && mark < c)
+				mark = strstr(c, "://");
+			const char *first = mark;
+			const char *next = first && first < word_end ? strstr(first + 3, "://") : NULL;
+			if (next && next < word_end) {
+				end = next;
+				while (end > first + 3 && scheme_char(end[-1]))
+					end--;
+				between = end;
+				while (between > first + 3 && strchr(",;|)]}>\"'([{<", between[-1]))
+					between--;
+			}
+			char *piece = bstrdup_n(c, (size_t)(between - c));
+			char *shown_piece = pl_url_redacted(piece);
+			dstr_cat(&shown, shown_piece);
+			dstr_ncat(&shown, between, (size_t)(end - between));
+			bfree(shown_piece);
+			bfree(piece);
+			c = end;
+		}
 	}
 	return shown.array ? shown.array : bstrdup("");
 }
