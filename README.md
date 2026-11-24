@@ -165,30 +165,8 @@ Tick **Show advanced options** for the rest:
 | **Time between web list checks** | 300 s | How often a list on the web is downloaded again. |
 | **Freeze the list during playback** | off | New, changed and removed files wait until the next Play or Restart, or until you press **Apply waiting changes**. They also join when the source returns to Program, if it is set to start again or to play the next item. Status counts them (`3 changes waiting`); after a press of the button it says that they are being applied, or that none were waiting, and **Refresh** shows the list as it is then. |
 
-### Web lists, passwords and proxies
-
-- **User name and password:** a list address may carry them (`https://user:password@host/list.m3u`). They are sent
-  to that server, and after a redirect only if it stays with the same scheme, host and port: never to another host,
-  nor from http to https. A redirect from https to http is refused.
-- **Where they show:** Playlister leaves them out of the **Play item** labels, **Status**, **Now playing**,
-  **Next**, the OBS log and the names it sends to controllers. The **Playlist** itself shows each address as you
-  typed it, and the scene collection file keeps it that way, since that is what Playlister plays and finds the
-  item by.
-- **Special characters:** write a `/`, `?` or `#` in a user name or password as `%2F`, `%3F` or `%23`, as in any
-  web address. Otherwise the address ends at that character, so it may go to another server than you meant, and
-  that part of the user name or password may show in those labels.
-- **Character set:** a list that is not UTF-8 is read in the character set its server names. It is read as
-  Windows-1252 when the server names none, or names one this computer cannot convert from, or the text is not
-  valid in the one it names.
-- **Proxy:** Playlister uses the proxy the environment names (`http_proxy` for http addresses, `https_proxy` for
-  https, `all_proxy` for either that has none of its own, `no_proxy` for hosts to reach directly), for each
-  address of a redirect chain by itself. With none named, Windows uses the system's proxy settings (but reaches a
-  host named in `no_proxy` directly); macOS and Linux use none.
-- **`no_proxy` on Windows** takes host names and addresses (IPv6 bare or in brackets), with or without a port, and
-  `*` for every host. A port is compared with the list address's own, not with one a redirect leads to. Address
-  ranges such as `10.0.0.0/8` are not supported there.
-- **The items themselves** are played by OBS's own media source (FFmpeg), which looks at `http_proxy` and
-  `no_proxy` only, so set those for the items to play as well.
+Web lists with a user name and password, other character sets and proxies: see
+[docs/WEB-LISTS.md](docs/WEB-LISTS.md).
 
 ## Hotkeys
 
@@ -254,111 +232,14 @@ What changed in each version: [CHANGELOG.md](CHANGELOG.md). The design: [PLAN.md
 
 ## For controllers and scripts
 
-What plays now and what comes next can be read without the Properties window, so a controller key can show it.
-Only names are published, never paths.
-
-### obs-websocket
-
-Playlister registers the vendor **`obs-playlister`** with obs-websocket (which ships with OBS). Where obs-websocket
-is absent or off, nothing is registered.
-
-Request `get_now_next`, sent as obs-websocket's `CallVendorRequest` with `vendorName` `obs-playlister` and
-`requestType` `get_now_next`:
-
-| Request field | Type | Meaning |
-| :--- | :--- | :--- |
-| `source_uuid` | string, optional | The Playlister source to ask, by its UUID |
-| `source` | string, optional | The same by its name; used when `source_uuid` is absent |
-
-With one of the two, the response has `found` (bool: whether that is a Playlister source) and, when it is, the
-fields below. With neither, the response has `sources`: an array with these fields for every Playlister source.
-
-| Response field | Type | Meaning |
-| :--- | :--- | :--- |
-| `source` | string | The source's name |
-| `source_uuid` | string | The source's UUID |
-| `playing` | string | The name of the item that is loaded: a playlist entry's title, else the file name, else the last part of the address. Empty when nothing is loaded |
-| `next` | string | The name of the item that follows; while nothing plays, the item Play starts. Empty when nothing follows or it is not decided |
-| `next_decided` | bool | False when Shuffle is on and the next item is chosen only when it starts |
-| `state` | string | `playing`, `paused`, `stopped`, `ended`, `opening`, `error` or `none` |
-| `status` | string | The worst of the Status lines: `ok`, `warning` or `error` |
-| `row` | number | The playing item's row in the Playlist, from 1; 0 when nothing is loaded |
-| `item` | number | Its place within a folder or playlist row, from 1; 0 for a file row |
-| `items` | number | How many items the whole list has to play |
-
-Event `now_next_changed` (obs-websocket's `VendorEvent`, `vendorName` `obs-playlister`, `eventType`
-`now_next_changed`): sent when `playing`, `next`, `next_decided` or `status` of a source changes. Its `eventData`
-has the same fields as the response for one source. Play, pause and stop alone send no event; obs-websocket's own
-media events and `GetMediaInputStatus` report those.
-
-### In OBS (scripts and plugins)
-
-The same reading is a proc on the source:
-
-```c
-proc_handler_t *ph = obs_source_get_proc_handler(source);
-calldata_t cd = {0};
-proc_handler_call(ph, "get_now_next", &cd);
-const char *playing = calldata_string(&cd, "playing"); /* also: next, state, status */
-bool next_decided = calldata_bool(&cd, "next_decided");
-long long row = calldata_int(&cd, "row"); /* also: item, items */
-calldata_free(&cd);
-```
-
-and a signal on the source's signal handler when it changes:
-`void playlister_now_next(ptr source, string playing, string next, bool next_decided, string status)`.
-
-To select an item from a script or another plugin:
-
-```c
-proc_handler_t *ph = obs_source_get_proc_handler(source);
-struct calldata cd = {0};
-calldata_set_int(&cd, "media_index", 3);       // 4th row of the playlist
-calldata_set_int(&cd, "folder_item_index", 3); // 4th item of that row if it is a folder
-proc_handler_call(ph, "select_index", &cd);
-calldata_free(&cd);
-```
-
-- `media_index`: 0-based row in the playlist. If it is past the end of the list, the call does nothing (the
-  original README said it falls back to 0; the code never did).
-- `folder_item_index`: 0-based item in the folder at `media_index`. If it is past the end of the folder, item 0 is
-  played. It is ignored for rows that are not folders.
-
-The source id is `obs_playlister_source`. To see the setting keys, use
-[obs_data_get_json](https://docs.obsproject.com/reference-settings#c.obs_data_get_json) on the source's settings
-or look at the scene collection JSON. The order of a folder is saved as `sort_key` (0 date, 1 name, 2 as listed)
-and `sort_descending`; the Order list of Properties follows them.
+What a source plays now and what comes next can be read without the Properties window, so a controller key can
+show it; only names are published, never paths. Playlister registers the obs-websocket vendor `obs-playlister`
+(request `get_now_next`, event `now_next_changed`), and each source has the proc `get_now_next`, the signal
+`playlister_now_next` and the proc `select_index`. Every field and an example: [docs/CONTROLLERS.md](docs/CONTROLLERS.md).
 
 ## Building
 
-| System | Needs |
-| :--- | :--- |
-| Windows 11 x64 | Visual Studio 2022 (or newer) C++ build tools, Windows SDK 10.0.26100, CMake 3.28 or newer |
-| macOS 13 or later | Xcode 16 or newer, CMake 3.28 or newer (builds a universal arm64 and x86_64 Xcode project) |
-| Linux | The installed OBS and its development files (`obs-studio`), `cmake`, `ninja`, `simde` and libcurl's development files (`libcurl4-openssl-dev` on Ubuntu) |
-
-On Windows and macOS the first configure downloads the OBS 33.0.0 source and the matching obs-deps into `.deps/`
-and builds libobs once. From the repository root:
-
-```
-# Windows
-cmake --preset windows-x64
-cmake --build --preset windows-x64 --config RelWithDebInfo
-ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure --no-tests=error
-cmake --install build_x64 --config RelWithDebInfo --prefix release/RelWithDebInfo
-
-# macOS
-cmake --preset macos
-cmake --build --preset macos --config RelWithDebInfo
-ctest --test-dir build_macos -C RelWithDebInfo --output-on-failure --no-tests=error
-
-# Linux
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF
-cmake --build build
-ctest --test-dir build --output-on-failure --no-tests=error
-```
-
-Manual OBS checks are listed in [TESTING.md](TESTING.md).
+Windows, macOS and Linux build steps and how to run the tests: [docs/BUILDING.md](docs/BUILDING.md).
 
 ## License and credits
 
