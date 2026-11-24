@@ -22,6 +22,8 @@ watched, and Playlister tells files, folders, playlist files and web addresses a
 In Studio Mode a new source waits in the Preview scene: **Status** says "Waiting: plays when its scene is in
 Program." until you fade or cut that scene to Program.
 
+Quick start in other languages: [Deutsch](docs/quickstart/de.md#playlister) · [Español](docs/quickstart/es.md#playlister) · [Français](docs/quickstart/fr.md#playlister) · [Italiano](docs/quickstart/it.md#playlister) · [日本語](docs/quickstart/ja.md#playlister) · [한국어](docs/quickstart/ko.md#playlister) · [Nederlands](docs/quickstart/nl.md#playlister) · [Português (Brasil)](docs/quickstart/pt-BR.md#playlister) · [Русский](docs/quickstart/ru.md#playlister) · [Türkçe](docs/quickstart/tr.md#playlister) · [简体中文](docs/quickstart/zh-CN.md#playlister) · [繁體中文](docs/quickstart/zh-TW.md#playlister)
+
 > **Setting up the whole Fadester Suite?** Start with
 > **[START-HERE.md](https://github.com/jbrick2070/streamdeck-fadester/blob/main/docs/START-HERE.md)** (what to
 > install, which video player to pick, first-run OBS settings, compatibility).
