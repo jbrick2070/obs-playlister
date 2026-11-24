@@ -1,4 +1,4 @@
-> Bu, İngilizce hızlı başlangıcın bir yapay zekâ modeliyle yapılmış ve ikinci bir modelce denetlenmiş çevirisidir; henüz anadili Türkçe olan biri tarafından gözden geçirilmedi.
+> Bu, İngilizce hızlı başlangıcın bir yapay zekâ modeliyle yapılmış ve ikinci bir modelce denetlenmiş çevirisidir; henüz ana dili Türkçe olan biri tarafından gözden geçirilmedi.
 
 # Playlister
 
