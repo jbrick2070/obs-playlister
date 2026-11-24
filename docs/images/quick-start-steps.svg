@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 300" width="900" height="300" role="img" aria-labelledby="t d">
+  <title id="t">Playlister in three steps</title>
+  <desc id="d">1: install Playlister and start OBS again. 2: in the Sources box press plus and choose Playlister. 3: press plus at the right of Playlist and add files, a folder or a web address; it plays when its scene is in Program.</desc>
+  <style>
+    .card { fill: #ffffff; stroke: #cfe0d5; stroke-width: 2; }
+    .num { fill: #236044; }
+    .numt { fill: #ffffff; font: 700 22px system-ui, "Segoe UI", sans-serif; }
+    .h { fill: #162922; font: 700 21px system-ui, "Segoe UI", sans-serif; }
+    .s { fill: #3d5a4c; font: 15px system-ui, "Segoe UI", sans-serif; }
+    .ink { stroke: #236044; stroke-width: 3; fill: none; }
+    .pale { fill: #eef4ef; stroke: #236044; stroke-width: 3; }
+    .amber { fill: #e9a84a; }
+    .row { fill: #ffffff; stroke: #9bb8a8; stroke-width: 1.5; }
+    .rowt { fill: #1b382d; font: 600 13px system-ui, "Segoe UI", sans-serif; }
+    .btn { fill: #236044; }
+    .btnt { fill: #ffffff; font: 700 16px system-ui, "Segoe UI", sans-serif; }
+    .arrow { fill: #9bb8a8; }
+  </style>
+  <rect x="0" y="0" width="900" height="300" rx="18" fill="#eef4ef"/>
+
+  <!-- 1: install -->
+  <rect class="card" x="20" y="20" width="260" height="260" rx="16"/>
+  <circle class="num" cx="52" cy="52" r="18"/><text class="numt" x="52" y="60" text-anchor="middle">1</text>
+  <rect class="pale" x="86" y="78" width="72" height="96" rx="8"/>
+  <path class="ink" d="M122 96 v40 M108 124 l14 14 14 -14"/>
+  <line class="ink" x1="104" y1="154" x2="140" y2="154"/>
+  <circle cx="200" cy="126" r="30" class="pale"/>
+  <path class="ink" d="M214 108 a20 20 0 1 0 6 16"/>
+  <path d="M206 100 l14 6 -8 12 z" fill="#236044"/>
+  <text class="h" x="150" y="222" text-anchor="middle">Install it</text>
+  <text class="s" x="150" y="246" text-anchor="middle">Run the download,</text>
+  <text class="s" x="150" y="266" text-anchor="middle">then start OBS again</text>
+
+  <path class="arrow" d="M288 142 l14 8 -14 8 z"/>
+
+  <!-- 2: add the source -->
+  <rect class="card" x="320" y="20" width="260" height="260" rx="16"/>
+  <circle class="num" cx="352" cy="52" r="18"/><text class="numt" x="352" y="60" text-anchor="middle">2</text>
+  <rect class="pale" x="372" y="76" width="156" height="114" rx="10"/>
+  <text class="rowt" x="384" y="96">Sources</text>
+  <rect class="row" x="384" y="106" width="132" height="24" rx="5"/>
+  <rect x="384" y="136" width="132" height="24" rx="5" class="amber" stroke="#236044" stroke-width="1.5"/>
+  <text class="rowt" x="394" y="153">Playlister</text>
+  <rect class="btn" x="384" y="166" width="20" height="18" rx="4"/><text class="btnt" x="394" y="181" text-anchor="middle">+</text>
+  <text class="h" x="450" y="222" text-anchor="middle">Add a Playlister</text>
+  <text class="s" x="450" y="246" text-anchor="middle">Sources: press +,</text>
+  <text class="s" x="450" y="266" text-anchor="middle">choose Playlister, OK</text>
+
+  <path class="arrow" d="M588 142 l14 8 -14 8 z"/>
+
+  <!-- 3: add something to play -->
+  <rect class="card" x="620" y="20" width="260" height="260" rx="16"/>
+  <circle class="num" cx="652" cy="52" r="18"/><text class="numt" x="652" y="60" text-anchor="middle">3</text>
+  <rect class="pale" x="668" y="76" width="164" height="114" rx="10"/>
+  <text class="rowt" x="680" y="96">Playlist</text>
+  <rect class="btn" x="800" y="83" width="22" height="18" rx="4"/><text class="btnt" x="811" y="98" text-anchor="middle">+</text>
+  <rect class="row" x="680" y="108" width="140" height="22" rx="5"/>
+  <path d="M688 113 l9 6 -9 6 z" fill="#236044"/><rect x="704" y="116" width="80" height="6" rx="3" fill="#9bb8a8"/>
+  <rect class="row" x="680" y="134" width="140" height="22" rx="5"/>
+  <path d="M688 140 h6 l2 2 h7 v9 h-15 z" fill="#e9a84a" stroke="#236044" stroke-width="1"/><rect x="710" y="142" width="70" height="6" rx="3" fill="#9bb8a8"/>
+  <rect class="row" x="680" y="160" width="140" height="22" rx="5"/>
+  <circle cx="695" cy="171" r="6" fill="none" stroke="#236044" stroke-width="1.5"/><line x1="689" y1="171" x2="701" y2="171" stroke="#236044" stroke-width="1.5"/><ellipse cx="695" cy="171" rx="2.5" ry="6" fill="none" stroke="#236044" stroke-width="1.5"/><rect x="708" y="168" width="90" height="6" rx="3" fill="#9bb8a8"/>
+  <text class="h" x="750" y="222" text-anchor="middle">Add what to play</text>
+  <text class="s" x="750" y="246" text-anchor="middle">Files, a folder or a web</text>
+  <text class="s" x="750" y="266" text-anchor="middle">address: it plays in Program</text>
+</svg>
