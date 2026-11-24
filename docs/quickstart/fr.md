@@ -2,7 +2,7 @@
 
 # Playlister
 
-Une source de liste de lecture pour OBS Studio 33 et versions ultérieures. Elle lit des fichiers vidéo, audio et image, des dossiers, des fichiers de liste de lecture et des adresses web, l'un après l'autre, et modifier la liste ne redémarre pas le clip en cours.
+Une source de liste de lecture pour OBS Studio 33 et versions ultérieures. Elle lit des fichiers vidéo, audio et image, des dossiers, des fichiers de liste de lecture et des adresses web via la propre Source média d'OBS, l'un après l'autre, et modifier la liste ne redémarre pas le clip en cours.
 
 <img src="../../docs/images/quick-start-steps.svg" alt="Playlister en trois étapes : 1, installez-le et redémarrez OBS ; 2, dans Sources cliquez sur +, choisissez Playlister puis Ok ; 3, cliquez sur + à droite de Liste de lecture et ajoutez des fichiers, un dossier ou une adresse web. La lecture démarre quand sa scène est dans le Programme." width="900">
 

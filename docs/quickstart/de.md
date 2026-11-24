@@ -2,7 +2,7 @@
 
 # Playlister
 
-Eine Wiedergabelisten-Quelle für OBS Studio 33 und neuer. Sie spielt Video-, Audio- und Bilddateien, Ordner, Wiedergabelisten-Dateien und Webadressen nacheinander ab, und eine Änderung der Liste startet den laufenden Clip nicht neu.
+Eine Wiedergabelisten-Quelle für OBS Studio 33 und neuer. Sie spielt Video-, Audio- und Bilddateien, Ordner, Wiedergabelisten-Dateien und Webadressen über die eigene Medienquelle von OBS nacheinander ab, und eine Änderung der Liste startet den laufenden Clip nicht neu.
 
 <img src="../../docs/images/quick-start-steps.svg" alt="Playlister in drei Schritten: 1, installieren und OBS neu starten; 2, unter Quellen auf + klicken, Playlister wählen und OK klicken; 3, rechts neben Wiedergabeliste auf + klicken und Dateien, einen Ordner oder eine Webadresse hinzufügen. Die Wiedergabe beginnt, sobald die Szene im Programm ist." width="900">
 

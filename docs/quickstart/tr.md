@@ -2,7 +2,7 @@
 
 # Playlister
 
-OBS Studio 33 ve sonrası için bir oynatma listesi kaynağı. Video, ses ve görüntü dosyalarını, klasörleri, oynatma listesi dosyalarını ve web adreslerini art arda oynatır; listeyi düzenlemek oynayan klibi yeniden başlatmaz.
+OBS Studio 33 ve sonrası için bir oynatma listesi kaynağı. Video, ses ve görüntü dosyalarını, klasörleri, oynatma listesi dosyalarını ve web adreslerini OBS'nin kendi Ortam Kaynağı üzerinden art arda oynatır; listeyi düzenlemek oynayan klibi yeniden başlatmaz.
 
 <img src="../../docs/images/quick-start-steps.svg" alt="Üç adımda Playlister: 1, kurun ve OBS'yi yeniden başlatın; 2, Kaynaklar'da + düğmesine basın, Playlister'ı seçin ve Tamam'a basın; 3, Oynatma Listesi'nin sağındaki + düğmesine basıp dosya, klasör ya da web adresi ekleyin. Sahnesi Program'a geldiğinde oynatılır." width="900">
 

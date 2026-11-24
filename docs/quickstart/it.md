@@ -2,7 +2,7 @@
 
 # Playlister
 
-Una fonte playlist per OBS Studio 33 e versioni successive. Riproduce file video, audio e immagini, cartelle, file di playlist e indirizzi web, uno dopo l'altro, e modificare la lista non fa ripartire la clip in riproduzione.
+Una fonte playlist per OBS Studio 33 e versioni successive. Riproduce file video, audio e immagini, cartelle, file di playlist e indirizzi web tramite la Fonte multimediale dello stesso OBS, uno dopo l'altro, e modificare la lista non fa ripartire la clip in riproduzione.
 
 <img src="../../docs/images/quick-start-steps.svg" alt="Playlister in tre passi: 1, installalo e riavvia OBS; 2, in Fonti premi +, scegli Playlister e premi OK; 3, premi + a destra di Playlist e aggiungi file, una cartella o un indirizzo web. Parte quando la sua scena è in Programma." width="900">
 

@@ -2,7 +2,7 @@
 
 # Playlister
 
-Una fuente de lista de reproducción para OBS Studio 33 y posteriores. Reproduce archivos de vídeo, audio e imagen, carpetas, archivos de lista de reproducción y direcciones web, uno tras otro, y editar la lista no reinicia el clip que se está reproduciendo.
+Una fuente de lista de reproducción para OBS Studio 33 y posteriores. Reproduce archivos de vídeo, audio e imagen, carpetas, archivos de lista de reproducción y direcciones web a través de la propia Fuente multimedia de OBS, uno tras otro, y editar la lista no reinicia el clip que se está reproduciendo.
 
 <img src="../../docs/images/quick-start-steps.svg" alt="Playlister en tres pasos: 1, instálalo y vuelve a abrir OBS; 2, en Fuentes pulsa +, elige Playlister y pulsa Aceptar; 3, pulsa + a la derecha de Lista de reproducción y añade archivos, una carpeta o una dirección web. Se reproduce cuando su escena está en Programa." width="900">
 
