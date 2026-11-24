@@ -27,6 +27,10 @@
 !/docs
 /docs/*
 !/docs/images
+!/docs/BUILDING.md
+!/docs/CONTROLLERS.md
+!/docs/WEB-LISTS.md
+!/docs/quickstart
 
 # Exclude lock files
 *.lock.json
