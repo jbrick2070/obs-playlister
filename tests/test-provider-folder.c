@@ -1051,6 +1051,43 @@ static void test_is_directory(void)
 	bfree(folder);
 }
 
+/* R-UP-34: a drive letter mapped to a share counts as the share, so the UI never asks an offline one; a local drive,
+ * a relative path and anything on Linux and macOS do not */
+static void test_network_drive(void)
+{
+	assert(!pl_path_on_network_drive(NULL) && !pl_path_on_network_drive("") &&
+	       !pl_path_on_network_drive("clips/a.mp4") && !pl_path_on_network_drive("\\\\server\\share\\a.mp4"));
+#ifdef _WIN32
+	wchar_t windows[MAX_PATH];
+	assert(GetWindowsDirectoryW(windows, MAX_PATH));
+	char local[] = {(char)windows[0], ':', '/', 'a', '.', 'm', 'p', '4', '\0'};
+	assert(!pl_path_on_network_drive(local));
+	/* a letter no drive and no mapping (connected or not) has, defined for this session only and taken away
+	 * again: the drive's kind comes from the definition, whether the share answers or not */
+	const wchar_t *target = L"\\??\\UNC\\localhost\\C$";
+	wchar_t device[3] = {L'\0', L':', L'\0'};
+	for (wchar_t letter = L'Q'; letter >= L'D' && !device[0]; letter--) {
+		wchar_t found[MAX_PATH];
+		wchar_t candidate[3] = {letter, L':', L'\0'};
+		if (!QueryDosDeviceW(candidate, found, MAX_PATH) && GetLastError() == ERROR_FILE_NOT_FOUND)
+			device[0] = letter;
+	}
+	if (!device[0]) {
+		printf("network drive: no free drive letter here, the mapped case is skipped\n");
+		return;
+	}
+	assert(DefineDosDeviceW(DDD_RAW_TARGET_PATH, device, target));
+	char mapped[] = {(char)device[0], ':', '\\', 'a', '.', 'm', 'p', '4', '\0'};
+	char bare[] = {(char)device[0], ':', '\0'};
+	bool remote = pl_path_on_network_drive(mapped) && pl_path_on_network_drive(bare);
+	assert(DefineDosDeviceW(DDD_RAW_TARGET_PATH | DDD_REMOVE_DEFINITION | DDD_EXACT_MATCH_ON_REMOVE, device,
+				target));
+	assert(remote);
+#else
+	assert(!pl_path_on_network_drive("Z:/a.mp4"));
+#endif
+}
+
 static bool probed(const struct pl_snapshot *snapshot, const void *context)
 {
 	return snapshot->probe == *(const enum pl_probe *)context && snapshot->count == 0 && !snapshot->status_message;
@@ -1364,6 +1401,8 @@ int main(void)
 	printf("create arguments: passed\n");
 	test_is_directory();
 	printf("directory test: passed\n");
+	test_network_drive();
+	printf("network drive: passed\n");
 	test_pending_keys_republished();
 	printf("pending keys republished: passed\n");
 	test_listing_and_changes();

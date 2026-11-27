@@ -576,3 +576,12 @@ bool pl_folder_is_directory(const char *path)
 	bfree(path_w);
 	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
+
+bool pl_path_on_network_drive(const char *path)
+{
+	if (!path || !((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) || path[1] != ':')
+		return false;
+	/* the drive's kind comes from its definition, also while its share is offline */
+	wchar_t root[] = {(wchar_t)path[0], L':', L'\\', L'\0'};
+	return GetDriveTypeW(root) == DRIVE_REMOTE;
+}

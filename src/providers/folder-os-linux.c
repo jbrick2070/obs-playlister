@@ -659,3 +659,9 @@ bool pl_folder_is_directory(const char *path)
 	struct stat status;
 	return path && *path && stat(path, &status) == 0 && S_ISDIR(status.st_mode);
 }
+
+bool pl_path_on_network_drive(const char *path)
+{
+	UNUSED_PARAMETER(path);
+	return false;
+}

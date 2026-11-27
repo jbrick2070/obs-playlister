@@ -28,6 +28,9 @@ version numbers are the ones in `buildspec.json`.
   (deleted, drive removed or share offline)" while the folder was there; at startup it played nothing. While the
   folder itself can still be read, such a subfolder is now left out and logged with its error, as one that denies
   access is, and the rest of the folder plays. A share that drops during a listing still keeps the last good list.
+- Windows: OBS's missing-files check, which runs on the UI thread when a scene collection loads, asked about
+  playlist rows on a drive letter mapped to a share (`Z:\clips\a.mp4`), and an offline share held OBS for its
+  timeout; it already left `\\server\share` paths alone. A mapped network drive is now left alone the same way.
 
 ## [1.5.0] - 2026-11-20
 

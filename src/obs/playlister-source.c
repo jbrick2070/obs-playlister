@@ -4459,8 +4459,9 @@ static obs_missing_files_t *mps_missingfiles(void *data)
 		const char *path = obs_data_get_string(item, "value");
 
 		/* R-UP-34: local file rows only; the relocation dialog takes files, an absent folder row waits for its
-		 * folder (R-LIST-1), and asking about a share here would hold up the UI while it is offline */
-		if (strcmp(path, "") != 0 && !pl_path_is_unc(path) &&
+		 * folder (R-LIST-1), and asking about a share here, by its \\server\share path or a drive letter mapped
+		 * to it, would hold up the UI while it is offline */
+		if (strcmp(path, "") != 0 && !pl_path_is_unc(path) && !pl_path_on_network_drive(path) &&
 		    !saved_folder_kind(row_kinds, obs_data_get_string(item, S_ID), path)) {
 			if (!os_file_exists(path) && strstr(path, "://") == NULL) {
 				/* R-UP-67: the callback can run long after this, when the settings no longer hold path, so
