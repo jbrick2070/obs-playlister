@@ -772,11 +772,10 @@ static void test_indexed_update_matches_the_scan(bool entries)
 	match_free(&list);
 }
 
-/* A list change with every item drawn is quick however long the list is: one sort, not a scan per item (20,000
- * items took the scan several seconds) */
-static void test_update_files_is_quick(void)
+/* One list change with all count items drawn, the worst case for the update, timed: the indexed update, or the scan
+ * it replaced. The drawn order comes through unchanged, item for item, each now in the changed list. */
+static double timed_update(size_t count, bool indexed)
 {
-	const size_t count = 20000;
 	struct match_list list = {0}, changed = {0};
 	da_init(list.rows);
 	struct media_file_data row = {0};
@@ -800,27 +799,57 @@ static void test_update_files_is_quick(void)
 	shuffler_init(&shuffler);
 	shuffler_update_files(&shuffler, &list.rows.da);
 	for (size_t i = 0; i < count; i++)
-		shuffler_next(&shuffler); /* every item drawn: the worst case for the update */
+		shuffler_next(&shuffler);
 	assert(shuffler.head == count);
+	/* the drawn order, by name */
+	const char **order = bmalloc(count * sizeof(*order));
+	for (size_t i = 0; i < count; i++)
+		order[i] = shuffler.shuffled_files.array[i]->filename;
 
 	match_copy(&changed, &list);
 	match_set_parents(&changed);
 	uint64_t start = os_gettime_ns();
-	shuffler_update_files(&shuffler, &changed.rows.da);
+	shuffler_update_files_(&shuffler, &changed.rows.da, indexed);
 	double seconds = (double)(os_gettime_ns() - start) / 1e9;
 	assert(shuffler.head == count && shuffler.shuffled_files.num == count);
 	/* every drawn item kept its place in the order */
-	for (size_t i = 0; i < count; i += 997)
-		assert(shuffler.shuffled_files.array[i]->parent == &changed.rows.array[0]);
-	assert_invariant(&shuffler);
-	if (seconds > 1.0) {
-		fprintf(stderr, "updating %zu drawn items took %.2f s\n", count, seconds);
-		assert(false);
+	const struct media_file_data *items = changed.rows.array[0].folder_items.array;
+	for (size_t i = 0; i < count; i++) {
+		const struct media_file_data *item = shuffler.shuffled_files.array[i];
+		if (item < items || item >= items + count || strcmp(item->filename, order[i]) != 0) {
+			fprintf(stderr, "drawn place %zu: %s, not %s\n", i, item->filename, order[i]);
+			assert(false);
+		}
 	}
-	printf("updating %zu drawn items: %.3f s\n", count, seconds);
+	assert_invariant(&shuffler);
+	bfree(order);
 	shuffler_destroy(&shuffler);
 	match_free(&list);
 	match_free(&changed);
+	return seconds;
+}
+
+/* A list change with every item drawn is quick however long the list is: one sort, not a scan per item. The scan
+ * grows with the square of the count (20,000 items took it several seconds). A wall-clock limit fails on a slow or
+ * busy machine, so the update is timed against the scan on the same machine: with 10,000 items it must be more than
+ * five times as quick (here it is about 35 times; the best of three tries counts). 20,000 items get a limit only a
+ * broken update reaches. */
+static void test_update_files_is_quick(void)
+{
+	double indexed = 1e9;
+	for (int i = 0; i < 3; i++) {
+		double seconds = timed_update(10000, true);
+		indexed = seconds < indexed ? seconds : indexed;
+	}
+	double scanned = timed_update(10000, false);
+	printf("updating 10000 drawn items: %.4f s, with the scan %.4f s\n", indexed, scanned);
+	if (indexed * 5 > scanned) {
+		fprintf(stderr, "the update took %.4f s, the scan %.4f s\n", indexed, scanned);
+		assert(false);
+	}
+	double many = timed_update(20000, true);
+	printf("updating 20000 drawn items: %.4f s\n", many);
+	assert(many < 10.0);
 }
 
 int main(void)
