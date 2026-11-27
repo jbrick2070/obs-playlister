@@ -41,6 +41,7 @@ struct pl_folder_os {
 	wchar_t *root_w; /* canonical, with its \\?\ prefix (R-THR-5); NULL when the path cannot be converted */
 	bool include_subfolders;
 	HANDLE dir;
+	BY_HANDLE_FILE_INFORMATION dir_identity; /* of the folder dir is open on: volume serial and file index */
 	OVERLAPPED overlapped;
 	HANDLE overlapped_event;
 	DWORD *buffer;
@@ -386,7 +387,30 @@ enum pl_watch_event pl_folder_os_open(struct pl_folder_os *os)
 		return PL_WATCH_OPEN_FAILED;
 	}
 	os->dir = dir;
+	os->dir_identity = info;
 	return pl_folder_os_arm(os) ? PL_WATCH_OPENED_ARMED : PL_WATCH_OPENED_ARM_FAILED;
+}
+
+/* The handle follows the folder it was opened on, through a rename or a move to the Recycle Bin, and the watch with
+ * it; a new folder made at the path is another file, with another file index */
+bool pl_folder_os_replaced(struct pl_folder_os *os)
+{
+	if (os->dir == INVALID_HANDLE_VALUE || !os->root_w)
+		return false;
+	/* some network file systems report no file index at all: nothing to compare */
+	if (!os->dir_identity.nFileIndexHigh && !os->dir_identity.nFileIndexLow)
+		return false;
+	HANDLE at_path = CreateFileW(os->root_w, FILE_READ_ATTRIBUTES,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+				     FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (at_path == INVALID_HANDLE_VALUE)
+		return false; /* nothing there, or not reachable: the listing says so */
+	BY_HANDLE_FILE_INFORMATION info;
+	bool known = GetFileInformationByHandle(at_path, &info) != 0;
+	CloseHandle(at_path);
+	return known && (info.dwVolumeSerialNumber != os->dir_identity.dwVolumeSerialNumber ||
+			 info.nFileIndexHigh != os->dir_identity.nFileIndexHigh ||
+			 info.nFileIndexLow != os->dir_identity.nFileIndexLow);
 }
 
 enum pl_folder_wait pl_folder_os_wait(struct pl_folder_os *os, struct pl_stop *stop, struct pl_wake *wake,

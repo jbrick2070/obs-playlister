@@ -1132,6 +1132,50 @@ static void test_create_arguments(void)
 }
 
 #ifdef _WIN32
+/* The watch's handle follows the folder it opened, not the path: a folder renamed or deleted to the Recycle Bin (a
+ * move) while a new one takes its name is found at the next listing, and the watch is opened again on the new one, so
+ * a file added there is heard at once and not only at the next folder check, an hour away here. On Linux the move
+ * ends the watch (IN_MOVE_SELF), and macOS watches the path. */
+static void test_replaced_folder(void)
+{
+	char *parent = make_folder("replaced");
+	char *folder = path_in(parent, "watched");
+	char *away = path_in(parent, "recycled");
+	make_subfolder(parent, "watched");
+	write_file(folder, "a.mp4", 10, OLD);
+
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_container_options options = notify_options();
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 45, &options, on_publish, &inbox);
+	assert(provider);
+	assert(wait_for(&inbox, 0, shows_exactly, K("a.mp4"), "the folder before it is replaced"));
+
+	move_path(folder, away);
+	make_subfolder(parent, "watched");
+	write_file(folder, "b.mp4", 10, OLD);
+	/* the next listing (the folder check, here asked for at once) lists the new folder by its path */
+	size_t mark = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	assert(wait_for(&inbox, mark, shows_exactly, K("b.mp4"), "the new folder listed"));
+
+	mark = inbox_count(&inbox);
+	write_file(folder, "c.mp4", 10, OLD);
+	assert(wait_for(&inbox, mark, lists, K("c.mp4"), "a file added to the new folder, heard by the watch"));
+	pthread_mutex_lock(&inbox.mutex);
+	for (size_t i = 0; i < inbox.snapshots.num; i++)
+		assert(inbox.snapshots.array[i]->level == PL_STATUS_OK && !inbox.snapshots.array[i]->stale);
+	pthread_mutex_unlock(&inbox.mutex);
+
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	remove_folder(parent);
+	bfree(away);
+	bfree(folder);
+	bfree(parent);
+}
+
 /* A folder through this machine's admin share (\\localhost\C$\...), where it can be reached: the share reports more
  * changes than the buffer holds as ERROR_MORE_DATA with an empty buffer, which must rescan like an overflow and not
  * lose the folder (R-DIR-3; found by the Phase 2 acceptance, TESTING.md 2.11) */
@@ -1201,6 +1245,8 @@ int main(void)
 	test_unknown_kind();
 	printf("a row of unknown kind: passed\n");
 #ifdef _WIN32
+	test_replaced_folder();
+	printf("a folder replaced under its name: passed\n");
 	test_admin_share();
 #endif
 	assert(bnum_allocs() == allocations);

@@ -485,6 +485,13 @@ bool pl_folder_os_arm(struct pl_folder_os *os)
 	return true;
 }
 
+bool pl_folder_os_replaced(struct pl_folder_os *os)
+{
+	/* the stream follows the path, not the folder that was there when it started */
+	UNUSED_PARAMETER(os);
+	return false;
+}
+
 static bool set_pipe_flags(int fd)
 {
 	int status = fcntl(fd, F_GETFL);

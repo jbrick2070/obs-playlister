@@ -470,6 +470,13 @@ bool pl_folder_os_arm(struct pl_folder_os *os)
 	return true;
 }
 
+bool pl_folder_os_replaced(struct pl_folder_os *os)
+{
+	/* the root's watch ends with IN_MOVE_SELF when the folder is moved away, and the folder is then lost */
+	UNUSED_PARAMETER(os);
+	return false;
+}
+
 enum pl_watch_event pl_folder_os_open(struct pl_folder_os *os)
 {
 	pl_folder_os_close(os);

@@ -494,6 +494,15 @@ static void run_event(struct pl_folder_provider *p, enum pl_watch_event first)
 			 * again rather than re-arming it (R-THR-3) */
 			events[tail++] = pl_folder_os_arm(p->os) ? PL_WATCH_OPENED_ARMED : pl_folder_os_open(p->os);
 		if (actions.rescan) {
+			/* a watch on a folder that was renamed or recycled while another took its name hears nothing at the
+			 * path: it is opened again on the folder there now, before the listing, so a change made after the
+			 * listing is still heard */
+			if (actions.mode != PL_WATCH_MISSING && pl_folder_os_replaced(p->os) &&
+			    tail < MAX_CHAINED_EVENTS) {
+				obs_log(LOG_INFO, "folder %s: another folder took its name; watching that one",
+					p->location);
+				events[tail++] = pl_folder_os_open(p->os);
+			}
 			p->debounce_ms = 0;
 			enum pl_folder_scan result = rescan(p);
 			if (result == PL_FOLDER_SCAN_LOST && tail < MAX_CHAINED_EVENTS)

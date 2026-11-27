@@ -84,6 +84,11 @@ enum pl_watch_event pl_folder_os_open(struct pl_folder_os *os);
 /* Arms the open watch again; false when it is not open or cannot be armed. Armed already is true. */
 bool pl_folder_os_arm(struct pl_folder_os *os);
 void pl_folder_os_close(struct pl_folder_os *os);
+/* True when the open watch is on a folder that is no longer the one at the row's path: the folder was renamed or
+ * moved away (as to the Recycle Bin) and another one took its name. Such a watch never hears of changes at the path,
+ * so the caller opens it again. False when nothing is open, or when it cannot be told. On Linux (IN_MOVE_SELF ends
+ * the watch) and macOS (FSEvents watches the path) it is always false. */
+bool pl_folder_os_replaced(struct pl_folder_os *os);
 
 /* A paired rename seen by the watch, as relative paths with '/' */
 typedef void (*pl_folder_rename_fn)(void *context, const char *old_relative, const char *new_relative);
