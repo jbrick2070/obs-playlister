@@ -739,8 +739,9 @@ static void test_classification(void)
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
 
-	/* the same with a list longer than the sniff: read whole after its start sniffed as a list, on the first fetch
-	 * and on refreshes */
+	/* the same with a list longer than the sniff: the first fetch reads its start, which sniffs as a list, then the
+	 * whole list in a second fetch; each refresh after it is one fetch of the whole body. A web page in between is
+	 * refused, and the refresh after it reads only the start again. */
 	struct dstr long_list = {0};
 	dstr_copy(&long_list, "#EXTM3U\n");
 	while (long_list.len < 100 * 1024)
@@ -753,12 +754,26 @@ static void test_classification(void)
 	inbox_init(&inbox);
 	provider = start(PL_ROW_REMOTE, php_long, &options, &inbox);
 	wait_for(&inbox, 0, shows, "https://iptv.example.com/long.mp4", "a long list sent as text/html");
+	assert(count_of(&route->opens) == 2);
 	set_route(route, PL_FETCH_OK, 200, longer_list.array);
 	since = inbox_count(&inbox);
 	pl_provider_refresh_now(provider);
 	again = wait_for(&inbox, since, shows, "https://iptv.example.com/long.mp4|https://iptv.example.com/z.mp4",
 			 "the long text/html list refreshed");
 	assert(again->level != PL_STATUS_ERROR && !again->stale);
+	assert(count_of(&route->opens) == 3);
+	/* a web page now, read whole as the list would be, is refused */
+	set_route(route, PL_FETCH_OK, 200, "<!doctype html><html>maintenance</html>");
+	since = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	wait_for(&inbox, since, is_error_stale, "web page instead of the list", "a web page after the long list");
+	assert(count_of(&route->opens) == 4);
+	/* and the list back: its start first, then the whole of it */
+	set_route(route, PL_FETCH_OK, 200, long_list.array);
+	since = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	wait_for(&inbox, since, shows, "https://iptv.example.com/long.mp4", "the long list back");
+	assert(count_of(&route->opens) == 6);
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
 	dstr_free(&long_list);

@@ -15,7 +15,9 @@ version numbers are the ones in `buildspec.json`.
 - A web list whose server sends it as `text/html` (the default of a PHP script, as many IPTV `get.php` addresses
   are) kept playing only until its first refresh, which then refused it as "a web page instead of the list"; a
   list of 64 KB or more was refused at once. The start of such a body now decides on every fetch, as on the first:
-  a playlist is read, a real web page is still refused, and only its first 64 KB are read.
+  a playlist is read, and a real web page is still refused. The first fetch reads only the first 64 KB of a web
+  page (a longer list is then fetched once more, whole); once the row's list has come as `text/html`, each refresh
+  is one fetch of the whole body.
 - Windows: a watched folder that was renamed or deleted to the Recycle Bin while a new folder took its name kept
   its watch on the old folder, so new files in the new one showed only at the folder check, until OBS restarted.
   The next listing now notices the new folder and watches it.
