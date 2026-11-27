@@ -575,16 +575,18 @@ static const struct media_file_data *peek_next_locked(struct media_playlist_sour
 
 /* An item as Now playing and Next show it: its place, "N" for a row or "N-M" for an item of a folder or playlist row,
  * then its location, of a web address without its user name, password and query (R-UX-23): the two lines are settings,
- * so what they show is also saved. A local path is as it is. */
+ * so what they show is also saved. A local path is as it is, without a \\?\ prefix (pl_path_shown). */
 static void describe_item(const struct media_file_data *item, struct dstr *text)
 {
 	if (item->parent)
 		dstr_printf(text, "%zu-%zu", item->parent->index + 1, item->index + 1);
 	else
 		dstr_printf(text, "%zu", item->index + 1);
-	char *shown = pl_url_redacted(item->path);
+	char *plain = pl_path_shown(item->path);
+	char *shown = pl_url_redacted(plain);
 	dstr_catf(text, ": %s", shown);
 	bfree(shown);
+	bfree(plain);
 }
 
 /* Now playing and Next, as Properties shows them: info texts that show a setting, written here on every update, save
@@ -3988,8 +3990,11 @@ static void migrate_settings(obs_data_t *settings)
 			if (position++ == index)
 				obs_data_set_string(settings, S_CURRENT_ROW_UUID, id);
 			/* the one place the disk is still asked during an update: once per source, when settings saved by
-			 * upstream's Media Playlist Source or by Phase 1 are taken over, for the rows they hold */
-			if (*id && !strstr(path, "://") && !pl_path_is_unc(path) && pl_folder_is_directory(path))
+			 * upstream's Media Playlist Source or by Phase 1 are taken over, for the rows they hold. Never a
+			 * share, by its \\server\share path or a drive letter mapped to it, which would hold the graphics
+			 * thread while it is offline: such a row's kind is asked on its worker (R-LIST-1 rule 5). */
+			if (*id && !strstr(path, "://") && !pl_path_is_unc(path) && !pl_path_on_network_drive(path) &&
+			    pl_folder_is_directory(path))
 				save_folder_kind(row_kinds, id, path);
 		}
 		obs_data_release(row);

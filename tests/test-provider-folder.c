@@ -1092,27 +1092,45 @@ static void test_network_drive(void)
 	wchar_t windows[MAX_PATH];
 	assert(GetWindowsDirectoryW(windows, MAX_PATH));
 	char local[] = {(char)windows[0], ':', '/', 'a', '.', 'm', 'p', '4', '\0'};
-	assert(!pl_path_on_network_drive(local));
-	/* a letter no drive and no mapping (connected or not) has, defined for this session only and taken away
-	 * again: the drive's kind comes from the definition, whether the share answers or not */
+	char local_prefixed[] = {'\\', '\\', '?', '\\', (char)windows[0], ':', '\\', 'a', '.', 'm', 'p', '4', '\0'};
+	assert(!pl_path_on_network_drive(local) && !pl_path_on_network_drive(local_prefixed));
+	/* a letter no drive and no mapping has, connected or not, remembered or not (the letters from Q down to D,
+	 * so never U: or Z:), defined for this session only, without telling other programs, and taken away again:
+	 * the drive's kind comes from the definition, whether the share answers or not. No existing mapping is
+	 * touched; where no letter is free or the definition is refused, the case is skipped. */
 	const wchar_t *target = L"\\??\\UNC\\localhost\\C$";
 	wchar_t device[3] = {L'\0', L':', L'\0'};
+	DWORD drives = GetLogicalDrives();
 	for (wchar_t letter = L'Q'; letter >= L'D' && !device[0]; letter--) {
+		if (drives & (1u << (letter - L'A')))
+			continue;
 		wchar_t found[MAX_PATH];
 		wchar_t candidate[3] = {letter, L':', L'\0'};
-		if (!QueryDosDeviceW(candidate, found, MAX_PATH) && GetLastError() == ERROR_FILE_NOT_FOUND)
-			device[0] = letter;
+		if (QueryDosDeviceW(candidate, found, MAX_PATH) || GetLastError() != ERROR_FILE_NOT_FOUND)
+			continue;
+		wchar_t remembered[] = {L'N', L'e', L't', L'w', L'o', L'r', L'k', L'\\', letter, L'\0'};
+		HKEY key;
+		if (RegOpenKeyExW(HKEY_CURRENT_USER, remembered, 0, KEY_READ, &key) == ERROR_SUCCESS) {
+			RegCloseKey(key);
+			continue;
+		}
+		device[0] = letter;
 	}
 	if (!device[0]) {
 		printf("network drive: no free drive letter here, the mapped case is skipped\n");
 		return;
 	}
-	assert(DefineDosDeviceW(DDD_RAW_TARGET_PATH, device, target));
+	const DWORD define = DDD_RAW_TARGET_PATH | DDD_NO_BROADCAST_SYSTEM;
+	if (!DefineDosDeviceW(define, device, target)) {
+		printf("network drive: a drive letter cannot be defined here, the mapped case is skipped\n");
+		return;
+	}
 	char mapped[] = {(char)device[0], ':', '\\', 'a', '.', 'm', 'p', '4', '\0'};
 	char bare[] = {(char)device[0], ':', '\0'};
-	bool remote = pl_path_on_network_drive(mapped) && pl_path_on_network_drive(bare);
-	assert(DefineDosDeviceW(DDD_RAW_TARGET_PATH | DDD_REMOVE_DEFINITION | DDD_EXACT_MATCH_ON_REMOVE, device,
-				target));
+	char prefixed[] = {'\\', '\\', '?', '\\', (char)device[0], ':', '\\', 'a', '.', 'm', 'p', '4', '\0'};
+	bool remote = pl_path_on_network_drive(mapped) && pl_path_on_network_drive(bare) &&
+		      pl_path_on_network_drive(prefixed);
+	assert(DefineDosDeviceW(define | DDD_REMOVE_DEFINITION | DDD_EXACT_MATCH_ON_REMOVE, device, target));
 	assert(remote);
 #else
 	assert(!pl_path_on_network_drive("Z:/a.mp4"));
@@ -1312,6 +1330,13 @@ static void test_names_ending_in_dot(void)
 		bfree(file);
 	}
 	write_exact(files_w[0], OLD);
+	/* and a folder whose name ends in a space */
+	char *album = path_in(folder, "Album ");
+	wchar_t *album_w = exact_wide(album);
+	assert(CreateDirectoryW(album_w, NULL));
+	char *track = path_in(album, "track.mp4");
+	wchar_t *track_w = exact_wide(track);
+	write_exact(track_w, OLD);
 
 	struct inbox inbox;
 	inbox_init(&inbox);
@@ -1320,8 +1345,8 @@ static void test_names_ending_in_dot(void)
 	struct pl_provider *provider =
 		pl_provider_create(PL_ROW_FOLDER, folder, "row", 46, &options, on_publish, &inbox);
 	assert(provider);
-	const struct pl_snapshot *first = wait_for(&inbox, 0, shows_exactly, K("Season 1./ep1.mp4"),
-						   "a file in a folder whose name ends in a dot");
+	const struct pl_snapshot *first = wait_for(&inbox, 0, shows_exactly, K("Album /track.mp4,Season 1./ep1.mp4"),
+						   "files in folders whose names end in a space or a dot");
 	assert(first);
 	const char *location = entry(first, K("Season 1./ep1.mp4"))->location;
 	assert(strncmp(location, "\\\\?\\", 4) == 0);
@@ -1335,7 +1360,7 @@ static void test_names_ending_in_dot(void)
 	/* a new file there waits in the gate once, then joins and stays */
 	size_t mark = inbox_count(&inbox);
 	write_exact(files_w[1], 0);
-	assert(wait_for(&inbox, mark, shows_exactly, K("Season 1./ep1.mp4,Season 1./ep2.mp4"),
+	assert(wait_for(&inbox, mark, shows_exactly, K("Album /track.mp4,Season 1./ep1.mp4,Season 1./ep2.mp4"),
 			"a new file there admitted"));
 	/* listed again, nothing changes */
 	pl_provider_refresh_now(provider);
@@ -1343,7 +1368,8 @@ static void test_names_ending_in_dot(void)
 	pthread_mutex_lock(&inbox.mutex);
 	const struct pl_snapshot *last = inbox.snapshots.array[inbox.snapshots.num - 1];
 	char *keys = visible_keys(last);
-	assert(strcmp(keys, K("Season 1./ep1.mp4,Season 1./ep2.mp4")) == 0 && last->pending_count == 0);
+	assert(strcmp(keys, K("Album /track.mp4,Season 1./ep1.mp4,Season 1./ep2.mp4")) == 0 &&
+	       last->pending_count == 0);
 	bfree(keys);
 	pthread_mutex_unlock(&inbox.mutex);
 	pl_provider_destroy(provider);
@@ -1354,6 +1380,12 @@ static void test_names_ending_in_dot(void)
 		bfree(files_w[i]);
 	}
 	assert(RemoveDirectoryW(season_w));
+	DeleteFileW(track_w);
+	assert(RemoveDirectoryW(album_w));
+	bfree(track_w);
+	bfree(track);
+	bfree(album_w);
+	bfree(album);
 	bfree(season_w);
 	bfree(season);
 	remove_folder(folder);

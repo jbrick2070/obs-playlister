@@ -597,6 +597,10 @@ bool pl_folder_is_directory(const char *path)
 
 bool pl_path_on_network_drive(const char *path)
 {
+	/* \\?\Z:\ and \\.\Z:\ name the drive Z: too */
+	if (path && (path[0] == '\\' || path[0] == '/') && (path[1] == '\\' || path[1] == '/') &&
+	    (path[2] == '?' || path[2] == '.') && (path[3] == '\\' || path[3] == '/'))
+		path += 4;
 	if (!path || !((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) || path[1] != ':')
 		return false;
 	/* the drive's kind comes from its definition, also while its share is offline */

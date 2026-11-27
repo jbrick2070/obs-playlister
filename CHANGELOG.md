@@ -21,8 +21,9 @@ version numbers are the ones in `buildspec.json`.
   The next listing now notices the new folder and watches it.
 - Windows: a file below a folder whose name ends in a dot (as a Mac or Linux can leave on a share or a USB drive)
   was never played: Windows path rules drop that dot, so the file was looked for at another path, judged gone and
-  listed again on every listing. Such files are now addressed by their exact name (the `\\?\` form of the path),
-  and play.
+  listed again on every listing. A name ending in a space is kept exactly the same way. Such files are now
+  addressed by their exact name (the `\\?\` form of the path), and play. Now playing, Next and the Play item list
+  show their path without the `\\?\`.
 - With **Include subfolders** on, one subfolder that kept failing to open (an I/O error on a worn USB stick, a
   damaged folder, a folder another program holds) failed every listing, and the row said "folder not found
   (deleted, drive removed or share offline)" while the folder was there; at startup it played nothing. While the
@@ -30,7 +31,10 @@ version numbers are the ones in `buildspec.json`.
   access is, and the rest of the folder plays. A share that drops during a listing still keeps the last good list.
 - Windows: OBS's missing-files check, which runs on the UI thread when a scene collection loads, asked about
   playlist rows on a drive letter mapped to a share (`Z:\clips\a.mp4`), and an offline share held OBS for its
-  timeout; it already left `\\server\share` paths alone. A mapped network drive is now left alone the same way.
+  timeout; it already left `\\server\share` paths alone. A mapped network drive is now left alone the same way, so,
+  as on a `\\server\share` path, a file moved or deleted there is no longer offered in OBS's missing-files dialog;
+  it fails as an unplayable item instead. The one-time take-over of settings from the original Media Playlist
+  Source, on the graphics thread, no longer asks a mapped network drive either; the row's own worker does.
 - Linux: with a folder tree larger than the inotify watch limit (`fs.inotify.max_user_watches`), each folder
   check walked the tree twice to try notifications again; it walks it once.
 - Linux: copying a folder tree into a watched folder (with **Include subfolders** on) walked the whole watched
