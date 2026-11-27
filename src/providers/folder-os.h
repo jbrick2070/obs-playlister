@@ -65,6 +65,14 @@ struct pl_folder_listing_sink {
 	void (*skipped)(void *context, const char *relative, const char *why);
 };
 
+/* Whether a subfolder that cannot be opened for listing with this error (a Win32 error, an errno elsewhere) is
+ * unreadable itself, so that, while the root still lists, the listing leaves it out and logs it: a name or path the
+ * system cannot take, a folder that is damaged or loops (ERROR_INVALID_NAME, ERROR_FILENAME_EXCED_RANGE,
+ * ERROR_FILE_CORRUPT and the like; ENAMETOOLONG, ELOOP). A subfolder that is gone or denies access is left out
+ * before this is asked. Every other error may pass (timeouts, sharing violations, handle limits, EIO, ESTALE,
+ * network errors) and fails the whole listing, so the last good list stays. */
+bool pl_folder_os_error_is_subfolders_own(unsigned long error);
+
 /* Lists the folder (and below it when include_subfolders is set) without opening a file. Returns early, STOPPED,
  * when stop is set. On any result but OK the sink may have been given part of a listing, which the caller drops. */
 enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *stop,

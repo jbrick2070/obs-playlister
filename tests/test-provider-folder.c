@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #endif
 #undef NDEBUG
 #include <assert.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +53,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "test-common.h"
 
 #include "core/filter.h"
+#include "providers/folder-os.h"
 #include "providers/provider.h"
 #include "providers/publication.h"
 
@@ -1082,6 +1084,26 @@ static void test_is_directory(void)
 	bfree(folder);
 }
 
+/* R-DIR-1: which subfolder errors leave that subfolder out (it is unreadable itself) and which fail the listing, so
+ * the last good list stays (they may pass) */
+static void test_subfolder_error_kinds(void)
+{
+#ifdef _WIN32
+	const unsigned long own[] = {ERROR_INVALID_NAME, ERROR_FILENAME_EXCED_RANGE, ERROR_FILE_CORRUPT,
+				     ERROR_DISK_CORRUPT, ERROR_DIRECTORY};
+	const unsigned long passing[] = {ERROR_SHARING_VIOLATION, ERROR_SEM_TIMEOUT,   ERROR_NETNAME_DELETED,
+					 ERROR_BAD_NETPATH,       ERROR_NETWORK_BUSY,  ERROR_TOO_MANY_OPEN_FILES,
+					 ERROR_NOT_ENOUGH_MEMORY, ERROR_UNEXP_NET_ERR, ERROR_IO_DEVICE};
+#else
+	const unsigned long own[] = {ENAMETOOLONG, ELOOP};
+	const unsigned long passing[] = {EIO, EMFILE, ENFILE, ENOMEM, ETIMEDOUT, ESTALE, EINTR};
+#endif
+	for (size_t i = 0; i < sizeof(own) / sizeof(own[0]); i++)
+		assert(pl_folder_os_error_is_subfolders_own(own[i]));
+	for (size_t i = 0; i < sizeof(passing) / sizeof(passing[0]); i++)
+		assert(!pl_folder_os_error_is_subfolders_own(passing[i]));
+}
+
 /* R-UP-34: a drive letter mapped to a share counts as the share, so the UI never asks an offline one; a local drive,
  * a relative path and anything on Linux and macOS do not */
 static void test_network_drive(void)
@@ -1392,9 +1414,10 @@ static void test_names_ending_in_dot(void)
 	bfree(folder);
 }
 
-/* A subfolder that keeps failing while the folder itself lists, here one another program holds open without sharing
- * (as a worn USB stick's I/O error or a damaged folder would fail): it is left out and logged with its error, and
- * the rest of the folder plays with no error. It used to fail every listing, and the row said "folder not found". */
+/* A subfolder that fails for a moment, here one another program holds open without sharing (a sharing violation, as a
+ * timeout or a share dropping would fail): the listing fails, so the last good list stays, its files included,
+ * marked stale, and comes back once the subfolder can be read; it never shrinks for a moment. A subfolder that is
+ * unreadable itself is left out instead (test_subfolder_error_kinds). */
 static void test_subfolder_that_fails(void)
 {
 	char *folder = make_folder("locked");
@@ -1403,9 +1426,6 @@ static void test_subfolder_that_fails(void)
 	write_file(folder, "held" SEP "inner.mp4", 10, OLD);
 	char *held = path_in(folder, "held");
 	wchar_t *held_w = wide(held);
-	/* listing it now fails with a sharing violation */
-	HANDLE holder = CreateFileW(held_w, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-	assert(holder != INVALID_HANDLE_VALUE);
 
 	struct inbox inbox;
 	inbox_init(&inbox);
@@ -1414,18 +1434,23 @@ static void test_subfolder_that_fails(void)
 	struct pl_provider *provider =
 		pl_provider_create(PL_ROW_FOLDER, folder, "row", 47, &options, on_publish, &inbox);
 	assert(provider);
-	const struct pl_snapshot *listed =
-		wait_for(&inbox, 0, shows_exactly, K("top.mp4"), "the folder listed past a subfolder that fails");
-	assert(listed && listed->level == PL_STATUS_OK && !listed->stale);
-	/* and on the folder checks after it */
-	os_sleep_ms(2500);
+	assert(wait_for(&inbox, 0, shows_exactly, K("held/inner.mp4,top.mp4"),
+			"the folder before the subfolder fails"));
+
+	/* listing it now fails with a sharing violation */
+	HANDLE holder = CreateFileW(held_w, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	assert(holder != INVALID_HANDLE_VALUE);
+	size_t mark = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	assert(wait_for(&inbox, mark, kept_stale, K("held/inner.mp4"), "the last good list kept, stale"));
 	pthread_mutex_lock(&inbox.mutex);
 	for (size_t i = 0; i < inbox.snapshots.num; i++)
-		assert(inbox.snapshots.array[i]->level == PL_STATUS_OK);
+		assert(entry(inbox.snapshots.array[i], K("held/inner.mp4")));
 	pthread_mutex_unlock(&inbox.mutex);
-	/* let go, the subfolder's files join at the next check */
+	/* let go, the folder is read again at the next check */
 	CloseHandle(holder);
-	assert(wait_for(&inbox, 0, shows_exactly, K("held/inner.mp4,top.mp4"), "the subfolder read again"));
+	mark = inbox_count(&inbox);
+	assert(wait_for(&inbox, mark, recovered, K("held/inner.mp4"), "the folder read again"));
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
 
@@ -1491,6 +1516,8 @@ int main(void)
 	printf("directory test: passed\n");
 	test_network_drive();
 	printf("network drive: passed\n");
+	test_subfolder_error_kinds();
+	printf("subfolder error kinds: passed\n");
 	test_pending_keys_republished();
 	printf("pending keys republished: passed\n");
 	test_listing_and_changes();

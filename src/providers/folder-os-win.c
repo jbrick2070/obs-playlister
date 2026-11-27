@@ -273,6 +273,23 @@ bool pl_folder_os_sample(void *context, const char *location, uint64_t *size, in
 
 /* ---- listing ---- */
 
+bool pl_folder_os_error_is_subfolders_own(unsigned long error)
+{
+	switch (error) {
+	case ERROR_INVALID_NAME:
+	case ERROR_BAD_PATHNAME:
+	case ERROR_DIRECTORY:
+	case ERROR_FILENAME_EXCED_RANGE:
+	case ERROR_CANT_ACCESS_FILE:
+	case ERROR_CANT_RESOLVE_FILENAME:
+	case ERROR_FILE_CORRUPT:
+	case ERROR_DISK_CORRUPT:
+		return true;
+	default:
+		return false;
+	}
+}
+
 /* Below the root, hidden and system folders are skipped and reparse points are never followed, so a link back up the
  * tree cannot make the scan loop (R-DIR-1); the root itself is opened even when it is a junction. */
 enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *stop,
@@ -311,12 +328,14 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			} else if (find_error == ERROR_ACCESS_DENIED) {
 				sink->skipped(sink->context, relative, "access denied");
 			} else if (!empty && find_error != ERROR_PATH_NOT_FOUND) {
-				/* a subfolder that vanished is left out. Any other failure while the root cannot be reached
-				 * any more (a share dropping after the root was listed) fails the whole listing, so the last
-				 * good list stays instead of shrinking; one while the root still can be (a worn USB stick, a
-				 * damaged folder, a path too long) is this subfolder's own: it is left out and logged with its
-				 * error, and the rest of the folder still plays */
-				DWORD attributes = GetFileAttributesW(os->root_w);
+				/* a subfolder that vanished is left out. An error that says this subfolder itself cannot be
+				 * read (pl_folder_os_error_is_subfolders_own), while the root still can be, leaves it out
+				 * too, logged with its error, and the rest of the folder still plays; any other (a timeout,
+				 * a share dropping, a handle limit, a sharing violation) may pass, and fails the whole
+				 * listing, so the last good list stays instead of shrinking */
+				DWORD attributes = pl_folder_os_error_is_subfolders_own(find_error)
+							   ? GetFileAttributesW(os->root_w)
+							   : INVALID_FILE_ATTRIBUTES;
 				if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
 					struct dstr why = {0};
 					dstr_copy(&why, "cannot be read, ");

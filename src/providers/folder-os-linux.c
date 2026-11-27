@@ -242,6 +242,11 @@ bool pl_folder_os_sample(void *context, const char *location, uint64_t *size, in
 
 /* ---- listing ---- */
 
+bool pl_folder_os_error_is_subfolders_own(unsigned long error)
+{
+	return error == ENAMETOOLONG || error == ELOOP;
+}
+
 /* Below the root, hidden folders (a name starting with '.') are skipped and symbolic links to folders are never
  * followed, so a link back up the tree cannot make the scan loop (R-DIR-1, R-LNX-3); the root itself may be a link. */
 enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *stop,
@@ -277,13 +282,14 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			} else if (error == EACCES || error == EPERM) {
 				sink->skipped(sink->context, relative, "access denied");
 			} else if (error != ENOENT && error != ENOTDIR) {
-				/* a subfolder that vanished is left out. Any other failure while the root cannot be reached
-				 * any more (a share dropping after the root was listed) fails the whole listing, so the last
-				 * good list stays instead of shrinking; one while the root still can be (EIO on a worn USB
-				 * stick, a path too long) is this subfolder's own: it is left out and logged with its error,
-				 * and the rest of the folder still plays */
+				/* a subfolder that vanished is left out. An error that says this subfolder itself cannot be
+				 * read (pl_folder_os_error_is_subfolders_own), while the root still can be, leaves it out
+				 * too, logged with its error, and the rest of the folder still plays; any other (EIO, ESTALE,
+				 * a timeout, a descriptor limit) may pass, and fails the whole listing, so the last good list
+				 * stays instead of shrinking */
 				struct stat root_status;
-				if (stat(os->root, &root_status) == 0 && S_ISDIR(root_status.st_mode)) {
+				if (pl_folder_os_error_is_subfolders_own((unsigned long)error) &&
+				    stat(os->root, &root_status) == 0 && S_ISDIR(root_status.st_mode)) {
 					struct dstr why = {0};
 					dstr_copy(&why, "cannot be read, ");
 					pl_os_error_cat(&why, (unsigned long)error);

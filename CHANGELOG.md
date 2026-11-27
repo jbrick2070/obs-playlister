@@ -24,11 +24,12 @@ version numbers are the ones in `buildspec.json`.
   listed again on every listing. A name ending in a space is kept exactly the same way. Such files are now
   addressed by their exact name (the `\\?\` form of the path), and play. Now playing, Next and the Play item list
   show their path without the `\\?\`.
-- With **Include subfolders** on, one subfolder that kept failing to open (an I/O error on a worn USB stick, a
-  damaged folder, a folder another program holds) failed every listing, and the row said "folder not found
+- With **Include subfolders** on, one subfolder that could never be opened (a name or path too long for the
+  system, a damaged folder, a folder that loops) failed every listing, and the row said "folder not found
   (deleted, drive removed or share offline)" while the folder was there; at startup it played nothing. While the
   folder itself can still be read, such a subfolder is now left out and logged with its error, as one that denies
-  access is, and the rest of the folder plays. A share that drops during a listing still keeps the last good list.
+  access is, and the rest of the folder plays. An error that may pass (an I/O error, a timeout, a share dropping,
+  a folder another program holds) still keeps the last good list until the folder can be read again.
 - Windows: OBS's missing-files check, which runs on the UI thread when a scene collection loads, asked about
   playlist rows on a drive letter mapped to a share (`Z:\clips\a.mp4`), and an offline share held OBS for its
   timeout; it already left `\\server\share` paths alone. A mapped network drive is now left alone the same way, so,
