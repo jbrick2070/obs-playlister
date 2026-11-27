@@ -10,6 +10,13 @@ version numbers are the ones in `buildspec.json`.
 
 - Arch Linux: `packaging/arch/PKGBUILD` builds release 1.5.0, now that it is published (it built 0.5.2).
 
+### Fixed
+
+- A web list whose server sends it as `text/html` (the default of a PHP script, as many IPTV `get.php` addresses
+  are) kept playing only until its first refresh, which then refused it as "a web page instead of the list"; a
+  list of 64 KB or more was refused at once. The start of such a body now decides on every fetch, as on the first:
+  a playlist is read, a real web page is still refused, and only its first 64 KB are read.
+
 ## [1.5.0] - 2026-11-20
 
 The suite-wide step to 1.5: every product of the Fadester suite now carries version 1.5, so that one round of hand

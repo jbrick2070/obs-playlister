@@ -432,8 +432,9 @@ static bool is_web_page(const char *type)
 	return type && (strcmp(type, "text/html") == 0 || strcmp(type, "application/xhtml+xml") == 0);
 }
 
-/* The whole body of url, parsed as format against the final URL */
-static void fetch_list(struct pl_list_provider *p, const char *url, enum list_format format)
+/* The whole body of url, parsed as format against the final URL. whole: a body sent as a web page is read whole, as
+ * when a first read of its start has already sniffed as a list. */
+static void fetch_list(struct pl_list_provider *p, const char *url, enum list_format format, bool whole)
 {
 	struct pl_fetch_options options;
 	fetch_options(p, &options);
@@ -442,13 +443,33 @@ static void fetch_list(struct pl_list_provider *p, const char *url, enum list_fo
 	const struct pl_fetch_info *info = fetch_api->get_info(fetch);
 	char *body = NULL;
 	size_t size = 0;
-	/* an error page sent with 200 is not read as a list of relative links */
-	bool web_page = result == PL_FETCH_OK && is_web_page(info->content_type);
-	/* nor is a media response read, which may be an endless stream */
+	/* a media response is not read, which may be an endless stream */
 	bool media = result == PL_FETCH_OK && kind_of_type(info->content_type) == RESPONSE_MEDIA;
-	if (result == PL_FETCH_OK && !web_page && !media)
+	bool web_page = false;
+	bool again = false;
+	if (result == PL_FETCH_OK && is_web_page(info->content_type)) {
+		/* an error page sent with 200 is not read as a list of relative links, but a list a server sends as
+		 * text/html (PHP's default) is still a list: its first bytes decide, as they do in classification
+		 * (R-LIST-1 step 4), and a web page is never read past them */
+		result = fetch_api->read(fetch, whole ? LIST_CAP : SNIFF_BYTES, !whole, &body, &size);
+		if (result == PL_FETCH_OK) {
+			enum response_kind kind = sniff(body ? body : "", size);
+			web_page = kind != RESPONSE_M3U && kind != RESPONSE_PLS;
+			/* a body shorter than the sniff is all there is; a longer list is fetched once more, whole */
+			again = !web_page && !whole && size >= SNIFF_BYTES;
+		}
+	} else if (result == PL_FETCH_OK && !media) {
 		result = fetch_api->read(fetch, LIST_CAP, false, &body, &size);
+	}
 
+	if (again) {
+		char *final_url = bstrdup(info->final_url ? info->final_url : url);
+		bfree(body);
+		fetch_api->close(fetch);
+		fetch_list(p, final_url, format, true);
+		bfree(final_url);
+		return;
+	}
 	if (media) {
 		set_error_text(p, pl_text("RowError.NowMedia", "the address now answers with media, not a list"));
 	} else if (web_page) {
@@ -531,7 +552,7 @@ static void classify_remote(struct pl_list_provider *p)
 			char *final_url = bstrdup(info->final_url ? info->final_url : p->location);
 			fetch_api->close(fetch);
 			fetch = NULL;
-			fetch_list(p, final_url, p->format);
+			fetch_list(p, final_url, p->format, true);
 			bfree(final_url);
 		}
 	} else if (kind == RESPONSE_FEED) {
@@ -561,7 +582,7 @@ static void refresh(struct pl_list_provider *p)
 	else if (p->classify && p->shape == SHAPE_DIRECT)
 		; /* a media URL is never fetched again; Refresh changes nothing */
 	else
-		fetch_list(p, p->location, p->format);
+		fetch_list(p, p->location, p->format, false);
 	if (stopping(p))
 		return;
 
