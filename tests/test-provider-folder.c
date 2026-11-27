@@ -1267,6 +1267,49 @@ static void test_names_ending_in_dot(void)
 	bfree(folder);
 }
 
+/* A subfolder that keeps failing while the folder itself lists, here one another program holds open without sharing
+ * (as a worn USB stick's I/O error or a damaged folder would fail): it is left out and logged with its error, and
+ * the rest of the folder plays with no error. It used to fail every listing, and the row said "folder not found". */
+static void test_subfolder_that_fails(void)
+{
+	char *folder = make_folder("locked");
+	write_file(folder, "top.mp4", 10, OLD);
+	make_subfolder(folder, "held");
+	write_file(folder, "held" SEP "inner.mp4", 10, OLD);
+	char *held = path_in(folder, "held");
+	wchar_t *held_w = wide(held);
+	/* listing it now fails with a sharing violation */
+	HANDLE holder = CreateFileW(held_w, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	assert(holder != INVALID_HANDLE_VALUE);
+
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_container_options options = default_options();
+	options.include_subfolders = true;
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 47, &options, on_publish, &inbox);
+	assert(provider);
+	const struct pl_snapshot *listed =
+		wait_for(&inbox, 0, shows_exactly, K("top.mp4"), "the folder listed past a subfolder that fails");
+	assert(listed && listed->level == PL_STATUS_OK && !listed->stale);
+	/* and on the folder checks after it */
+	os_sleep_ms(2500);
+	pthread_mutex_lock(&inbox.mutex);
+	for (size_t i = 0; i < inbox.snapshots.num; i++)
+		assert(inbox.snapshots.array[i]->level == PL_STATUS_OK);
+	pthread_mutex_unlock(&inbox.mutex);
+	/* let go, the subfolder's files join at the next check */
+	CloseHandle(holder);
+	assert(wait_for(&inbox, 0, shows_exactly, K("held/inner.mp4,top.mp4"), "the subfolder read again"));
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+
+	bfree(held_w);
+	bfree(held);
+	remove_folder(folder);
+	bfree(folder);
+}
+
 /* A folder through this machine's admin share (\\localhost\C$\...), where it can be reached: the share reports more
  * changes than the buffer holds as ERROR_MORE_DATA with an empty buffer, which must rescan like an overflow and not
  * lose the folder (R-DIR-3; found by the Phase 2 acceptance, TESTING.md 2.11) */
@@ -1340,6 +1383,8 @@ int main(void)
 	printf("a folder replaced under its name: passed\n");
 	test_names_ending_in_dot();
 	printf("names ending in a dot: passed\n");
+	test_subfolder_that_fails();
+	printf("a subfolder that fails: passed\n");
 	test_admin_share();
 #endif
 	assert(bnum_allocs() == allocations);

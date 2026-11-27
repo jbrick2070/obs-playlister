@@ -23,6 +23,11 @@ version numbers are the ones in `buildspec.json`.
   was never played: Windows path rules drop that dot, so the file was looked for at another path, judged gone and
   listed again on every listing. Such files are now addressed by their exact name (the `\\?\` form of the path),
   and play.
+- With **Include subfolders** on, one subfolder that kept failing to open (an I/O error on a worn USB stick, a
+  damaged folder, a folder another program holds) failed every listing, and the row said "folder not found
+  (deleted, drive removed or share offline)" while the folder was there; at startup it played nothing. While the
+  folder itself can still be read, such a subfolder is now left out and logged with its error, as one that denies
+  access is, and the rest of the folder plays. A share that drops during a listing still keeps the last good list.
 
 ## [1.5.0] - 2026-11-20
 

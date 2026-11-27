@@ -306,10 +306,22 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			} else if (find_error == ERROR_ACCESS_DENIED) {
 				sink->skipped(sink->context, relative, "access denied");
 			} else if (!empty && find_error != ERROR_PATH_NOT_FOUND) {
-				/* a subfolder that vanished is left out; any other failure (a share dropping after the root
-				 * was listed) fails the whole listing, so the last good list stays instead of shrinking */
-				os->last_error = find_error;
-				result = PL_FOLDER_SCAN_LOST;
+				/* a subfolder that vanished is left out. Any other failure while the root cannot be reached
+				 * any more (a share dropping after the root was listed) fails the whole listing, so the last
+				 * good list stays instead of shrinking; one while the root still can be (a worn USB stick, a
+				 * damaged folder, a path too long) is this subfolder's own: it is left out and logged with its
+				 * error, and the rest of the folder still plays */
+				DWORD attributes = GetFileAttributesW(os->root_w);
+				if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+					struct dstr why = {0};
+					dstr_copy(&why, "cannot be read, ");
+					pl_os_error_cat(&why, find_error);
+					sink->skipped(sink->context, relative, why.array);
+					dstr_free(&why);
+				} else {
+					os->last_error = find_error;
+					result = PL_FOLDER_SCAN_LOST;
+				}
 			}
 			bfree(relative);
 			continue;
