@@ -827,6 +827,37 @@ static void test_subfolders(void)
 	bfree(folder);
 }
 
+/* A folder made below the root after the start is watched too: a file added in it after it was first listed is
+ * heard, with the folder check an hour away. On Linux it needs new watches, made once with the debounced rescan and
+ * not on every batch of events (a tree being copied in). */
+static void test_new_subfolder_watched(void)
+{
+	char *folder = make_folder("grows");
+	write_file(folder, "top.mp4", 10, OLD);
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_container_options options = notify_options();
+	options.include_subfolders = true;
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "grows", 48, &options, on_publish, &inbox);
+	assert(provider);
+	assert(wait_for(&inbox, 0, shows_exactly, K("top.mp4"), "the folder before it grows"));
+
+	size_t mark = inbox_count(&inbox);
+	make_subfolder(folder, "new");
+	make_subfolder(folder, "new" SEP "deeper");
+	write_file(folder, "new" SEP "deeper" SEP "a.mp4", 10, OLD);
+	assert(wait_for(&inbox, mark, lists, K("new/deeper/a.mp4"), "a file in folders made after the start"));
+	mark = inbox_count(&inbox);
+	write_file(folder, "new" SEP "deeper" SEP "b.mp4", 10, OLD);
+	assert(wait_for(&inbox, mark, lists, K("new/deeper/b.mp4"), "a later file there, heard by the watch"));
+
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	remove_folder(folder);
+	bfree(folder);
+}
+
 static bool missing_error(const struct pl_snapshot *snapshot, const void *context)
 {
 	UNUSED_PARAMETER(context);
@@ -1411,6 +1442,8 @@ int main(void)
 	printf("rename chain: passed\n");
 	test_subfolders();
 	printf("subfolders: passed\n");
+	test_new_subfolder_watched();
+	printf("a subfolder made after the start: passed\n");
 	test_missing_folder();
 	printf("missing folder: passed\n");
 	test_retire();

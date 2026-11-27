@@ -117,8 +117,9 @@ enum pl_folder_wait pl_folder_os_wait(struct pl_folder_os *os, struct pl_stop *s
 enum pl_folder_note {
 	PL_FOLDER_NOTE_NONE, /* nothing has completed yet */
 	/* changes; their renames were given to the callback. On Windows the watch is no longer armed (one call reports
-	 * one batch); on Linux and macOS it stays armed unless folders were added, moved or removed, which need new
-	 * watches. Either way the caller arms again, which does nothing to a watch still armed. */
+	 * one batch); on Linux and macOS it stays armed. Folders added or moved below the root on Linux need new
+	 * watches (pl_folder_os_needs_rewatch). The caller arms again, which does nothing to a watch still armed that
+	 * needs no new watches. */
 	PL_FOLDER_NOTE_CHANGES,
 	PL_FOLDER_NOTE_OVERFLOW, /* more changes than could be told; the watch is no longer armed */
 	PL_FOLDER_NOTE_ABORTED,  /* the call was cancelled by someone else; the watch is no longer armed */
@@ -131,3 +132,7 @@ enum pl_folder_note pl_folder_os_take_note(struct pl_folder_os *os, pl_folder_re
 /* As pl_folder_os_take_note, but only for changes that already completed: true when it took some (the watch is then
  * no longer armed); anything else stays for pl_folder_os_take_note. */
 bool pl_folder_os_take_completed_changes(struct pl_folder_os *os, pl_folder_rename_fn rename, void *context);
+/* True when folders were added or moved below the root since the tree was last watched, so the folders in them are
+ * not heard yet: the next pl_folder_os_arm watches the whole tree again. The watch still hears the folders it has
+ * meanwhile. Linux only; always false on Windows and macOS, whose watch covers the tree by itself. */
+bool pl_folder_os_needs_rewatch(const struct pl_folder_os *os);

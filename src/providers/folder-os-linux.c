@@ -68,6 +68,7 @@ struct pl_folder_os {
 	bool include_subfolders;
 	int notify_fd; /* -1 when the watch is closed */
 	bool armed;    /* every listed folder has its watch */
+	bool rewatch;  /* folders were added or moved since: the next arm watches the tree again */
 	int root_wd;
 	DARRAY(struct watched_folder) folders;
 	int last_error;
@@ -362,6 +363,7 @@ void pl_folder_os_close(struct pl_folder_os *os)
 		close(os->notify_fd);
 	os->notify_fd = -1;
 	os->armed = false;
+	os->rewatch = false;
 	forget_folders(os);
 	bfree(os->moved_from);
 	os->moved_from = NULL;
@@ -459,9 +461,11 @@ bool pl_folder_os_arm(struct pl_folder_os *os)
 {
 	if (os->notify_fd < 0)
 		return false;
-	if (os->armed)
+	if (os->armed && !os->rewatch)
 		return true;
 	/* every watch is made again, so folders renamed or added since are watched under their current names */
+	os->armed = false;
+	os->rewatch = false;
 	close(os->notify_fd);
 	forget_folders(os);
 	os->notify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
@@ -488,6 +492,11 @@ bool pl_folder_os_arm(struct pl_folder_os *os)
 	}
 	os->armed = true;
 	return true;
+}
+
+bool pl_folder_os_needs_rewatch(const struct pl_folder_os *os)
+{
+	return os->armed && os->rewatch;
 }
 
 bool pl_folder_os_must_open_to_arm(const struct pl_folder_os *os)
@@ -614,8 +623,11 @@ static enum pl_folder_note read_events(struct pl_folder_os *os, pl_folder_rename
 			if (!parent || !event->len)
 				continue;
 			if (event->mask & IN_ISDIR) {
+				/* the tree is watched again when the caller arms, which it does with its debounced rescan
+				 * (pl_folder_os_needs_rewatch), not on every batch while a tree is copied in; the watches
+				 * there are meanwhile still read */
 				if (os->include_subfolders && (event->mask & (IN_CREATE | IN_MOVED_FROM | IN_MOVED_TO)))
-					os->armed = false;
+					os->rewatch = true;
 				continue;
 			}
 			if (event->mask & IN_MOVED_FROM) {

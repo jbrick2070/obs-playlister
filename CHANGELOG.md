@@ -33,6 +33,9 @@ version numbers are the ones in `buildspec.json`.
   timeout; it already left `\\server\share` paths alone. A mapped network drive is now left alone the same way.
 - Linux: with a folder tree larger than the inotify watch limit (`fs.inotify.max_user_watches`), each folder
   check walked the tree twice to try notifications again; it walks it once.
+- Linux: copying a folder tree into a watched folder (with **Include subfolders** on) walked the whole watched
+  tree again on every batch of change events, many times a second. New folders are now watched once, with the
+  listing that follows the changes.
 
 ## [1.5.0] - 2026-11-20
 

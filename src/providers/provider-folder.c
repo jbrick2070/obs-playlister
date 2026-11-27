@@ -95,6 +95,7 @@ struct pl_folder_provider {
 	struct pl_gate gate;
 	struct pl_folder_os *os; /* the listing, the probe and the watch */
 	bool arm_failed;         /* re-arming failed (in a rescan or after a notification); the main loop reports it */
+	bool rewatch_due;        /* folders were added: the tree is watched again with the next rescan (Linux) */
 	int64_t debounce_ms;     /* when the debounced rescan is due; 0 when none is */
 	int64_t debounce_first_ms; /* when the first notification came that the due rescan answers */
 	enum missing_cause missing;
@@ -415,8 +416,12 @@ static void take_completed_changes(struct pl_folder_provider *p)
 	if (!pl_folder_os_take_completed_changes(p->os, note_rename, p))
 		return;
 	pl_watch_notified(&p->watch);
-	/* the watch machine hears of a failed re-arm from the main loop */
-	p->arm_failed = !pl_folder_os_arm(p->os);
+	/* the watch machine hears of a failed re-arm from the main loop; folders added are watched with the next
+	 * rescan, as in on_notification */
+	if (pl_folder_os_needs_rewatch(p->os))
+		p->rewatch_due = true;
+	else
+		p->arm_failed = !pl_folder_os_arm(p->os);
 	debounce_change(p);
 }
 
@@ -501,6 +506,13 @@ static void run_event(struct pl_folder_provider *p, enum pl_watch_event first)
 				events[tail++] = pl_folder_os_open(p->os);
 			}
 			p->debounce_ms = 0;
+			/* folders added since are watched now, once, before the listing, so a change in one made after it
+			 * is heard; only a watch in notify mode, as a rescan-only one is re-armed by the timer itself */
+			if (p->rewatch_due) {
+				p->rewatch_due = false;
+				if (actions.mode == PL_WATCH_NOTIFY && !pl_folder_os_arm(p->os))
+					p->arm_failed = true;
+			}
 			enum pl_folder_scan result = rescan(p);
 			if (result == PL_FOLDER_SCAN_LOST && tail < MAX_CHAINED_EVENTS)
 				events[tail++] = PL_WATCH_LOST;
@@ -544,8 +556,11 @@ static void on_notification(struct pl_folder_provider *p)
 	}
 	pl_watch_notified(&p->watch);
 	/* armed again before the debounced rescan, so a change made meanwhile is caught; the fall-back to rescan-only
-	 * waits for this change's debounced rescan (worker_main) */
-	if (!pl_folder_os_arm(p->os))
+	 * waits for this change's debounced rescan (worker_main). Folders added below the root (Linux) are watched with
+	 * that rescan instead: a tree being copied in would otherwise be walked again on every batch of events. */
+	if (pl_folder_os_needs_rewatch(p->os))
+		p->rewatch_due = true;
+	else if (!pl_folder_os_arm(p->os))
 		p->arm_failed = true;
 	debounce_change(p);
 }

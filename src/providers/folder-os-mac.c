@@ -505,6 +505,13 @@ bool pl_folder_os_arm(struct pl_folder_os *os)
 	return true;
 }
 
+bool pl_folder_os_needs_rewatch(const struct pl_folder_os *os)
+{
+	/* the stream covers every folder below the root by path */
+	UNUSED_PARAMETER(os);
+	return false;
+}
+
 bool pl_folder_os_must_open_to_arm(const struct pl_folder_os *os)
 {
 	UNUSED_PARAMETER(os);
