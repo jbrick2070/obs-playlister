@@ -1255,6 +1255,31 @@ static wchar_t *exact_wide(const char *path)
 	return result;
 }
 
+/* A row typed with the \\?\ prefix (R-THR-5): its files are "<row>/<relative>", whose '/' the probe and the sample
+ * turn into '\' as before, so they are listed and admitted, the old one at once and a new one through the gate */
+static void test_prefixed_row(void)
+{
+	char *folder = make_folder("prefixed");
+	write_file(folder, "a.mp4", 100, OLD);
+	struct dstr row = {0};
+	dstr_printf(&row, "\\\\?\\%s", folder);
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_container_options options = notify_options();
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, row.array, "row", 49, &options, on_publish, &inbox);
+	assert(provider);
+	assert(wait_for(&inbox, 0, shows_exactly, K("a.mp4"), "an old file in a row typed with \\\\?\\"));
+	size_t mark = inbox_count(&inbox);
+	write_file(folder, "b.mp4", 100, 0);
+	assert(wait_for(&inbox, mark, shows_exactly, K("a.mp4,b.mp4"), "a new file there admitted"));
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	dstr_free(&row);
+	remove_folder(folder);
+	bfree(folder);
+}
+
 /* Writes 100 bytes at a \\?\ path; an age above 0 back-dates the last write */
 static void write_exact(const wchar_t *path, int64_t age_ms)
 {
@@ -1453,6 +1478,8 @@ int main(void)
 #ifdef _WIN32
 	test_replaced_folder();
 	printf("a folder replaced under its name: passed\n");
+	test_prefixed_row();
+	printf("a row typed with the \\\\?\\ prefix: passed\n");
 	test_names_ending_in_dot();
 	printf("names ending in a dot: passed\n");
 	test_subfolder_that_fails();

@@ -132,14 +132,19 @@ static wchar_t *below_root(const struct pl_folder_os *os, const char *relative, 
 	return result;
 }
 
-/* A file's path for the probe and the sample: one in the \\?\ form (pl_folder_os_location) is used as it is, as
- * GetFullPathNameW would drop the dot or space a name ends with; any other is canonicalized */
+/* A file's path for the probe and the sample: one in the \\?\ form (pl_folder_os_location, or a row typed with the
+ * prefix) is not run through GetFullPathNameW, which would drop the dot or space a name ends with, but its '/' still
+ * becomes '\' (R-THR-5), as "<row>/<relative>" has one; any other is canonicalized */
 static wchar_t *file_path(const char *location)
 {
 	if (strncmp(location, "\\\\?\\", 4) != 0)
 		return win32_path(location);
 	wchar_t *wide = NULL;
 	os_utf8_to_wcs_ptr(location, 0, &wide);
+	for (wchar_t *c = wide; c && *c; c++) {
+		if (*c == L'/')
+			*c = L'\\';
+	}
 	return wide;
 }
 
