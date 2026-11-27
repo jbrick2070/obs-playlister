@@ -172,6 +172,14 @@ static void set_error(struct pl_folder_os *os, int error)
 	os->last_note = NULL;
 }
 
+char *pl_folder_os_location(const struct pl_folder_os *os, const char *row, const char *relative)
+{
+	UNUSED_PARAMETER(os);
+	struct dstr location = {0};
+	dstr_printf(&location, "%s/%s", row, relative);
+	return location.array;
+}
+
 /* ---- the gate's disk access (R-LNX-4) ---- */
 
 enum pl_probe_result pl_folder_os_probe(void *context, const char *location)

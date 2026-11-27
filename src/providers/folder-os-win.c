@@ -132,6 +132,28 @@ static wchar_t *below_root(const struct pl_folder_os *os, const char *relative, 
 	return result;
 }
 
+/* A file's path for the probe and the sample: one in the \\?\ form (pl_folder_os_location) is used as it is, as
+ * GetFullPathNameW would drop the dot or space a name ends with; any other is canonicalized */
+static wchar_t *file_path(const char *location)
+{
+	if (strncmp(location, "\\\\?\\", 4) != 0)
+		return win32_path(location);
+	wchar_t *wide = NULL;
+	os_utf8_to_wcs_ptr(location, 0, &wide);
+	return wide;
+}
+
+/* A part of the relative path ends in a dot or a space, which Win32 path rules take away (the last part's, and a
+ * single dot after any part), so the plain path names another file */
+static bool trimmed_by_win32(const char *relative)
+{
+	for (const char *c = relative; *c; c++) {
+		if ((*c == '.' || *c == ' ') && (c[1] == '/' || c[1] == '\0'))
+			return true;
+	}
+	return false;
+}
+
 static char *join_relative(const char *parent, const char *name)
 {
 	struct dstr path = {0};
@@ -177,12 +199,29 @@ void pl_folder_os_error_cat(const struct pl_folder_os *os, struct dstr *text)
 	pl_os_error_cat(text, os->last_error);
 }
 
+char *pl_folder_os_location(const struct pl_folder_os *os, const char *row, const char *relative)
+{
+	struct dstr location = {0};
+	if (os->root_w && trimmed_by_win32(relative)) {
+		/* the \\?\ form keeps the name exactly, for the probe, the sample and the player alike (FFmpeg opens a
+		 * \\?\ path as it is) */
+		wchar_t *path = below_root(os, relative, L"");
+		char *utf8 = NULL;
+		os_wcs_to_utf8_ptr(path, 0, &utf8);
+		bfree(path);
+		if (utf8)
+			return utf8;
+	}
+	dstr_printf(&location, "%s/%s", row, relative);
+	return location.array;
+}
+
 /* ---- the gate's disk access ---- */
 
 enum pl_probe_result pl_folder_os_probe(void *context, const char *location)
 {
 	UNUSED_PARAMETER(context);
-	wchar_t *path = win32_path(location);
+	wchar_t *path = file_path(location);
 	if (!path)
 		return PL_PROBE_GONE;
 	/* reading while denying other writers: any open write handle makes this a sharing violation (R-DIR-4) */
@@ -211,7 +250,7 @@ bool pl_folder_os_sample(void *context, const char *location, uint64_t *size, in
 			 int64_t *sampled_mono_ms)
 {
 	UNUSED_PARAMETER(context);
-	wchar_t *path = win32_path(location);
+	wchar_t *path = file_path(location);
 	WIN32_FIND_DATAW data;
 	HANDLE find = path ? FindFirstFileExW(path, FindExInfoBasic, &data, FindExSearchNameMatch, NULL, 0)
 			   : INVALID_HANDLE_VALUE;

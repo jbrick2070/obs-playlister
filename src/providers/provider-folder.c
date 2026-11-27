@@ -188,11 +188,7 @@ static void add_listed_file(void *context, const char *relative, const char *nam
 		return;
 	}
 	struct listed_file *file = da_push_back_new(scan->files);
-	struct dstr location = {0};
-	dstr_copy(&location, p->location);
-	dstr_cat_ch(&location, '/');
-	dstr_cat(&location, relative);
-	file->location = location.array;
+	file->location = pl_folder_os_location(p->os, p->location, relative);
 	file->key = pl_fold_key(relative);
 	file->size = size;
 	file->write_ms = write_ms;
@@ -375,17 +371,16 @@ static void apply_notified_renames(struct pl_folder_provider *p)
 			bfree(new_key);
 			continue;
 		}
-		/* the row's own path as it is, then the relative path (the watch gives it with '/') */
-		struct dstr location = {0};
-		dstr_printf(&location, "%s/%s", p->location, pair->new_key);
+		/* the row's own path as it is, then the relative path (the watch gives it with '/'), as a listing names it */
+		char *location = pl_folder_os_location(p->os, p->location, pair->new_key);
 		uint64_t size = 0;
 		int64_t write_ms = 0;
 		int64_t sampled_ms = 0;
 		if (pl_gate_find(&p->gate, old_key) &&
-		    pl_folder_os_sample(p->os, location.array, &size, &write_ms, &sampled_ms) &&
-		    pl_gate_rename(&p->gate, old_key, new_key, location.array, size, write_ms, mono_now()))
+		    pl_folder_os_sample(p->os, location, &size, &write_ms, &sampled_ms) &&
+		    pl_gate_rename(&p->gate, old_key, new_key, location, size, write_ms, mono_now()))
 			carry_rename(p, old_key, new_key);
-		dstr_free(&location);
+		bfree(location);
 		bfree(old_key);
 		bfree(new_key);
 	}

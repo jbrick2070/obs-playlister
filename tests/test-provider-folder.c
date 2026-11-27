@@ -1176,6 +1176,97 @@ static void test_replaced_folder(void)
 	bfree(parent);
 }
 
+/* The \\?\ form of a path in a test folder, which Win32 path rules leave as it is */
+static wchar_t *exact_wide(const char *path)
+{
+	struct dstr prefixed = {0};
+	dstr_printf(&prefixed, "\\\\?\\%s", path);
+	dstr_replace(&prefixed, "/", "\\");
+	wchar_t *result = wide(prefixed.array);
+	dstr_free(&prefixed);
+	return result;
+}
+
+/* Writes 100 bytes at a \\?\ path; an age above 0 back-dates the last write */
+static void write_exact(const wchar_t *path, int64_t age_ms)
+{
+	HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+	assert(file != INVALID_HANDLE_VALUE);
+	char bytes[100] = {0};
+	DWORD written = 0;
+	assert(WriteFile(file, bytes, sizeof(bytes), &written, NULL) && written == sizeof(bytes));
+	if (age_ms > 0)
+		set_age(file, age_ms);
+	CloseHandle(file);
+}
+
+/* Names that end in a dot or a space, as a Mac or Linux leaves them on a share or a USB drive: Win32 path rules drop a
+ * single dot after a folder's name, and the dot or space a file's name ends with, so the plain path names another
+ * file. A file in such a folder is admitted once and stays (the probe found it gone, and every listing gated it
+ * again), and its location opens the file itself, as the player opens it. A file name that ends in a dot or a space
+ * goes the same way, but has no extension the filter takes. */
+static void test_names_ending_in_dot(void)
+{
+	char *folder = make_folder("dots");
+	char *season = path_in(folder, "Season 1.");
+	wchar_t *season_w = exact_wide(season);
+	assert(CreateDirectoryW(season_w, NULL));
+	const char *names[] = {"ep1.mp4", "ep2.mp4"};
+	wchar_t *files_w[2];
+	for (size_t i = 0; i < 2; i++) {
+		char *file = path_in(season, names[i]);
+		files_w[i] = exact_wide(file);
+		bfree(file);
+	}
+	write_exact(files_w[0], OLD);
+
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_container_options options = notify_options();
+	options.include_subfolders = true;
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 46, &options, on_publish, &inbox);
+	assert(provider);
+	const struct pl_snapshot *first = wait_for(&inbox, 0, shows_exactly, K("Season 1./ep1.mp4"),
+						   "a file in a folder whose name ends in a dot");
+	assert(first);
+	const char *location = entry(first, K("Season 1./ep1.mp4"))->location;
+	assert(strncmp(location, "\\\\?\\", 4) == 0);
+	wchar_t *location_w = wide(location);
+	HANDLE file = CreateFileW(location_w, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+				  NULL);
+	assert(file != INVALID_HANDLE_VALUE);
+	CloseHandle(file);
+	bfree(location_w);
+
+	/* a new file there waits in the gate once, then joins and stays */
+	size_t mark = inbox_count(&inbox);
+	write_exact(files_w[1], 0);
+	assert(wait_for(&inbox, mark, shows_exactly, K("Season 1./ep1.mp4,Season 1./ep2.mp4"),
+			"a new file there admitted"));
+	/* listed again, nothing changes */
+	pl_provider_refresh_now(provider);
+	os_sleep_ms(1500);
+	pthread_mutex_lock(&inbox.mutex);
+	const struct pl_snapshot *last = inbox.snapshots.array[inbox.snapshots.num - 1];
+	char *keys = visible_keys(last);
+	assert(strcmp(keys, K("Season 1./ep1.mp4,Season 1./ep2.mp4")) == 0 && last->pending_count == 0);
+	bfree(keys);
+	pthread_mutex_unlock(&inbox.mutex);
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+
+	for (size_t i = 0; i < 2; i++) {
+		DeleteFileW(files_w[i]);
+		bfree(files_w[i]);
+	}
+	assert(RemoveDirectoryW(season_w));
+	bfree(season_w);
+	bfree(season);
+	remove_folder(folder);
+	bfree(folder);
+}
+
 /* A folder through this machine's admin share (\\localhost\C$\...), where it can be reached: the share reports more
  * changes than the buffer holds as ERROR_MORE_DATA with an empty buffer, which must rescan like an overflow and not
  * lose the folder (R-DIR-3; found by the Phase 2 acceptance, TESTING.md 2.11) */
@@ -1247,6 +1338,8 @@ int main(void)
 #ifdef _WIN32
 	test_replaced_folder();
 	printf("a folder replaced under its name: passed\n");
+	test_names_ending_in_dot();
+	printf("names ending in a dot: passed\n");
 	test_admin_share();
 #endif
 	assert(bnum_allocs() == allocations);

@@ -19,6 +19,10 @@ version numbers are the ones in `buildspec.json`.
 - Windows: a watched folder that was renamed or deleted to the Recycle Bin while a new folder took its name kept
   its watch on the old folder, so new files in the new one showed only at the folder check, until OBS restarted.
   The next listing now notices the new folder and watches it.
+- Windows: a file below a folder whose name ends in a dot (as a Mac or Linux can leave on a share or a USB drive)
+  was never played: Windows path rules drop that dot, so the file was looked for at another path, judged gone and
+  listed again on every listing. Such files are now addressed by their exact name (the `\\?\` form of the path),
+  and play.
 
 ## [1.5.0] - 2026-11-20
 

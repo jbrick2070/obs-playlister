@@ -70,6 +70,11 @@ struct pl_folder_listing_sink {
 enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *stop,
 				      const struct pl_folder_listing_sink *sink);
 
+/* The location of the file at relative (with '/') below the row's path row: "<row>/<relative>". On Windows, where a
+ * part of relative ends in a dot or a space, which the system's path rules would take away, it is the \\?\ form of
+ * the full path instead, which keeps the name exactly. */
+char *pl_folder_os_location(const struct pl_folder_os *os, const char *row, const char *relative);
+
 /* ---- the write-complete gate's disk access (R-DIR-4); the context is the pl_folder_os ---- */
 
 enum pl_probe_result pl_folder_os_probe(void *context, const char *location);
