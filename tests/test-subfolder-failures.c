@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 #include <util/bmem.h>
 #include "test-common.h"
 
@@ -91,12 +92,25 @@ static void test_bounded(void)
 	struct pl_subfolder_failures failures;
 	pl_subfolder_failures_init(&failures);
 	char name[32];
-	pl_subfolder_failures_begin(&failures);
-	for (int i = 0; i < PL_MAX_FAILING + 10; i++) {
+	/* each fails first in a listing of its own, folder-0 earliest */
+	for (int i = 0; i < PL_MAX_FAILING; i++) {
 		snprintf(name, sizeof(name), "folder-%d", i);
-		pl_subfolder_failures_failed(&failures, name, false);
+		pl_subfolder_failures_begin(&failures);
+		assert(pl_subfolder_failures_failed(&failures, name, false));
 	}
 	assert(failures.items.num == PL_MAX_FAILING);
+	/* folder-0 fails again, so folder-1 is now the one followed longest without failing */
+	pl_subfolder_failures_begin(&failures);
+	assert(pl_subfolder_failures_failed(&failures, "folder-0", true));
+	assert(pl_subfolder_failures_failed(&failures, "one more", true) == false);
+	assert(failures.items.num == PL_MAX_FAILING);
+	bool zero = false, one = false, more = false;
+	for (size_t i = 0; i < failures.items.num; i++) {
+		zero |= strcmp(failures.items.array[i].relative, "folder-0") == 0;
+		one |= strcmp(failures.items.array[i].relative, "folder-1") == 0;
+		more |= strcmp(failures.items.array[i].relative, "one more") == 0;
+	}
+	assert(zero && !one && more);
 	pl_subfolder_failures_free(&failures);
 }
 

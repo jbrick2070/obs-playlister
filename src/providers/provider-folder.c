@@ -156,6 +156,12 @@ struct scan {
 	uint32_t ordinal;
 	size_t cloud;
 	size_t over_limit; /* files after the first PL_MAX_ENTRIES, left out */
+	/* the folder the files given last are in, and what they added, so a subfolder left out after it was read part
+	 * way can be taken back whole: a folder's files come before its subfolders, so they are the last ones given */
+	struct dstr folder;
+	size_t folder_files;
+	size_t folder_cloud;
+	size_t folder_over_limit;
 };
 
 /* Each skipped subfolder is logged once (R-DIR-1) */
@@ -172,28 +178,30 @@ static void log_skipped_once(void *context, const char *relative, const char *wh
 }
 
 /* A subfolder could not be listed (opened, or read to its end) with an error that may pass, while the root lists
- * (folder-os.h): true leaves it out (the OS layer logs it), false fails the listing so the last good list stays
- * (pl_subfolder_failures_failed, R-DIR-1). A subfolder left out after it was read part way loses the files it gave:
- * they are the last ones added, as a folder's files come before its subfolders, so no subfolder is half listed. */
+ * (folder-os.h): true leaves it out (the OS layer then calls left_out), false fails the listing so the last good list
+ * stays (pl_subfolder_failures_failed, R-DIR-1). */
 static bool subfolder_failed(void *context, const char *relative, unsigned long error)
 {
 	UNUSED_PARAMETER(error);
+	struct pl_folder_provider *p = ((struct scan *)context)->provider;
+	return pl_subfolder_failures_failed(&p->failing, relative, p->listed);
+}
+
+/* A subfolder was left out, for whatever error: what it gave before it failed part way is taken back, its files and
+ * the cloud and over-limit counts they added, so no subfolder is half listed */
+static void subfolder_left_out(void *context, const char *relative)
+{
 	struct scan *scan = context;
-	struct pl_folder_provider *p = scan->provider;
-	if (!pl_subfolder_failures_failed(&p->failing, relative, p->listed))
-		return false;
-	char *folded = pl_fold_key(relative);
-	size_t length = strlen(folded);
-	while (scan->files.num) {
-		struct listed_file *last = &scan->files.array[scan->files.num - 1];
-		const char *key = last->key;
-		if (strncmp(key, folded, length) != 0 || key[length] != '/' || strchr(key + length + 1, '/'))
-			break;
-		free_listed_file(last);
+	if (strcmp(scan->folder.array ? scan->folder.array : "", relative) != 0)
+		return;
+	for (size_t i = 0; i < scan->folder_files && scan->files.num; i++) {
+		free_listed_file(&scan->files.array[scan->files.num - 1]);
 		da_pop_back(scan->files);
+		scan->ordinal--;
 	}
-	bfree(folded);
-	return true;
+	scan->cloud -= scan->folder_cloud;
+	scan->over_limit -= scan->folder_over_limit;
+	scan->folder_files = scan->folder_cloud = scan->folder_over_limit = 0;
 }
 
 static void add_listed_file(void *context, const char *relative, const char *name, uint64_t size, int64_t write_ms,
@@ -201,19 +209,31 @@ static void add_listed_file(void *context, const char *relative, const char *nam
 {
 	struct scan *scan = context;
 	struct pl_folder_provider *p = scan->provider;
+	/* a file of another folder than the last one: what the folder added is counted from here */
+	const char *slash = strrchr(relative, '/');
+	size_t folder_length = slash ? (size_t)(slash - relative) : 0;
+	if (scan->folder.len != folder_length ||
+	    (folder_length && strncmp(scan->folder.array, relative, folder_length))) {
+		dstr_ncopy(&scan->folder, relative, folder_length);
+		scan->folder_files = scan->folder_cloud = scan->folder_over_limit = 0;
+	}
 	if (pl_filter_always_skipped(name))
 		return;
 	if (cloud) {
 		/* counted for the warning only when it would otherwise play */
-		if (pl_filter_matches(&p->filter, name))
+		if (pl_filter_matches(&p->filter, name)) {
 			scan->cloud++;
+			scan->folder_cloud++;
+		}
 		return;
 	}
 	/* a folder is limited as a playlist is; what comes after the limit, in listing order, is only counted */
 	if (scan->files.num >= PL_MAX_ENTRIES) {
 		scan->over_limit++;
+		scan->folder_over_limit++;
 		return;
 	}
+	scan->folder_files++;
 	struct listed_file *file = da_push_back_new(scan->files);
 	file->location = pl_folder_os_location(p->os, p->location, relative);
 	file->key = pl_fold_key(relative);
@@ -229,9 +249,11 @@ static enum pl_folder_scan scan_folder(struct pl_folder_provider *p, size_t *clo
 {
 	struct scan scan = {.provider = p};
 	da_init(scan.files);
-	struct pl_folder_listing_sink sink = {&scan, add_listed_file, log_skipped_once, subfolder_failed};
+	struct pl_folder_listing_sink sink = {&scan, add_listed_file, log_skipped_once, subfolder_failed,
+					      subfolder_left_out};
 	pl_subfolder_failures_begin(&p->failing);
 	enum pl_folder_scan result = pl_folder_os_list(p->os, p->stop, &sink);
+	dstr_free(&scan.folder);
 	if (result != PL_FOLDER_SCAN_OK) {
 		free_listing(&scan.files.da);
 		return result;

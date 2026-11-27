@@ -58,20 +58,22 @@ enum pl_folder_scan {
  * folder is not entered.
  * relative uses '/'; name is the last part. A cloud placeholder (R-DIR-5) is reported with cloud set and is never
  * opened. skipped is called for a subfolder left out below the root, with why. failed is asked about a subfolder
- * below the root that cannot be opened for listing with an error that may pass (not
- * pl_folder_os_error_is_subfolders_own), while the root still lists: true leaves it out (skipped is then called),
- * false fails the listing. */
+ * below the root that cannot be opened for listing, or read to its end, with an error that may pass (not
+ * pl_folder_os_error_is_subfolders_own), while the root still lists: true leaves it out, false fails the listing.
+ * left_out is called after skipped for every subfolder left out for an error, whichever kind, so the sink can take
+ * back what it gave before failing part way. */
 struct pl_folder_listing_sink {
 	void *context;
 	void (*file)(void *context, const char *relative, const char *name, uint64_t size, int64_t write_ms,
 		     bool cloud);
 	void (*skipped)(void *context, const char *relative, const char *why);
 	bool (*failed)(void *context, const char *relative, unsigned long error);
+	void (*left_out)(void *context, const char *relative);
 };
 
-/* Whether a subfolder that cannot be opened for listing with this error (a Win32 error, an errno elsewhere) is
- * unreadable itself, so that, while the root still lists, the listing leaves it out and logs it: a name or path the
- * system cannot take, a folder that is damaged or loops (ERROR_INVALID_NAME, ERROR_FILENAME_EXCED_RANGE,
+/* Whether a subfolder that cannot be opened for listing, or read to its end, with this error (a Win32 error, an errno
+ * elsewhere) is unreadable itself, so that, while the root still lists, the listing leaves it out and logs it: a name
+ * or path the system cannot take, a folder that is damaged or loops (ERROR_INVALID_NAME, ERROR_FILENAME_EXCED_RANGE,
  * ERROR_FILE_CORRUPT and the like; ENAMETOOLONG, ELOOP). A subfolder that is gone or denies access is left out
  * before this is asked. Every other error may pass (timeouts, sharing violations, handle limits, EIO, ESTALE,
  * network errors): the listing asks its sink's failed whether to leave the subfolder out or to fail, so that the

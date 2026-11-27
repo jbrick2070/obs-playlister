@@ -266,6 +266,7 @@ static bool leave_out_subfolder(struct pl_folder_os *os, const struct pl_folder_
 	pl_os_error_cat(&why, (unsigned long)error);
 	sink->skipped(sink->context, relative, why.array);
 	dstr_free(&why);
+	sink->left_out(sink->context, relative);
 	return true;
 }
 
