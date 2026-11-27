@@ -486,8 +486,10 @@ static void run_event(struct pl_folder_provider *p, enum pl_watch_event first)
 			events[tail++] = pl_folder_os_open(p->os);
 		else if (actions.rearm && tail < MAX_CHAINED_EVENTS)
 			/* a handle that cannot be armed may be dead (the folder deleted and made again): recovery opens it
-			 * again rather than re-arming it (R-THR-3) */
-			events[tail++] = pl_folder_os_arm(p->os) ? PL_WATCH_OPENED_ARMED : pl_folder_os_open(p->os);
+			 * again rather than re-arming it (R-THR-3), where opening again can do what the arm could not */
+			events[tail++] = pl_folder_os_arm(p->os)                ? PL_WATCH_OPENED_ARMED
+					 : pl_folder_os_must_open_to_arm(p->os) ? pl_folder_os_open(p->os)
+										: PL_WATCH_OPENED_ARM_FAILED;
 		if (actions.rescan) {
 			/* a watch on a folder that was renamed or recycled while another took its name hears nothing at the
 			 * path: it is opened again on the folder there now, before the listing, so a change made after the

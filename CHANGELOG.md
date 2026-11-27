@@ -31,6 +31,8 @@ version numbers are the ones in `buildspec.json`.
 - Windows: OBS's missing-files check, which runs on the UI thread when a scene collection loads, asked about
   playlist rows on a drive letter mapped to a share (`Z:\clips\a.mp4`), and an offline share held OBS for its
   timeout; it already left `\\server\share` paths alone. A mapped network drive is now left alone the same way.
+- Linux: with a folder tree larger than the inotify watch limit (`fs.inotify.max_user_watches`), each folder
+  check walked the tree twice to try notifications again; it walks it once.
 
 ## [1.5.0] - 2026-11-20
 

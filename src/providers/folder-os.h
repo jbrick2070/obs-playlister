@@ -88,6 +88,11 @@ bool pl_folder_os_sample(void *context, const char *location, uint64_t *size, in
 enum pl_watch_event pl_folder_os_open(struct pl_folder_os *os);
 /* Arms the open watch again; false when it is not open or cannot be armed. Armed already is true. */
 bool pl_folder_os_arm(struct pl_folder_os *os);
+/* After pl_folder_os_arm failed: true when only opening the watch again can arm it. On Windows and macOS always: a
+ * handle whose folder was deleted and made again is dead. On Linux an arm already makes every watch again by its
+ * path, so opening again would only walk the tree a second time (at the inotify watch limit, on every interval); it
+ * is true there only when the inotify descriptor itself is gone. */
+bool pl_folder_os_must_open_to_arm(const struct pl_folder_os *os);
 void pl_folder_os_close(struct pl_folder_os *os);
 /* True when the open watch is on a folder that is no longer the one at the row's path: the folder was renamed or
  * moved away (as to the Recycle Bin) and another one took its name. Such a watch never hears of changes at the path,

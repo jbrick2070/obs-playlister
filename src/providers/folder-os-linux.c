@@ -490,6 +490,12 @@ bool pl_folder_os_arm(struct pl_folder_os *os)
 	return true;
 }
 
+bool pl_folder_os_must_open_to_arm(const struct pl_folder_os *os)
+{
+	/* a failed walk leaves an empty descriptor in place (pl_folder_os_arm), which the next arm walks from again */
+	return os->notify_fd < 0;
+}
+
 bool pl_folder_os_replaced(struct pl_folder_os *os)
 {
 	/* the root's watch ends with IN_MOVE_SELF when the folder is moved away, and the folder is then lost */

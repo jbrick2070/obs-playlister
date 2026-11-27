@@ -416,6 +416,12 @@ bool pl_folder_os_arm(struct pl_folder_os *os)
 	return true;
 }
 
+bool pl_folder_os_must_open_to_arm(const struct pl_folder_os *os)
+{
+	UNUSED_PARAMETER(os);
+	return true;
+}
+
 enum pl_watch_event pl_folder_os_open(struct pl_folder_os *os)
 {
 	pl_folder_os_close(os);
