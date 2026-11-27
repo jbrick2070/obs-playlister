@@ -1147,6 +1147,13 @@ static void test_network_drive(void)
 		printf("network drive: a drive letter cannot be defined here, the mapped case is skipped\n");
 		return;
 	}
+	/* without a loopback C$ share here Windows may not call the letter a network drive at all: nothing to test */
+	wchar_t root[] = {device[0], L':', L'\\', L'\0'};
+	if (GetDriveTypeW(root) != DRIVE_REMOTE) {
+		assert(DefineDosDeviceW(define | DDD_REMOVE_DEFINITION | DDD_EXACT_MATCH_ON_REMOVE, device, target));
+		printf("network drive: the defined letter is no network drive here, the mapped case is skipped\n");
+		return;
+	}
 	char mapped[] = {(char)device[0], ':', '\\', 'a', '.', 'm', 'p', '4', '\0'};
 	char bare[] = {(char)device[0], ':', '\0'};
 	char prefixed[] = {'\\', '\\', '?', '\\', (char)device[0], ':', '\\', 'a', '.', 'm', 'p', '4', '\0'};
@@ -1414,10 +1421,17 @@ static void test_names_ending_in_dot(void)
 	bfree(folder);
 }
 
-/* A subfolder that fails for a moment, here one another program holds open without sharing (a sharing violation, as a
- * timeout or a share dropping would fail): the listing fails, so the last good list stays, its files included,
- * marked stale, and comes back once the subfolder can be read; it never shrinks for a moment. A subfolder that is
- * unreadable itself is left out instead (test_subfolder_error_kinds). */
+static bool shows_ok(const struct pl_snapshot *snapshot, const void *context)
+{
+	return shows_exactly(snapshot, context) && snapshot->level == PL_STATUS_OK && !snapshot->stale;
+}
+
+/* A subfolder that fails with an error that may pass, here one another program holds open without sharing (a sharing
+ * violation, as a timeout, a share dropping or an I/O error would fail). While the row has a good list, the listing
+ * fails and that list stays, its files included, marked stale; once the subfolder has failed three listings in a
+ * row it is left out, so a lasting error does not keep the row stale, and it comes back by itself when it can be read
+ * (tried at every listing). With no good list yet, nothing can shrink: it is left out at once. A subfolder that is
+ * unreadable itself is left out at once too (test_subfolder_error_kinds). */
 static void test_subfolder_that_fails(void)
 {
 	char *folder = make_folder("locked");
@@ -1426,31 +1440,38 @@ static void test_subfolder_that_fails(void)
 	write_file(folder, "held" SEP "inner.mp4", 10, OLD);
 	char *held = path_in(folder, "held");
 	wchar_t *held_w = wide(held);
-
-	struct inbox inbox;
-	inbox_init(&inbox);
 	struct pl_container_options options = default_options();
 	options.include_subfolders = true;
+
+	/* failing from the start: left out at once, and back when it can be read */
+	HANDLE holder = CreateFileW(held_w, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	assert(holder != INVALID_HANDLE_VALUE);
+	struct inbox inbox;
+	inbox_init(&inbox);
 	struct pl_provider *provider =
 		pl_provider_create(PL_ROW_FOLDER, folder, "row", 47, &options, on_publish, &inbox);
 	assert(provider);
-	assert(wait_for(&inbox, 0, shows_exactly, K("held/inner.mp4,top.mp4"),
-			"the folder before the subfolder fails"));
-
-	/* listing it now fails with a sharing violation */
-	HANDLE holder = CreateFileW(held_w, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-	assert(holder != INVALID_HANDLE_VALUE);
+	assert(wait_for(&inbox, 0, shows_ok, K("top.mp4"), "the first listing without the failing subfolder"));
+	CloseHandle(holder);
 	size_t mark = inbox_count(&inbox);
+	assert(wait_for(&inbox, mark, shows_ok, K("held/inner.mp4,top.mp4"), "the subfolder read when it can be"));
+
+	/* failing after a good list: the list stays, stale, for two failed listings, and the third leaves it out */
+	holder = CreateFileW(held_w, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	assert(holder != INVALID_HANDLE_VALUE);
+	mark = inbox_count(&inbox);
 	pl_provider_refresh_now(provider);
 	assert(wait_for(&inbox, mark, kept_stale, K("held/inner.mp4"), "the last good list kept, stale"));
+	const struct pl_snapshot *left_out = wait_for(&inbox, mark, shows_ok, K("top.mp4"), "the subfolder left out");
+	assert(left_out);
 	pthread_mutex_lock(&inbox.mutex);
-	for (size_t i = 0; i < inbox.snapshots.num; i++)
+	for (size_t i = mark; inbox.snapshots.array[i] != left_out; i++)
 		assert(entry(inbox.snapshots.array[i], K("held/inner.mp4")));
 	pthread_mutex_unlock(&inbox.mutex);
-	/* let go, the folder is read again at the next check */
+	/* let go, the subfolder is read again at the next check */
 	CloseHandle(holder);
 	mark = inbox_count(&inbox);
-	assert(wait_for(&inbox, mark, recovered, K("held/inner.mp4"), "the folder read again"));
+	assert(wait_for(&inbox, mark, shows_ok, K("held/inner.mp4,top.mp4"), "the subfolder read again"));
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
 

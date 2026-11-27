@@ -57,12 +57,16 @@ enum pl_folder_scan {
  * show), and besides that the hidden or system attribute on Windows and the Finder's hidden flag on macOS; a hidden
  * folder is not entered.
  * relative uses '/'; name is the last part. A cloud placeholder (R-DIR-5) is reported with cloud set and is never
- * opened. skipped is called for a subfolder left out below the root, with why. */
+ * opened. skipped is called for a subfolder left out below the root, with why. failed is asked about a subfolder
+ * below the root that cannot be opened for listing with an error that may pass (not
+ * pl_folder_os_error_is_subfolders_own), while the root still lists: true leaves it out (skipped is then called),
+ * false fails the listing. */
 struct pl_folder_listing_sink {
 	void *context;
 	void (*file)(void *context, const char *relative, const char *name, uint64_t size, int64_t write_ms,
 		     bool cloud);
 	void (*skipped)(void *context, const char *relative, const char *why);
+	bool (*failed)(void *context, const char *relative, unsigned long error);
 };
 
 /* Whether a subfolder that cannot be opened for listing with this error (a Win32 error, an errno elsewhere) is
@@ -70,7 +74,8 @@ struct pl_folder_listing_sink {
  * system cannot take, a folder that is damaged or loops (ERROR_INVALID_NAME, ERROR_FILENAME_EXCED_RANGE,
  * ERROR_FILE_CORRUPT and the like; ENAMETOOLONG, ELOOP). A subfolder that is gone or denies access is left out
  * before this is asked. Every other error may pass (timeouts, sharing violations, handle limits, EIO, ESTALE,
- * network errors) and fails the whole listing, so the last good list stays. */
+ * network errors): the listing asks its sink's failed whether to leave the subfolder out or to fail, so that the
+ * last good list stays. */
 bool pl_folder_os_error_is_subfolders_own(unsigned long error);
 
 /* Lists the folder (and below it when include_subfolders is set) without opening a file. Returns early, STOPPED,

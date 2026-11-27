@@ -282,14 +282,16 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			} else if (error == EACCES || error == EPERM) {
 				sink->skipped(sink->context, relative, "access denied");
 			} else if (error != ENOENT && error != ENOTDIR) {
-				/* a subfolder that vanished is left out. An error that says this subfolder itself cannot be
-				 * read (pl_folder_os_error_is_subfolders_own), while the root still can be, leaves it out
-				 * too, logged with its error, and the rest of the folder still plays; any other (EIO, ESTALE,
-				 * a timeout, a descriptor limit) may pass, and fails the whole listing, so the last good list
-				 * stays instead of shrinking */
+				/* a subfolder that vanished is left out. While the root still can be read, an error that
+				 * says this subfolder itself cannot be read (pl_folder_os_error_is_subfolders_own) leaves it
+				 * out too, logged with its error, and the rest of the folder still plays; any other (EIO,
+				 * ESTALE, a timeout, a descriptor limit) may pass, and the sink decides (folder-os.h): it
+				 * fails the whole listing, so the last good list stays instead of shrinking, until the
+				 * subfolder keeps failing. A root that cannot be read any more fails the listing at once. */
 				struct stat root_status;
-				if (pl_folder_os_error_is_subfolders_own((unsigned long)error) &&
-				    stat(os->root, &root_status) == 0 && S_ISDIR(root_status.st_mode)) {
+				bool root_there = stat(os->root, &root_status) == 0 && S_ISDIR(root_status.st_mode);
+				if (root_there && (pl_folder_os_error_is_subfolders_own((unsigned long)error) ||
+						   sink->failed(sink->context, relative, (unsigned long)error))) {
 					struct dstr why = {0};
 					dstr_copy(&why, "cannot be read, ");
 					pl_os_error_cat(&why, (unsigned long)error);

@@ -328,15 +328,18 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			} else if (find_error == ERROR_ACCESS_DENIED) {
 				sink->skipped(sink->context, relative, "access denied");
 			} else if (!empty && find_error != ERROR_PATH_NOT_FOUND) {
-				/* a subfolder that vanished is left out. An error that says this subfolder itself cannot be
-				 * read (pl_folder_os_error_is_subfolders_own), while the root still can be, leaves it out
-				 * too, logged with its error, and the rest of the folder still plays; any other (a timeout,
-				 * a share dropping, a handle limit, a sharing violation) may pass, and fails the whole
-				 * listing, so the last good list stays instead of shrinking */
-				DWORD attributes = pl_folder_os_error_is_subfolders_own(find_error)
-							   ? GetFileAttributesW(os->root_w)
-							   : INVALID_FILE_ATTRIBUTES;
-				if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+				/* a subfolder that vanished is left out. While the root still can be read, an error that
+				 * says this subfolder itself cannot be read (pl_folder_os_error_is_subfolders_own) leaves it
+				 * out too, logged with its error, and the rest of the folder still plays; any other (a
+				 * timeout, a share dropping, a handle limit, a sharing violation, an I/O error) may pass, and
+				 * the sink decides (folder-os.h): it fails the whole listing, so the last good list stays
+				 * instead of shrinking, until the subfolder keeps failing. A root that cannot be read any
+				 * more fails the listing at once. */
+				DWORD attributes = GetFileAttributesW(os->root_w);
+				bool root_there = attributes != INVALID_FILE_ATTRIBUTES &&
+						  (attributes & FILE_ATTRIBUTE_DIRECTORY);
+				if (root_there && (pl_folder_os_error_is_subfolders_own(find_error) ||
+						   sink->failed(sink->context, relative, find_error))) {
 					struct dstr why = {0};
 					dstr_copy(&why, "cannot be read, ");
 					pl_os_error_cat(&why, find_error);
