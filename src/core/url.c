@@ -233,7 +233,10 @@ char *pl_path_shown(const char *location)
 		dstr_printf(&shown, "%c%c%s", location[0], location[0], rest + 4);
 		return shown.array;
 	}
-	return bstrdup(rest);
+	/* only a drive letter loses it: \\?\Volume{...}\ and \\?\GLOBALROOT\ mean nothing without it */
+	bool drive = ((rest[0] >= 'A' && rest[0] <= 'Z') || (rest[0] >= 'a' && rest[0] <= 'z')) && rest[1] == ':' &&
+		     (separator(rest[2]) || rest[2] == '\0');
+	return bstrdup(drive ? rest : location);
 }
 
 void pl_location_split(const char *location, char **name, char **container)
