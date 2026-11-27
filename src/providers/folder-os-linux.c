@@ -247,6 +247,28 @@ bool pl_folder_os_error_is_subfolders_own(unsigned long error)
 	return error == ENAMETOOLONG || error == ELOOP;
 }
 
+/* A subfolder that could not be opened for listing, or read to its end, with error. While the root still can be read,
+ * an error that says this subfolder itself cannot be read (pl_folder_os_error_is_subfolders_own) leaves it out,
+ * logged with its error, and the rest of the folder still plays; any other (EIO, ESTALE, a timeout, a descriptor
+ * limit) may pass, and the sink decides (folder-os.h): it fails the whole listing, so the last good list stays
+ * instead of shrinking, until the subfolder keeps failing. A root that cannot be read any more fails the listing at
+ * once. True when the subfolder is left out. */
+static bool leave_out_subfolder(struct pl_folder_os *os, const struct pl_folder_listing_sink *sink,
+				const char *relative, int error)
+{
+	struct stat root_status;
+	bool root_there = stat(os->root, &root_status) == 0 && S_ISDIR(root_status.st_mode);
+	if (!root_there || !(pl_folder_os_error_is_subfolders_own((unsigned long)error) ||
+			     sink->failed(sink->context, relative, (unsigned long)error)))
+		return false;
+	struct dstr why = {0};
+	dstr_copy(&why, "cannot be read, ");
+	pl_os_error_cat(&why, (unsigned long)error);
+	sink->skipped(sink->context, relative, why.array);
+	dstr_free(&why);
+	return true;
+}
+
 /* Below the root, hidden folders (a name starting with '.') are skipped and symbolic links to folders are never
  * followed, so a link back up the tree cannot make the scan loop (R-DIR-1, R-LNX-3); the root itself may be a link. */
 enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *stop,
@@ -282,22 +304,8 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			} else if (error == EACCES || error == EPERM) {
 				sink->skipped(sink->context, relative, "access denied");
 			} else if (error != ENOENT && error != ENOTDIR) {
-				/* a subfolder that vanished is left out. While the root still can be read, an error that
-				 * says this subfolder itself cannot be read (pl_folder_os_error_is_subfolders_own) leaves it
-				 * out too, logged with its error, and the rest of the folder still plays; any other (EIO,
-				 * ESTALE, a timeout, a descriptor limit) may pass, and the sink decides (folder-os.h): it
-				 * fails the whole listing, so the last good list stays instead of shrinking, until the
-				 * subfolder keeps failing. A root that cannot be read any more fails the listing at once. */
-				struct stat root_status;
-				bool root_there = stat(os->root, &root_status) == 0 && S_ISDIR(root_status.st_mode);
-				if (root_there && (pl_folder_os_error_is_subfolders_own((unsigned long)error) ||
-						   sink->failed(sink->context, relative, (unsigned long)error))) {
-					struct dstr why = {0};
-					dstr_copy(&why, "cannot be read, ");
-					pl_os_error_cat(&why, (unsigned long)error);
-					sink->skipped(sink->context, relative, why.array);
-					dstr_free(&why);
-				} else {
+				/* a subfolder that vanished is left out; any other error, see leave_out_subfolder */
+				if (!leave_out_subfolder(os, sink, relative, error)) {
 					set_error(os, error);
 					result = PL_FOLDER_SCAN_LOST;
 				}
@@ -313,8 +321,15 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			errno = 0;
 			struct dirent *item = readdir(dir);
 			if (!item) {
-				if (errno) {
-					set_error(os, errno);
+				int error = errno;
+				if (error && !is_root && leave_out_subfolder(os, sink, relative, error)) {
+					/* left out after it was read part way: none of it is listed (the sink dropped the
+					 * files it gave), and none of its subfolders */
+					for (size_t i = 0; i < subfolders.num; i++)
+						bfree(subfolders.array[i]);
+					da_resize(subfolders, 0);
+				} else if (error) {
+					set_error(os, error);
 					result = PL_FOLDER_SCAN_LOST;
 				}
 				break;

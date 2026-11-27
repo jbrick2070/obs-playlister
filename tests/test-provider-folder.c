@@ -1452,6 +1452,13 @@ static void test_subfolder_that_fails(void)
 		pl_provider_create(PL_ROW_FOLDER, folder, "row", 47, &options, on_publish, &inbox);
 	assert(provider);
 	assert(wait_for(&inbox, 0, shows_ok, K("top.mp4"), "the first listing without the failing subfolder"));
+	/* it stays left out at the next listings, now with a good list: the row never shows an error */
+	pl_provider_refresh_now(provider);
+	os_sleep_ms(4500); /* the refresh and two folder checks */
+	pthread_mutex_lock(&inbox.mutex);
+	for (size_t i = 0; i < inbox.snapshots.num; i++)
+		assert(inbox.snapshots.array[i]->level == PL_STATUS_OK && !inbox.snapshots.array[i]->stale);
+	pthread_mutex_unlock(&inbox.mutex);
 	CloseHandle(holder);
 	size_t mark = inbox_count(&inbox);
 	assert(wait_for(&inbox, mark, shows_ok, K("held/inner.mp4,top.mp4"), "the subfolder read when it can be"));

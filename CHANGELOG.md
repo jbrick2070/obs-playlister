@@ -30,11 +30,12 @@ version numbers are the ones in `buildspec.json`.
   system, a damaged folder, a folder that loops) failed every listing, and the row said "folder not found
   (deleted, drive removed or share offline)" while the folder was there; at startup it played nothing. While the
   folder itself can still be read, such a subfolder is now left out and logged with its error, as one that denies
-  access is, and the rest of the folder plays. Any other error on a subfolder (an I/O error, a timeout, a share
-  dropping, a folder another program holds) fails the listing and keeps the last good list, with two exceptions:
-  when there is no last good list yet, that subfolder is left out and logged; and once the same subfolder has
-  failed three listings in a row, it is left out and logged. It is tried again at every later listing and comes
-  back by itself when it can be read.
+  access is, and the rest of the folder plays. Any other error on a subfolder, when it is opened or part way
+  through reading it (an I/O error, a timeout, a share dropping, a folder another program holds), fails the
+  listing and keeps the last good list, with two exceptions: when there is no last good list yet, that subfolder is
+  left out and logged, and stays left out; and once the same subfolder has failed three listings in a row, it is
+  left out and logged. A subfolder left out after it was read part way shows none of its files. It is tried again
+  at every later listing and comes back by itself when it can be read.
 - Windows: OBS's missing-files check, which runs on the UI thread when a scene collection loads, asked about
   playlist rows on a drive letter mapped to a share (`Z:\clips\a.mp4`), and an offline share held OBS for its
   timeout; it already left `\\server\share` paths alone. A mapped network drive is now left alone the same way, so,

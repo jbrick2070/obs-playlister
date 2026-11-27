@@ -37,6 +37,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/text.h"
 #include "core/keys.h"
 #include "core/merge.h"
+#include "core/subfolder-failures.h"
 #include "fold-key.h"
 #include "folder-os.h"
 #include "os.h"
@@ -62,17 +63,6 @@ struct rename_pair {
 	char *old_key;
 	char *new_key;
 	int rescans; /* listings that did not show the new name yet */
-};
-
-/* A subfolder that failed to open with an error that may pass (folder-os.h): it fails the listing, so the last good
- * list stays, until it has failed FAILING_LISTINGS listings in a row; from then on it is left out, and tried again
- * at every listing. Worker only. */
-#define FAILING_LISTINGS 3
-#define MAX_FAILING 256 /* subfolders followed at once; the one followed longest goes first */
-struct failing_subfolder {
-	char *relative;
-	int listings;          /* failed listings in a row */
-	uint64_t last_listing; /* the listing_number it last failed in */
 };
 
 enum missing_cause {
@@ -113,8 +103,7 @@ struct pl_folder_provider {
 	DARRAY(struct rename_pair) renames;          /* carried to the next publication: key to key */
 	DARRAY(struct listed_file) files;            /* the last good listing */
 	DARRAY(char *) logged_paths;                 /* skipped subfolders already logged (R-DIR-1) */
-	DARRAY(struct failing_subfolder) failing;    /* subfolders whose errors failed listings, at most MAX_FAILING */
-	uint64_t listing_number;                     /* listings begun */
+	struct pl_subfolder_failures failing;        /* subfolders whose errors may pass (R-DIR-1) */
 	bool listed;
 	bool gate_fed;
 	size_t cloud_count;
@@ -182,55 +171,29 @@ static void log_skipped_once(void *context, const char *relative, const char *wh
 	obs_log(LOG_INFO, "folder %s: subfolder %s skipped (%s)", p->location, relative, why);
 }
 
-/* A subfolder failed to open with an error that may pass, while the root lists (folder-os.h): true leaves it out (the
- * OS layer logs it), false fails the listing so the last good list stays. With no last good list yet nothing can
- * shrink, so it is left out at once; otherwise once it has failed FAILING_LISTINGS listings in a row, so a subfolder
- * with a lasting I/O error does not keep the row from playing. */
+/* A subfolder could not be listed (opened, or read to its end) with an error that may pass, while the root lists
+ * (folder-os.h): true leaves it out (the OS layer logs it), false fails the listing so the last good list stays
+ * (pl_subfolder_failures_failed, R-DIR-1). A subfolder left out after it was read part way loses the files it gave:
+ * they are the last ones added, as a folder's files come before its subfolders, so no subfolder is half listed. */
 static bool subfolder_failed(void *context, const char *relative, unsigned long error)
 {
 	UNUSED_PARAMETER(error);
-	struct pl_folder_provider *p = ((struct scan *)context)->provider;
-	struct failing_subfolder *found = NULL;
-	for (size_t i = 0; i < p->failing.num && !found; i++) {
-		if (strcmp(p->failing.array[i].relative, relative) == 0)
-			found = &p->failing.array[i];
+	struct scan *scan = context;
+	struct pl_folder_provider *p = scan->provider;
+	if (!pl_subfolder_failures_failed(&p->failing, relative, p->listed))
+		return false;
+	char *folded = pl_fold_key(relative);
+	size_t length = strlen(folded);
+	while (scan->files.num) {
+		struct listed_file *last = &scan->files.array[scan->files.num - 1];
+		const char *key = last->key;
+		if (strncmp(key, folded, length) != 0 || key[length] != '/' || strchr(key + length + 1, '/'))
+			break;
+		free_listed_file(last);
+		da_pop_back(scan->files);
 	}
-	if (!found) {
-		if (p->failing.num >= MAX_FAILING) {
-			size_t oldest = 0;
-			for (size_t i = 1; i < p->failing.num; i++) {
-				if (p->failing.array[i].last_listing < p->failing.array[oldest].last_listing)
-					oldest = i;
-			}
-			bfree(p->failing.array[oldest].relative);
-			da_erase(p->failing, oldest);
-		}
-		found = da_push_back_new(p->failing);
-		found->relative = bstrdup(relative);
-	}
-	if (found->last_listing != p->listing_number) {
-		found->listings++;
-		found->last_listing = p->listing_number;
-	}
-	return !p->listed || found->listings >= FAILING_LISTINGS;
-}
-
-/* After a complete listing: a subfolder that did not fail in it is read again, and its count starts over */
-static void forget_recovered_subfolders(struct pl_folder_provider *p)
-{
-	for (size_t i = p->failing.num; i-- > 0;) {
-		if (p->failing.array[i].last_listing != p->listing_number) {
-			bfree(p->failing.array[i].relative);
-			da_erase(p->failing, i);
-		}
-	}
-}
-
-static void free_failing(struct pl_folder_provider *p)
-{
-	for (size_t i = 0; i < p->failing.num; i++)
-		bfree(p->failing.array[i].relative);
-	da_free(p->failing);
+	bfree(folded);
+	return true;
 }
 
 static void add_listed_file(void *context, const char *relative, const char *name, uint64_t size, int64_t write_ms,
@@ -267,13 +230,13 @@ static enum pl_folder_scan scan_folder(struct pl_folder_provider *p, size_t *clo
 	struct scan scan = {.provider = p};
 	da_init(scan.files);
 	struct pl_folder_listing_sink sink = {&scan, add_listed_file, log_skipped_once, subfolder_failed};
-	p->listing_number++;
+	pl_subfolder_failures_begin(&p->failing);
 	enum pl_folder_scan result = pl_folder_os_list(p->os, p->stop, &sink);
 	if (result != PL_FOLDER_SCAN_OK) {
 		free_listing(&scan.files.da);
 		return result;
 	}
-	forget_recovered_subfolders(p);
+	pl_subfolder_failures_complete(&p->failing);
 	free_listing(&p->files.da);
 	p->files.da = scan.files.da;
 	*cloud_count = scan.cloud;
@@ -884,7 +847,7 @@ static void free_provider(struct pl_folder_provider *p)
 	for (size_t i = 0; i < p->logged_paths.num; i++)
 		bfree(p->logged_paths.array[i]);
 	da_free(p->logged_paths);
-	free_failing(p);
+	pl_subfolder_failures_free(&p->failing);
 	pl_publication_free(&p->publication);
 	bfree(p->location);
 	bfree(p);
@@ -917,7 +880,7 @@ struct pl_folder_provider *pl_folder_provider_create(const char *location, const
 	da_init(p->renames);
 	da_init(p->files);
 	da_init(p->logged_paths);
-	da_init(p->failing);
+	pl_subfolder_failures_init(&p->failing);
 
 	p->stop = pl_stop_create();
 	p->wake = pl_wake_create();

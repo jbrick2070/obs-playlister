@@ -105,6 +105,8 @@ target_sources(
     src/core/standstill.c
     src/core/startup.h
     src/core/startup.c
+    src/core/subfolder-failures.h
+    src/core/subfolder-failures.c
     src/core/text.h
     src/core/text.c
     src/core/url.h

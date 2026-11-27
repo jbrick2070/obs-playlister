@@ -24,7 +24,7 @@ with the command above, before every release:
 
 | Date | Machine | Build | Result |
 |------|---------|-------|--------|
-| 2026-11-27 | Windows 11 Home 26200, Visual Studio 2022 Build Tools | branch `review-fixes-2026-11-27`, RelWithDebInfo | 39 of 39 passed; the mapped case of `test_network_drive` and `test_admin_share` ran (not skipped). One full run before had `test-fetch` (not changed on the branch) fail once; it passed when run again and in the next full run |
+| 2026-11-27 | Windows 11 Home 26200, Visual Studio 2022 Build Tools | branch `review-fixes-2026-11-27`, RelWithDebInfo | 40 of 40 passed (with `test-subfolder-failures`, which CI runs too); the mapped case of `test_network_drive` and `test_admin_share` ran (not skipped). One earlier full run had `test-fetch` (not changed on the branch) fail once; it passed when run again and in the next full runs |
 
 ## Runtime harness (automated, needs OBS)
 

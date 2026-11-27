@@ -290,6 +290,28 @@ bool pl_folder_os_error_is_subfolders_own(unsigned long error)
 	}
 }
 
+/* A subfolder that could not be opened for listing, or read to its end, with error. While the root still can be read,
+ * an error that says this subfolder itself cannot be read (pl_folder_os_error_is_subfolders_own) leaves it out,
+ * logged with its error, and the rest of the folder still plays; any other (a timeout, a share dropping, a handle
+ * limit, a sharing violation, an I/O error) may pass, and the sink decides (folder-os.h): it fails the whole listing,
+ * so the last good list stays instead of shrinking, until the subfolder keeps failing. A root that cannot be read any
+ * more fails the listing at once. True when the subfolder is left out. */
+static bool leave_out_subfolder(struct pl_folder_os *os, const struct pl_folder_listing_sink *sink,
+				const char *relative, DWORD error)
+{
+	DWORD attributes = GetFileAttributesW(os->root_w);
+	bool root_there = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+	if (!root_there ||
+	    !(pl_folder_os_error_is_subfolders_own(error) || sink->failed(sink->context, relative, error)))
+		return false;
+	struct dstr why = {0};
+	dstr_copy(&why, "cannot be read, ");
+	pl_os_error_cat(&why, error);
+	sink->skipped(sink->context, relative, why.array);
+	dstr_free(&why);
+	return true;
+}
+
 /* Below the root, hidden and system folders are skipped and reparse points are never followed, so a link back up the
  * tree cannot make the scan loop (R-DIR-1); the root itself is opened even when it is a junction. */
 enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *stop,
@@ -328,24 +350,8 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			} else if (find_error == ERROR_ACCESS_DENIED) {
 				sink->skipped(sink->context, relative, "access denied");
 			} else if (!empty && find_error != ERROR_PATH_NOT_FOUND) {
-				/* a subfolder that vanished is left out. While the root still can be read, an error that
-				 * says this subfolder itself cannot be read (pl_folder_os_error_is_subfolders_own) leaves it
-				 * out too, logged with its error, and the rest of the folder still plays; any other (a
-				 * timeout, a share dropping, a handle limit, a sharing violation, an I/O error) may pass, and
-				 * the sink decides (folder-os.h): it fails the whole listing, so the last good list stays
-				 * instead of shrinking, until the subfolder keeps failing. A root that cannot be read any
-				 * more fails the listing at once. */
-				DWORD attributes = GetFileAttributesW(os->root_w);
-				bool root_there = attributes != INVALID_FILE_ATTRIBUTES &&
-						  (attributes & FILE_ATTRIBUTE_DIRECTORY);
-				if (root_there && (pl_folder_os_error_is_subfolders_own(find_error) ||
-						   sink->failed(sink->context, relative, find_error))) {
-					struct dstr why = {0};
-					dstr_copy(&why, "cannot be read, ");
-					pl_os_error_cat(&why, find_error);
-					sink->skipped(sink->context, relative, why.array);
-					dstr_free(&why);
-				} else {
+				/* a subfolder that vanished is left out; any other error, see leave_out_subfolder */
+				if (!leave_out_subfolder(os, sink, relative, find_error)) {
 					os->last_error = find_error;
 					result = PL_FOLDER_SCAN_LOST;
 				}
@@ -389,9 +395,18 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 		DWORD next_error = GetLastError();
 		FindClose(find);
 		if (next_error != ERROR_NO_MORE_FILES) {
-			/* the listing broke off, as when a share drops: the last good list stays */
-			os->last_error = next_error;
-			result = next_error == ERROR_ACCESS_DENIED ? PL_FOLDER_SCAN_DENIED : PL_FOLDER_SCAN_LOST;
+			if (!is_root && leave_out_subfolder(os, sink, relative, next_error)) {
+				/* left out after it was read part way: none of it is listed (the sink dropped the files it
+				 * gave), and none of its subfolders */
+				for (size_t i = 0; i < subfolders.num; i++)
+					bfree(subfolders.array[i]);
+				da_resize(subfolders, 0);
+			} else {
+				/* the listing broke off, as when a share drops: the last good list stays */
+				os->last_error = next_error;
+				result = next_error == ERROR_ACCESS_DENIED ? PL_FOLDER_SCAN_DENIED
+									   : PL_FOLDER_SCAN_LOST;
+			}
 		}
 		/* depth first, in listing order */
 		for (size_t i = subfolders.num; i-- > 0;)
