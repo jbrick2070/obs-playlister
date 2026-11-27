@@ -81,6 +81,8 @@ else()
 endif()
 # The folder provider's write-complete gate and watch modes against a fake folder (R-DIR-3, R-DIR-4)
 obs_playlister_add_test(test-folder-state test-folder-state.c "${_core}/folder-state.c")
+# What a listing does with a subfolder whose error may pass: fail and keep the list, or leave it out (R-DIR-1)
+obs_playlister_add_test(test-subfolder-failures test-subfolder-failures.c "${_core}/subfolder-failures.c")
 obs_playlister_add_test(test-row-kind test-row-kind.c "${_core}/row-kind.c" "${_core}/filter.c" "${_core}/url.c")
 obs_playlister_add_test(test-startup test-startup.c "${_core}/startup.c")
 # The frame hold that keeps the replaced item's last picture until the next item's first frame (R-BEH-8)
@@ -124,6 +126,7 @@ set(
   "${_core}/modes.c"
   "${_core}/natural.c"
   "${_core}/sort.c"
+  "${_core}/subfolder-failures.c"
   "${_core}/list-parse.c"
   "${_core}/parse-m3u.c"
   "${_core}/parse-pls.c"

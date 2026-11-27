@@ -6,6 +6,26 @@ Automated tests run with:
 ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure --no-tests=error
 ```
 
+### Windows-only tests: run by hand before a release
+
+CI runs `ctest` on Ubuntu and Arch only; the Windows and macOS jobs only build. The tests below (and every
+`#ifdef _WIN32` part of the others) therefore run only when someone runs `ctest` on Windows, which is done by hand,
+with the command above, before every release:
+
+- `test-provider-folder`, its Windows-only cases: `test_replaced_folder` (a folder renamed away while another takes
+  its name), `test_prefixed_row` (a row typed with `\\?\`), `test_names_ending_in_dot` (folders whose names end
+  in a dot or a space), `test_subfolder_that_fails` (a subfolder held open without sharing: left out at once with
+  no good list yet, kept stale for two failed listings, left out at the third, back when readable),
+  `test_network_drive`'s mapped case (defines a free drive letter for the session; skipped where none is free,
+  the definition is refused or the letter is no network drive), `test_admin_share` (skipped where
+  `\\localhost\C$` cannot be reached), and the Windows halves of `test_network_drive` and
+  `test_subfolder_error_kinds`;
+- `test-fold-key` and `test-fetch` as built on Windows (`fold-key-win.c`, WinHTTP).
+
+| Date | Machine | Build | Result |
+|------|---------|-------|--------|
+| 2026-11-27 | Windows 11 Home 26200, Visual Studio 2022 Build Tools | branch `review-fixes-2026-11-27`, RelWithDebInfo | 40 of 40 passed (with `test-subfolder-failures`, which CI runs too); the mapped case of `test_network_drive` and `test_admin_share` ran (not skipped). One earlier full run had `test-fetch` (not changed on the branch) fail once; it passed when run again and in the next full runs |
+
 ## Runtime harness (automated, needs OBS)
 
 `tests/obs/run-harness.ps1` runs `tests/obs/playlister-harness.lua` inside a portable OBS 33 and drives one

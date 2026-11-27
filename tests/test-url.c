@@ -625,6 +625,19 @@ static void test_location(void)
 	label("A https://u:p@a.example/x and https://v:q@b.example/y", "clip.mp4",
 	      "A https://a.example/x and https://b.example/y - clip.mp4");
 	label("Live https://x.tv @ 8pm", "clip.mp4", "Live https://x.tv @ 8pm - clip.mp4");
+
+	/* R-THR-5: a location kept exactly in the \\?\ form shows without the prefix */
+	location("\\\\?\\D:\\clips\\Season 1.\\ep 1.mp4 ", "ep 1.mp4 ", "D:\\clips\\Season 1.");
+	location("\\\\?\\UNC\\nas\\media\\Season 1.\\ep.mp4", "ep.mp4", "\\\\nas\\media\\Season 1.");
+	label(NULL, "\\\\?\\D:\\clips\\Season 1.\\ep.mp4", "ep.mp4 (D:\\clips\\Season 1.)");
+	expect_text("path shown", "\\\\.\\D:\\a.mp4", pl_path_shown("\\\\.\\D:\\a.mp4"), "D:\\a.mp4");
+	expect_text("path shown", "D:/a.mp4", pl_path_shown("D:/a.mp4"), "D:/a.mp4");
+	const char *volume = "\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\a.mp4";
+	expect_text("path shown", volume, pl_path_shown(volume), volume);
+	expect_text("path shown", "\\\\?\\GLOBALROOT\\x", pl_path_shown("\\\\?\\GLOBALROOT\\x"),
+		    "\\\\?\\GLOBALROOT\\x");
+	expect_text("path shown", "\\\\server\\share\\a.mp4", pl_path_shown("\\\\server\\share\\a.mp4"),
+		    "\\\\server\\share\\a.mp4");
 }
 
 int main(void)

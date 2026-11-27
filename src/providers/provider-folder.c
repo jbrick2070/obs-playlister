@@ -37,6 +37,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/text.h"
 #include "core/keys.h"
 #include "core/merge.h"
+#include "core/subfolder-failures.h"
 #include "fold-key.h"
 #include "folder-os.h"
 #include "os.h"
@@ -102,6 +103,7 @@ struct pl_folder_provider {
 	DARRAY(struct rename_pair) renames;          /* carried to the next publication: key to key */
 	DARRAY(struct listed_file) files;            /* the last good listing */
 	DARRAY(char *) logged_paths;                 /* skipped subfolders already logged (R-DIR-1) */
+	struct pl_subfolder_failures failing;        /* subfolders whose errors may pass (R-DIR-1) */
 	bool listed;
 	bool gate_fed;
 	size_t cloud_count;
@@ -154,6 +156,12 @@ struct scan {
 	uint32_t ordinal;
 	size_t cloud;
 	size_t over_limit; /* files after the first PL_MAX_ENTRIES, left out */
+	/* the folder the files given last are in, and what they added, so a subfolder left out after it was read part
+	 * way can be taken back whole: a folder's files come before its subfolders, so they are the last ones given */
+	struct dstr folder;
+	size_t folder_files;
+	size_t folder_cloud;
+	size_t folder_over_limit;
 };
 
 /* Each skipped subfolder is logged once (R-DIR-1) */
@@ -169,30 +177,65 @@ static void log_skipped_once(void *context, const char *relative, const char *wh
 	obs_log(LOG_INFO, "folder %s: subfolder %s skipped (%s)", p->location, relative, why);
 }
 
+/* A subfolder could not be listed (opened, or read to its end) with an error that may pass, while the root lists
+ * (folder-os.h): true leaves it out (the OS layer then calls left_out), false fails the listing so the last good list
+ * stays (pl_subfolder_failures_failed, R-DIR-1). */
+static bool subfolder_failed(void *context, const char *relative, unsigned long error)
+{
+	UNUSED_PARAMETER(error);
+	struct pl_folder_provider *p = ((struct scan *)context)->provider;
+	return pl_subfolder_failures_failed(&p->failing, relative, p->listed);
+}
+
+/* A subfolder was left out, for whatever error: what it gave before it failed part way is taken back, its files and
+ * the cloud and over-limit counts they added, so no subfolder is half listed */
+static void subfolder_left_out(void *context, const char *relative)
+{
+	struct scan *scan = context;
+	if (strcmp(scan->folder.array ? scan->folder.array : "", relative) != 0)
+		return;
+	for (size_t i = 0; i < scan->folder_files && scan->files.num; i++) {
+		free_listed_file(&scan->files.array[scan->files.num - 1]);
+		da_pop_back(scan->files);
+		scan->ordinal--;
+	}
+	scan->cloud -= scan->folder_cloud;
+	scan->over_limit -= scan->folder_over_limit;
+	scan->folder_files = scan->folder_cloud = scan->folder_over_limit = 0;
+}
+
 static void add_listed_file(void *context, const char *relative, const char *name, uint64_t size, int64_t write_ms,
 			    bool cloud)
 {
 	struct scan *scan = context;
 	struct pl_folder_provider *p = scan->provider;
+	/* a file of another folder than the last one: what the folder added is counted from here */
+	const char *slash = strrchr(relative, '/');
+	size_t folder_length = slash ? (size_t)(slash - relative) : 0;
+	if (scan->folder.len != folder_length ||
+	    (folder_length && strncmp(scan->folder.array, relative, folder_length))) {
+		dstr_ncopy(&scan->folder, relative, folder_length);
+		scan->folder_files = scan->folder_cloud = scan->folder_over_limit = 0;
+	}
 	if (pl_filter_always_skipped(name))
 		return;
 	if (cloud) {
 		/* counted for the warning only when it would otherwise play */
-		if (pl_filter_matches(&p->filter, name))
+		if (pl_filter_matches(&p->filter, name)) {
 			scan->cloud++;
+			scan->folder_cloud++;
+		}
 		return;
 	}
 	/* a folder is limited as a playlist is; what comes after the limit, in listing order, is only counted */
 	if (scan->files.num >= PL_MAX_ENTRIES) {
 		scan->over_limit++;
+		scan->folder_over_limit++;
 		return;
 	}
+	scan->folder_files++;
 	struct listed_file *file = da_push_back_new(scan->files);
-	struct dstr location = {0};
-	dstr_copy(&location, p->location);
-	dstr_cat_ch(&location, '/');
-	dstr_cat(&location, relative);
-	file->location = location.array;
+	file->location = pl_folder_os_location(p->os, p->location, relative);
 	file->key = pl_fold_key(relative);
 	file->size = size;
 	file->write_ms = write_ms;
@@ -206,12 +249,16 @@ static enum pl_folder_scan scan_folder(struct pl_folder_provider *p, size_t *clo
 {
 	struct scan scan = {.provider = p};
 	da_init(scan.files);
-	struct pl_folder_listing_sink sink = {&scan, add_listed_file, log_skipped_once};
+	struct pl_folder_listing_sink sink = {&scan, add_listed_file, log_skipped_once, subfolder_failed,
+					      subfolder_left_out};
+	pl_subfolder_failures_begin(&p->failing);
 	enum pl_folder_scan result = pl_folder_os_list(p->os, p->stop, &sink);
+	dstr_free(&scan.folder);
 	if (result != PL_FOLDER_SCAN_OK) {
 		free_listing(&scan.files.da);
 		return result;
 	}
+	pl_subfolder_failures_complete(&p->failing);
 	free_listing(&p->files.da);
 	p->files.da = scan.files.da;
 	*cloud_count = scan.cloud;
@@ -375,17 +422,16 @@ static void apply_notified_renames(struct pl_folder_provider *p)
 			bfree(new_key);
 			continue;
 		}
-		/* the row's own path as it is, then the relative path (the watch gives it with '/') */
-		struct dstr location = {0};
-		dstr_printf(&location, "%s/%s", p->location, pair->new_key);
+		/* the row's own path as it is, then the relative path (the watch gives it with '/'), as a listing names it */
+		char *location = pl_folder_os_location(p->os, p->location, pair->new_key);
 		uint64_t size = 0;
 		int64_t write_ms = 0;
 		int64_t sampled_ms = 0;
 		if (pl_gate_find(&p->gate, old_key) &&
-		    pl_folder_os_sample(p->os, location.array, &size, &write_ms, &sampled_ms) &&
-		    pl_gate_rename(&p->gate, old_key, new_key, location.array, size, write_ms, mono_now()))
+		    pl_folder_os_sample(p->os, location, &size, &write_ms, &sampled_ms) &&
+		    pl_gate_rename(&p->gate, old_key, new_key, location, size, write_ms, mono_now()))
 			carry_rename(p, old_key, new_key);
-		dstr_free(&location);
+		bfree(location);
 		bfree(old_key);
 		bfree(new_key);
 	}
@@ -420,8 +466,10 @@ static void take_completed_changes(struct pl_folder_provider *p)
 	if (!pl_folder_os_take_completed_changes(p->os, note_rename, p))
 		return;
 	pl_watch_notified(&p->watch);
-	/* the watch machine hears of a failed re-arm from the main loop */
-	p->arm_failed = !pl_folder_os_arm(p->os);
+	/* the watch machine hears of a failed re-arm from the main loop; folders added are watched with the next
+	 * rescan, as in on_notification */
+	if (!pl_folder_os_needs_rewatch(p->os))
+		p->arm_failed = !pl_folder_os_arm(p->os);
 	debounce_change(p);
 }
 
@@ -491,10 +539,27 @@ static void run_event(struct pl_folder_provider *p, enum pl_watch_event first)
 			events[tail++] = pl_folder_os_open(p->os);
 		else if (actions.rearm && tail < MAX_CHAINED_EVENTS)
 			/* a handle that cannot be armed may be dead (the folder deleted and made again): recovery opens it
-			 * again rather than re-arming it (R-THR-3) */
-			events[tail++] = pl_folder_os_arm(p->os) ? PL_WATCH_OPENED_ARMED : pl_folder_os_open(p->os);
+			 * again rather than re-arming it (R-THR-3), where opening again can do what the arm could not */
+			events[tail++] = pl_folder_os_arm(p->os)                ? PL_WATCH_OPENED_ARMED
+					 : pl_folder_os_must_open_to_arm(p->os) ? pl_folder_os_open(p->os)
+										: PL_WATCH_OPENED_ARM_FAILED;
 		if (actions.rescan) {
+			/* a watch on a folder that was renamed or recycled while another took its name hears nothing at the
+			 * path: it is opened again on the folder there now, before the listing, so a change made after the
+			 * listing is still heard */
+			if (actions.mode != PL_WATCH_MISSING && pl_folder_os_replaced(p->os) &&
+			    tail < MAX_CHAINED_EVENTS) {
+				obs_log(LOG_INFO, "folder %s: another folder took its name; watching that one",
+					p->location);
+				events[tail++] = pl_folder_os_open(p->os);
+			}
 			p->debounce_ms = 0;
+			/* folders added since are watched now, once, before the listing, so a change in one made after it
+			 * is heard. The watch says itself whether it needs it, so a rescan in another mode leaves it for
+			 * the next one in notify mode; a rescan-only watch is re-armed by the timer itself. */
+			if (actions.mode == PL_WATCH_NOTIFY && pl_folder_os_needs_rewatch(p->os) &&
+			    !pl_folder_os_arm(p->os))
+				p->arm_failed = true;
 			enum pl_folder_scan result = rescan(p);
 			if (result == PL_FOLDER_SCAN_LOST && tail < MAX_CHAINED_EVENTS)
 				events[tail++] = PL_WATCH_LOST;
@@ -538,8 +603,9 @@ static void on_notification(struct pl_folder_provider *p)
 	}
 	pl_watch_notified(&p->watch);
 	/* armed again before the debounced rescan, so a change made meanwhile is caught; the fall-back to rescan-only
-	 * waits for this change's debounced rescan (worker_main) */
-	if (!pl_folder_os_arm(p->os))
+	 * waits for this change's debounced rescan (worker_main). Folders added below the root (Linux) are watched with
+	 * that rescan instead: a tree being copied in would otherwise be walked again on every batch of events. */
+	if (!pl_folder_os_needs_rewatch(p->os) && !pl_folder_os_arm(p->os))
 		p->arm_failed = true;
 	debounce_change(p);
 }
@@ -803,6 +869,7 @@ static void free_provider(struct pl_folder_provider *p)
 	for (size_t i = 0; i < p->logged_paths.num; i++)
 		bfree(p->logged_paths.array[i]);
 	da_free(p->logged_paths);
+	pl_subfolder_failures_free(&p->failing);
 	pl_publication_free(&p->publication);
 	bfree(p->location);
 	bfree(p);
@@ -835,6 +902,7 @@ struct pl_folder_provider *pl_folder_provider_create(const char *location, const
 	da_init(p->renames);
 	da_init(p->files);
 	da_init(p->logged_paths);
+	pl_subfolder_failures_init(&p->failing);
 
 	p->stop = pl_stop_create();
 	p->wake = pl_wake_create();

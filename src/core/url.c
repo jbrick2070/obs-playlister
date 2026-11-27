@@ -220,9 +220,30 @@ char *pl_text_redacted(const char *text)
 	return shown.array ? shown.array : bstrdup("");
 }
 
+char *pl_path_shown(const char *location)
+{
+	if (!location)
+		return NULL;
+	if (!separator(location[0]) || !separator(location[1]) || (location[2] != '?' && location[2] != '.') ||
+	    !separator(location[3]))
+		return bstrdup(location);
+	const char *rest = location + 4;
+	if (astrcmpi_n(rest, "UNC", 3) == 0 && separator(rest[3])) {
+		struct dstr shown = {0};
+		dstr_printf(&shown, "%c%c%s", location[0], location[0], rest + 4);
+		return shown.array;
+	}
+	/* only a drive letter loses it: \\?\Volume{...}\ and \\?\GLOBALROOT\ mean nothing without it */
+	bool drive = ((rest[0] >= 'A' && rest[0] <= 'Z') || (rest[0] >= 'a' && rest[0] <= 'z')) && rest[1] == ':' &&
+		     (separator(rest[2]) || rest[2] == '\0');
+	return bstrdup(drive ? rest : location);
+}
+
 void pl_location_split(const char *location, char **name, char **container)
 {
-	char *shown = pl_url_redacted(location);
+	char *plain = pl_path_shown(location);
+	char *shown = pl_url_redacted(plain);
+	bfree(plain);
 	/* where the path starts: of an address, after its host, which is never a file name */
 	size_t floor = 0;
 	const char *scheme_end = strstr(shown, "://");

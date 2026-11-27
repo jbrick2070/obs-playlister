@@ -73,7 +73,7 @@ struct pl_fetch {
 };
 
 static pthread_mutex_t routes_mutex;
-static struct route routes[16];
+static struct route routes[24];
 static size_t route_count;
 static volatile long fetches_open;
 
@@ -716,6 +716,68 @@ static void test_classification(void)
 	assert(page->count == 1);
 	pl_provider_destroy(provider);
 	inbox_free(&inbox);
+
+	/* a list a server sends as text/html (a PHP script's default) sniffs as a list on every refresh, not only on the
+	 * first fetch, while a web page at the same address is still refused */
+	const char *php = "https://iptv.example.com/get.php?type=m3u";
+	route = add_route(php, PL_FETCH_OK, 200, "text/html", NULL, "#EXTM3U\nx.mp4\n");
+	inbox_init(&inbox);
+	provider = start(PL_ROW_REMOTE, php, &options, &inbox);
+	wait_for(&inbox, 0, shows, "https://iptv.example.com/x.mp4", "a list sent as text/html");
+	set_route(route, PL_FETCH_OK, 200, "#EXTM3U\nx.mp4\ny.mp4\n");
+	since = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	const struct pl_snapshot *again = wait_for(&inbox, since, shows,
+						   "https://iptv.example.com/x.mp4|https://iptv.example.com/y.mp4",
+						   "the text/html list refreshed");
+	assert(again->level != PL_STATUS_ERROR && !again->stale);
+	set_route(route, PL_FETCH_OK, 200, "<!doctype html><html>maintenance</html>");
+	since = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	page = wait_for(&inbox, since, is_error_stale, "web page instead of the list", "a web page after the list");
+	assert(page->count == 2);
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+
+	/* the same with a list longer than the sniff: the first fetch reads its start, which sniffs as a list, then the
+	 * whole list in a second fetch; each refresh after it is one fetch of the whole body. A web page in between is
+	 * refused, and the refresh after it reads only the start again. */
+	struct dstr long_list = {0};
+	dstr_copy(&long_list, "#EXTM3U\n");
+	while (long_list.len < 100 * 1024)
+		dstr_cat(&long_list, "# padding\n");
+	dstr_cat(&long_list, "long.mp4\n");
+	struct dstr longer_list = {0};
+	dstr_printf(&longer_list, "%sz.mp4\n", long_list.array);
+	const char *php_long = "https://iptv.example.com/get.php?type=m3u_plus";
+	route = add_route(php_long, PL_FETCH_OK, 200, "text/html", NULL, long_list.array);
+	inbox_init(&inbox);
+	provider = start(PL_ROW_REMOTE, php_long, &options, &inbox);
+	wait_for(&inbox, 0, shows, "https://iptv.example.com/long.mp4", "a long list sent as text/html");
+	assert(count_of(&route->opens) == 2);
+	set_route(route, PL_FETCH_OK, 200, longer_list.array);
+	since = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	again = wait_for(&inbox, since, shows, "https://iptv.example.com/long.mp4|https://iptv.example.com/z.mp4",
+			 "the long text/html list refreshed");
+	assert(again->level != PL_STATUS_ERROR && !again->stale);
+	assert(count_of(&route->opens) == 3);
+	/* a web page now, read whole as the list would be, is refused */
+	set_route(route, PL_FETCH_OK, 200, "<!doctype html><html>maintenance</html>");
+	since = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	wait_for(&inbox, since, is_error_stale, "web page instead of the list", "a web page after the long list");
+	assert(count_of(&route->opens) == 4);
+	/* and the list back: its start first, then the whole of it */
+	set_route(route, PL_FETCH_OK, 200, long_list.array);
+	since = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	wait_for(&inbox, since, shows, "https://iptv.example.com/long.mp4", "the long list back");
+	assert(count_of(&route->opens) == 6);
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	dstr_free(&long_list);
+	dstr_free(&longer_list);
 }
 
 static bool count_is(const struct pl_snapshot *snapshot, const void *context)

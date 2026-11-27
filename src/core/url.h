@@ -61,6 +61,11 @@ char *pl_url_redacted(const char *location);
  * shows. Text without "://" comes back unchanged. Never NULL. */
 char *pl_text_redacted(const char *text);
 
+/* A Windows path as a person reads it, without the \\?\ (or \\.\) prefix that keeps a name ending in a dot or a
+ * space exactly (R-THR-5): "\\?\D:\a\b.mp4" gives "D:\a\b.mp4" and "\\?\UNC\nas\media\b.mp4" gives
+ * "\\nas\media\b.mp4". Anything else, \\?\Volume{...}\ included, comes back as it is. Never NULL for a location that is not NULL; bmem. */
+char *pl_path_shown(const char *location);
+
 /* A location as a person reads it, in two parts (R-UX-19): the name, which is its last part (the file name; of an
  * address with no path, the host), and the container, which is what stands before the name without the separator
  * between them (the folder, or the address up to there; "/" for a file in the root; NULL when nothing stands before

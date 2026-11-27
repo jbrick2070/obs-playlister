@@ -307,51 +307,62 @@ static void test_compose_matches_the_scan(void)
 	assert(composed > 1000);
 }
 
-/* a locked list of 20,000 entries: composing costs nothing without renames, and little with every entry renamed in
- * both snapshots (the scan took about a second for the first and far longer for the second) */
-static void test_compose_is_quick(void)
+/* Composes a locked list of count entries, timed, with the sorted look-ups or with the scan they replaced. Without
+ * renames nothing is composed; renamed, every held entry was renamed from OLD-i to MID-i and every newer one from
+ * MID-i to FILE-i, which composes to OLD-i. */
+static double timed_compose(size_t count, bool renamed, bool sorted)
 {
-	const size_t count = 20000;
 	struct pl_entry *held = bzalloc(count * sizeof(*held));
 	struct pl_entry *newer = bzalloc(count * sizeof(*newer));
 	char key[32], previous[32];
 	for (size_t i = 0; i < count; i++) {
-		snprintf(key, sizeof(key), "FILE-%zu.MP4", i);
-		set_entry(&held[i], key, 1, NULL);
-		set_entry(&newer[i], key, 1, NULL);
+		snprintf(key, sizeof(key), "%s-%zu.MP4", renamed ? "MID" : "FILE", i);
+		snprintf(previous, sizeof(previous), "OLD-%zu.MP4", i);
+		set_entry(&held[i], key, 1, renamed ? previous : NULL);
+		snprintf(previous, sizeof(previous), "FILE-%zu.MP4", i);
+		set_entry(&newer[i], previous, 1, renamed ? key : NULL);
 	}
 	uint64_t start = os_gettime_ns();
-	for (int i = 0; i < 100; i++)
+	if (sorted)
 		pl_merge_compose_renames(newer, count, held, count);
-	double plain = (double)(os_gettime_ns() - start) / 1e9;
-	for (size_t i = 0; i < count; i++)
-		assert(!newer[i].previous_key);
-	free_entries(held, count);
-	free_entries(newer, count);
-
-	/* every held entry was renamed from OLD-i to MID-i, and every newer one from MID-i to FILE-i */
+	else
+		compose_by_scanning(newer, count, held, count);
+	double seconds = (double)(os_gettime_ns() - start) / 1e9;
 	for (size_t i = 0; i < count; i++) {
-		snprintf(key, sizeof(key), "MID-%zu.MP4", i);
 		snprintf(previous, sizeof(previous), "OLD-%zu.MP4", i);
-		set_entry(&held[i], key, 1, previous);
-		snprintf(previous, sizeof(previous), "FILE-%zu.MP4", i);
-		set_entry(&newer[i], previous, 1, key);
-	}
-	start = os_gettime_ns();
-	pl_merge_compose_renames(newer, count, held, count);
-	double renamed = (double)(os_gettime_ns() - start) / 1e9;
-	for (size_t i = 0; i < count; i += 199) {
-		snprintf(previous, sizeof(previous), "OLD-%zu.MP4", i);
-		assert(newer[i].previous_key && strcmp(newer[i].previous_key, previous) == 0);
+		assert(renamed ? newer[i].previous_key && strcmp(newer[i].previous_key, previous) == 0
+			       : !newer[i].previous_key);
 	}
 	free_entries(held, count);
 	free_entries(newer, count);
 	bfree(held);
 	bfree(newer);
-	if (plain > 1.0 || renamed > 1.0) {
-		fprintf(stderr, "composing %zu entries: %.2f s for 100 runs without renames, %.2f s with all renamed\n",
-			count, plain, renamed);
-		assert(false);
+	return seconds;
+}
+
+/* A locked list: composing costs little, without renames and with every entry renamed in both snapshots. The scan
+ * grows with the square of the count (20,000 entries took it about a second without renames and far longer with).
+ * A wall-clock limit fails on a slow or busy machine, so composing is timed against the scan on the same machine:
+ * with 10,000 entries it must be more than five times as quick (the best of three tries counts). 20,000 entries get
+ * a limit only a broken compose reaches. */
+static void test_compose_is_quick(void)
+{
+	for (int renamed = 0; renamed < 2; renamed++) {
+		double sorted = 1e9;
+		for (int i = 0; i < 3; i++) {
+			double seconds = timed_compose(10000, renamed, true);
+			sorted = seconds < sorted ? seconds : sorted;
+		}
+		double scanned = timed_compose(10000, renamed, false);
+		printf("composing 10000 entries %s: %.4f s, with the scan %.4f s\n",
+		       renamed ? "all renamed" : "without renames", sorted, scanned);
+		if (sorted * 5 > scanned) {
+			fprintf(stderr, "composing took %.4f s, the scan %.4f s\n", sorted, scanned);
+			assert(false);
+		}
+		double many = timed_compose(20000, renamed, true);
+		printf("composing 20000 entries: %.4f s\n", many);
+		assert(many < 10.0);
 	}
 }
 

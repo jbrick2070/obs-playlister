@@ -183,6 +183,14 @@ static void set_error(struct pl_folder_os *os, int error)
 	os->last_note = NULL;
 }
 
+char *pl_folder_os_location(const struct pl_folder_os *os, const char *row, const char *relative)
+{
+	UNUSED_PARAMETER(os);
+	struct dstr location = {0};
+	dstr_printf(&location, "%s/%s", row, relative);
+	return location.array;
+}
+
 /* ---- the gate's disk access (R-MAC-3) ---- */
 
 enum pl_probe_result pl_folder_os_probe(void *context, const char *location)
@@ -233,6 +241,34 @@ bool pl_folder_os_sample(void *context, const char *location, uint64_t *size, in
 
 /* ---- listing ---- */
 
+bool pl_folder_os_error_is_subfolders_own(unsigned long error)
+{
+	return error == ENAMETOOLONG || error == ELOOP;
+}
+
+/* A subfolder that could not be opened for listing, or read to its end, with error. While the root still can be read,
+ * an error that says this subfolder itself cannot be read (pl_folder_os_error_is_subfolders_own) leaves it out,
+ * logged with its error, and the rest of the folder still plays; any other (EIO, ESTALE, a timeout, a descriptor
+ * limit) may pass, and the sink decides (folder-os.h): it fails the whole listing, so the last good list stays
+ * instead of shrinking, until the subfolder keeps failing. A root that cannot be read any more fails the listing at
+ * once. True when the subfolder is left out. */
+static bool leave_out_subfolder(struct pl_folder_os *os, const struct pl_folder_listing_sink *sink,
+				const char *relative, int error)
+{
+	struct stat root_status;
+	bool root_there = stat(os->root, &root_status) == 0 && S_ISDIR(root_status.st_mode);
+	if (!root_there || !(pl_folder_os_error_is_subfolders_own((unsigned long)error) ||
+			     sink->failed(sink->context, relative, (unsigned long)error)))
+		return false;
+	struct dstr why = {0};
+	dstr_copy(&why, "cannot be read, ");
+	pl_os_error_cat(&why, (unsigned long)error);
+	sink->skipped(sink->context, relative, why.array);
+	dstr_free(&why);
+	sink->left_out(sink->context, relative);
+	return true;
+}
+
 /* Below the root, hidden folders are skipped and symbolic links to folders are never followed, so a link back up the
  * tree cannot make the scan loop (R-DIR-1); the root itself may be a link. An iCloud Drive file not downloaded to
  * this Mac is reported as a cloud placeholder and never opened (R-DIR-5). */
@@ -269,10 +305,11 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			} else if (error == EACCES || error == EPERM) {
 				sink->skipped(sink->context, relative, "access denied");
 			} else if (error != ENOENT && error != ENOTDIR) {
-				/* a subfolder that vanished is left out; any other failure fails the whole listing, so the
-				 * last good list stays instead of shrinking */
-				set_error(os, error);
-				result = PL_FOLDER_SCAN_LOST;
+				/* a subfolder that vanished is left out; any other error, see leave_out_subfolder */
+				if (!leave_out_subfolder(os, sink, relative, error)) {
+					set_error(os, error);
+					result = PL_FOLDER_SCAN_LOST;
+				}
 			}
 			bfree(relative);
 			continue;
@@ -285,8 +322,15 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			errno = 0;
 			struct dirent *item = readdir(dir);
 			if (!item) {
-				if (errno) {
-					set_error(os, errno);
+				int error = errno;
+				if (error && !is_root && leave_out_subfolder(os, sink, relative, error)) {
+					/* left out after it was read part way: none of it is listed (the sink dropped the
+					 * files it gave), and none of its subfolders */
+					for (size_t i = 0; i < subfolders.num; i++)
+						bfree(subfolders.array[i]);
+					da_resize(subfolders, 0);
+				} else if (error) {
+					set_error(os, error);
 					result = PL_FOLDER_SCAN_LOST;
 				}
 				break;
@@ -483,6 +527,26 @@ bool pl_folder_os_arm(struct pl_folder_os *os)
 		return false;
 	os->armed = true;
 	return true;
+}
+
+bool pl_folder_os_needs_rewatch(const struct pl_folder_os *os)
+{
+	/* the stream covers every folder below the root by path */
+	UNUSED_PARAMETER(os);
+	return false;
+}
+
+bool pl_folder_os_must_open_to_arm(const struct pl_folder_os *os)
+{
+	UNUSED_PARAMETER(os);
+	return true;
+}
+
+bool pl_folder_os_replaced(struct pl_folder_os *os)
+{
+	/* the stream follows the path, not the folder that was there when it started */
+	UNUSED_PARAMETER(os);
+	return false;
 }
 
 static bool set_pipe_flags(int fd)
@@ -697,4 +761,10 @@ bool pl_folder_is_directory(const char *path)
 {
 	struct stat status;
 	return path && *path && stat(path, &status) == 0 && S_ISDIR(status.st_mode);
+}
+
+bool pl_path_on_network_drive(const char *path)
+{
+	UNUSED_PARAMETER(path);
+	return false;
 }

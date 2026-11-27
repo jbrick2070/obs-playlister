@@ -10,6 +10,44 @@ version numbers are the ones in `buildspec.json`.
 
 - Arch Linux: `packaging/arch/PKGBUILD` builds release 1.5.0, now that it is published (it built 0.5.2).
 
+### Fixed
+
+- A web list whose server sends it as `text/html` (the default of a PHP script, as many IPTV `get.php` addresses
+  are) kept playing only until its first refresh, which then refused it as "a web page instead of the list"; a
+  list of 64 KB or more was refused at once. The start of such a body now decides on every fetch, as on the first:
+  a playlist is read, and a real web page is still refused. The first fetch reads only the first 64 KB of a web
+  page (a longer list is then fetched once more, whole); once the row's list has come as `text/html`, each refresh
+  is one fetch of the whole body.
+- Windows: a watched folder that was renamed or deleted to the Recycle Bin while a new folder took its name kept
+  its watch on the old folder, so new files in the new one showed only at the folder check, until OBS restarted.
+  The next listing now notices the new folder and watches it.
+- Windows: a file below a folder whose name ends in a dot (as a Mac or Linux can leave on a share or a USB drive)
+  was never played: Windows path rules drop that dot, so the file was looked for at another path, judged gone and
+  listed again on every listing. A name ending in a space is kept exactly the same way. Such files are now
+  addressed by their exact name (the `\\?\` form of the path), and play. Now playing, Next and the Play item list
+  show their path without the `\\?\`.
+- With **Include subfolders** on, one subfolder that could never be opened (a name or path too long for the
+  system, a damaged folder, a folder that loops) failed every listing, and the row said "folder not found
+  (deleted, drive removed or share offline)" while the folder was there; at startup it played nothing. While the
+  folder itself can still be read, such a subfolder is now left out and logged with its error, as one that denies
+  access is, and the rest of the folder plays. Any other error on a subfolder, when it is opened or part way
+  through reading it (an I/O error, a timeout, a share dropping, a folder another program holds), fails the
+  listing and keeps the last good list, with two exceptions: when there is no last good list yet, that subfolder is
+  left out and logged, and stays left out; and once the same subfolder has failed three listings in a row, it is
+  left out and logged. A subfolder left out after it was read part way shows none of its files. It is tried again
+  at every later listing and comes back by itself when it can be read.
+- Windows: OBS's missing-files check, which runs on the UI thread when a scene collection loads, asked about
+  playlist rows on a drive letter mapped to a share (`Z:\clips\a.mp4`), and an offline share held OBS for its
+  timeout; it already left `\\server\share` paths alone. A mapped network drive is now left alone the same way, so,
+  as on a `\\server\share` path, a file moved or deleted there is no longer offered in OBS's missing-files dialog;
+  it fails as an unplayable item instead. The one-time take-over of settings from the original Media Playlist
+  Source, on the graphics thread, no longer asks a mapped network drive either; the row's own worker does.
+- Linux: with a folder tree larger than the inotify watch limit (`fs.inotify.max_user_watches`), each folder
+  check walked the tree twice to try notifications again; it walks it once.
+- Linux: copying a folder tree into a watched folder (with **Include subfolders** on) walked the whole watched
+  tree again on every batch of change events, many times a second. New folders are now watched once, with the
+  listing that follows the changes.
+
 ## [1.5.0] - 2026-11-20
 
 The suite-wide step to 1.5: every product of the Fadester suite now carries version 1.5, so that one round of hand

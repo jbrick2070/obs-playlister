@@ -41,6 +41,7 @@ struct pl_folder_os {
 	wchar_t *root_w; /* canonical, with its \\?\ prefix (R-THR-5); NULL when the path cannot be converted */
 	bool include_subfolders;
 	HANDLE dir;
+	BY_HANDLE_FILE_INFORMATION dir_identity; /* of the folder dir is open on: volume serial and file index */
 	OVERLAPPED overlapped;
 	HANDLE overlapped_event;
 	DWORD *buffer;
@@ -131,6 +132,33 @@ static wchar_t *below_root(const struct pl_folder_os *os, const char *relative, 
 	return result;
 }
 
+/* A file's path for the probe and the sample: one in the \\?\ form (pl_folder_os_location, or a row typed with the
+ * prefix) is not run through GetFullPathNameW, which would drop the dot or space a name ends with, but its '/' still
+ * becomes '\' (R-THR-5), as "<row>/<relative>" has one; any other is canonicalized */
+static wchar_t *file_path(const char *location)
+{
+	if (strncmp(location, "\\\\?\\", 4) != 0)
+		return win32_path(location);
+	wchar_t *wide = NULL;
+	os_utf8_to_wcs_ptr(location, 0, &wide);
+	for (wchar_t *c = wide; c && *c; c++) {
+		if (*c == L'/')
+			*c = L'\\';
+	}
+	return wide;
+}
+
+/* A part of the relative path ends in a dot or a space, which Win32 path rules take away (the last part's, and a
+ * single dot after any part), so the plain path names another file */
+static bool trimmed_by_win32(const char *relative)
+{
+	for (const char *c = relative; *c; c++) {
+		if ((*c == '.' || *c == ' ') && (c[1] == '/' || c[1] == '\0'))
+			return true;
+	}
+	return false;
+}
+
 static char *join_relative(const char *parent, const char *name)
 {
 	struct dstr path = {0};
@@ -176,12 +204,29 @@ void pl_folder_os_error_cat(const struct pl_folder_os *os, struct dstr *text)
 	pl_os_error_cat(text, os->last_error);
 }
 
+char *pl_folder_os_location(const struct pl_folder_os *os, const char *row, const char *relative)
+{
+	struct dstr location = {0};
+	if (os->root_w && trimmed_by_win32(relative)) {
+		/* the \\?\ form keeps the name exactly, for the probe, the sample and the player alike (FFmpeg opens a
+		 * \\?\ path as it is) */
+		wchar_t *path = below_root(os, relative, L"");
+		char *utf8 = NULL;
+		os_wcs_to_utf8_ptr(path, 0, &utf8);
+		bfree(path);
+		if (utf8)
+			return utf8;
+	}
+	dstr_printf(&location, "%s/%s", row, relative);
+	return location.array;
+}
+
 /* ---- the gate's disk access ---- */
 
 enum pl_probe_result pl_folder_os_probe(void *context, const char *location)
 {
 	UNUSED_PARAMETER(context);
-	wchar_t *path = win32_path(location);
+	wchar_t *path = file_path(location);
 	if (!path)
 		return PL_PROBE_GONE;
 	/* reading while denying other writers: any open write handle makes this a sharing violation (R-DIR-4) */
@@ -210,7 +255,7 @@ bool pl_folder_os_sample(void *context, const char *location, uint64_t *size, in
 			 int64_t *sampled_mono_ms)
 {
 	UNUSED_PARAMETER(context);
-	wchar_t *path = win32_path(location);
+	wchar_t *path = file_path(location);
 	WIN32_FIND_DATAW data;
 	HANDLE find = path ? FindFirstFileExW(path, FindExInfoBasic, &data, FindExSearchNameMatch, NULL, 0)
 			   : INVALID_HANDLE_VALUE;
@@ -227,6 +272,46 @@ bool pl_folder_os_sample(void *context, const char *location, uint64_t *size, in
 }
 
 /* ---- listing ---- */
+
+bool pl_folder_os_error_is_subfolders_own(unsigned long error)
+{
+	switch (error) {
+	case ERROR_INVALID_NAME:
+	case ERROR_BAD_PATHNAME:
+	case ERROR_DIRECTORY:
+	case ERROR_FILENAME_EXCED_RANGE:
+	case ERROR_CANT_ACCESS_FILE:
+	case ERROR_CANT_RESOLVE_FILENAME:
+	case ERROR_FILE_CORRUPT:
+	case ERROR_DISK_CORRUPT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/* A subfolder that could not be opened for listing, or read to its end, with error. While the root still can be read,
+ * an error that says this subfolder itself cannot be read (pl_folder_os_error_is_subfolders_own) leaves it out,
+ * logged with its error, and the rest of the folder still plays; any other (a timeout, a share dropping, a handle
+ * limit, a sharing violation, an I/O error) may pass, and the sink decides (folder-os.h): it fails the whole listing,
+ * so the last good list stays instead of shrinking, until the subfolder keeps failing. A root that cannot be read any
+ * more fails the listing at once. True when the subfolder is left out. */
+static bool leave_out_subfolder(struct pl_folder_os *os, const struct pl_folder_listing_sink *sink,
+				const char *relative, DWORD error)
+{
+	DWORD attributes = GetFileAttributesW(os->root_w);
+	bool root_there = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+	if (!root_there ||
+	    !(pl_folder_os_error_is_subfolders_own(error) || sink->failed(sink->context, relative, error)))
+		return false;
+	struct dstr why = {0};
+	dstr_copy(&why, "cannot be read, ");
+	pl_os_error_cat(&why, error);
+	sink->skipped(sink->context, relative, why.array);
+	dstr_free(&why);
+	sink->left_out(sink->context, relative);
+	return true;
+}
 
 /* Below the root, hidden and system folders are skipped and reparse points are never followed, so a link back up the
  * tree cannot make the scan loop (R-DIR-1); the root itself is opened even when it is a junction. */
@@ -266,10 +351,11 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 			} else if (find_error == ERROR_ACCESS_DENIED) {
 				sink->skipped(sink->context, relative, "access denied");
 			} else if (!empty && find_error != ERROR_PATH_NOT_FOUND) {
-				/* a subfolder that vanished is left out; any other failure (a share dropping after the root
-				 * was listed) fails the whole listing, so the last good list stays instead of shrinking */
-				os->last_error = find_error;
-				result = PL_FOLDER_SCAN_LOST;
+				/* a subfolder that vanished is left out; any other error, see leave_out_subfolder */
+				if (!leave_out_subfolder(os, sink, relative, find_error)) {
+					os->last_error = find_error;
+					result = PL_FOLDER_SCAN_LOST;
+				}
 			}
 			bfree(relative);
 			continue;
@@ -310,9 +396,18 @@ enum pl_folder_scan pl_folder_os_list(struct pl_folder_os *os, struct pl_stop *s
 		DWORD next_error = GetLastError();
 		FindClose(find);
 		if (next_error != ERROR_NO_MORE_FILES) {
-			/* the listing broke off, as when a share drops: the last good list stays */
-			os->last_error = next_error;
-			result = next_error == ERROR_ACCESS_DENIED ? PL_FOLDER_SCAN_DENIED : PL_FOLDER_SCAN_LOST;
+			if (!is_root && leave_out_subfolder(os, sink, relative, next_error)) {
+				/* left out after it was read part way: none of it is listed (the sink dropped the files it
+				 * gave), and none of its subfolders */
+				for (size_t i = 0; i < subfolders.num; i++)
+					bfree(subfolders.array[i]);
+				da_resize(subfolders, 0);
+			} else {
+				/* the listing broke off, as when a share drops: the last good list stays */
+				os->last_error = next_error;
+				result = next_error == ERROR_ACCESS_DENIED ? PL_FOLDER_SCAN_DENIED
+									   : PL_FOLDER_SCAN_LOST;
+			}
 		}
 		/* depth first, in listing order */
 		for (size_t i = subfolders.num; i-- > 0;)
@@ -364,6 +459,19 @@ bool pl_folder_os_arm(struct pl_folder_os *os)
 	return true;
 }
 
+bool pl_folder_os_needs_rewatch(const struct pl_folder_os *os)
+{
+	/* ReadDirectoryChangesW covers the whole tree */
+	UNUSED_PARAMETER(os);
+	return false;
+}
+
+bool pl_folder_os_must_open_to_arm(const struct pl_folder_os *os)
+{
+	UNUSED_PARAMETER(os);
+	return true;
+}
+
 enum pl_watch_event pl_folder_os_open(struct pl_folder_os *os)
 {
 	pl_folder_os_close(os);
@@ -386,7 +494,30 @@ enum pl_watch_event pl_folder_os_open(struct pl_folder_os *os)
 		return PL_WATCH_OPEN_FAILED;
 	}
 	os->dir = dir;
+	os->dir_identity = info;
 	return pl_folder_os_arm(os) ? PL_WATCH_OPENED_ARMED : PL_WATCH_OPENED_ARM_FAILED;
+}
+
+/* The handle follows the folder it was opened on, through a rename or a move to the Recycle Bin, and the watch with
+ * it; a new folder made at the path is another file, with another file index */
+bool pl_folder_os_replaced(struct pl_folder_os *os)
+{
+	if (os->dir == INVALID_HANDLE_VALUE || !os->root_w)
+		return false;
+	/* some network file systems report no file index at all: nothing to compare */
+	if (!os->dir_identity.nFileIndexHigh && !os->dir_identity.nFileIndexLow)
+		return false;
+	HANDLE at_path = CreateFileW(os->root_w, FILE_READ_ATTRIBUTES,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+				     FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (at_path == INVALID_HANDLE_VALUE)
+		return false; /* nothing there, or not reachable: the listing says so */
+	BY_HANDLE_FILE_INFORMATION info;
+	bool known = GetFileInformationByHandle(at_path, &info) != 0;
+	CloseHandle(at_path);
+	return known && (info.dwVolumeSerialNumber != os->dir_identity.dwVolumeSerialNumber ||
+			 info.nFileIndexHigh != os->dir_identity.nFileIndexHigh ||
+			 info.nFileIndexLow != os->dir_identity.nFileIndexLow);
 }
 
 enum pl_folder_wait pl_folder_os_wait(struct pl_folder_os *os, struct pl_stop *stop, struct pl_wake *wake,
@@ -500,4 +631,17 @@ bool pl_folder_is_directory(const char *path)
 	DWORD attributes = GetFileAttributesW(path_w);
 	bfree(path_w);
 	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+bool pl_path_on_network_drive(const char *path)
+{
+	/* \\?\Z:\ and \\.\Z:\ name the drive Z: too */
+	if (path && (path[0] == '\\' || path[0] == '/') && (path[1] == '\\' || path[1] == '/') &&
+	    (path[2] == '?' || path[2] == '.') && (path[3] == '\\' || path[3] == '/'))
+		path += 4;
+	if (!path || !((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) || path[1] != ':')
+		return false;
+	/* the drive's kind comes from its definition, also while its share is offline */
+	wchar_t root[] = {(wchar_t)path[0], L':', L'\\', L'\0'};
+	return GetDriveTypeW(root) == DRIVE_REMOTE;
 }

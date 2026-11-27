@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #endif
 #undef NDEBUG
 #include <assert.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +53,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "test-common.h"
 
 #include "core/filter.h"
+#include "providers/folder-os.h"
 #include "providers/provider.h"
 #include "providers/publication.h"
 
@@ -536,6 +538,16 @@ static struct pl_container_options default_options(void)
 	return options;
 }
 
+/* For the cases only a notification should pass: the folder check at its longest (an hour), far beyond any wait here,
+ * so a watch that hears nothing fails them instead of being covered by the interval rescan. The check off would not
+ * do: its safety rescan comes every 60 s, within a long test. */
+static struct pl_container_options notify_options(void)
+{
+	struct pl_container_options options = default_options();
+	options.folder_check_interval_s = 3600;
+	return options;
+}
+
 #define OLD (60 * 60 * 1000) /* an hour ago */
 
 /* ---- tests ---- */
@@ -557,7 +569,8 @@ static void test_listing_and_changes(void)
 
 	struct inbox inbox;
 	inbox_init(&inbox);
-	struct pl_container_options options = default_options();
+	/* every change below is heard by the watch; the folder check would come only after an hour */
+	struct pl_container_options options = notify_options();
 	struct pl_provider *provider =
 		pl_provider_create(PL_ROW_FOLDER, folder, "row", 42, &options, on_publish, &inbox);
 	assert(provider);
@@ -686,7 +699,7 @@ static void test_rename_chain(void)
 
 	struct inbox inbox;
 	inbox_init(&inbox);
-	struct pl_container_options options = default_options();
+	struct pl_container_options options = notify_options();
 	struct pl_provider *provider =
 		pl_provider_create(PL_ROW_FOLDER, folder, "row", 43, &options, on_publish, &inbox);
 	assert(provider);
@@ -816,6 +829,37 @@ static void test_subfolders(void)
 	bfree(folder);
 }
 
+/* A folder made below the root after the start is watched too: a file added in it after it was first listed is
+ * heard, with the folder check an hour away. On Linux it needs new watches, made once with the debounced rescan and
+ * not on every batch of events (a tree being copied in). */
+static void test_new_subfolder_watched(void)
+{
+	char *folder = make_folder("grows");
+	write_file(folder, "top.mp4", 10, OLD);
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_container_options options = notify_options();
+	options.include_subfolders = true;
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "grows", 48, &options, on_publish, &inbox);
+	assert(provider);
+	assert(wait_for(&inbox, 0, shows_exactly, K("top.mp4"), "the folder before it grows"));
+
+	size_t mark = inbox_count(&inbox);
+	make_subfolder(folder, "new");
+	make_subfolder(folder, "new" SEP "deeper");
+	write_file(folder, "new" SEP "deeper" SEP "a.mp4", 10, OLD);
+	assert(wait_for(&inbox, mark, lists, K("new/deeper/a.mp4"), "a file in folders made after the start"));
+	mark = inbox_count(&inbox);
+	write_file(folder, "new" SEP "deeper" SEP "b.mp4", 10, OLD);
+	assert(wait_for(&inbox, mark, lists, K("new/deeper/b.mp4"), "a later file there, heard by the watch"));
+
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	remove_folder(folder);
+	bfree(folder);
+}
+
 static bool missing_error(const struct pl_snapshot *snapshot, const void *context)
 {
 	UNUSED_PARAMETER(context);
@@ -842,6 +886,8 @@ static void test_missing_folder(void)
 
 	struct inbox inbox;
 	inbox_init(&inbox);
+	/* the 2 s folder check on purpose: a missing folder is opened again on the check (R-UX-4), and a folder moved
+	 * away is found gone by the next listing, as Windows tells its watch nothing of the move */
 	struct pl_container_options options = default_options();
 	/* with the lock on: the list taken at start is the first real listing, not the error before it (R-DIR-11) */
 	options.lock_list_at_start = true;
@@ -1038,6 +1084,88 @@ static void test_is_directory(void)
 	bfree(folder);
 }
 
+/* R-DIR-1: which subfolder errors leave that subfolder out (it is unreadable itself) and which fail the listing, so
+ * the last good list stays (they may pass) */
+static void test_subfolder_error_kinds(void)
+{
+#ifdef _WIN32
+	const unsigned long own[] = {ERROR_INVALID_NAME, ERROR_FILENAME_EXCED_RANGE, ERROR_FILE_CORRUPT,
+				     ERROR_DISK_CORRUPT, ERROR_DIRECTORY};
+	const unsigned long passing[] = {ERROR_SHARING_VIOLATION, ERROR_SEM_TIMEOUT,   ERROR_NETNAME_DELETED,
+					 ERROR_BAD_NETPATH,       ERROR_NETWORK_BUSY,  ERROR_TOO_MANY_OPEN_FILES,
+					 ERROR_NOT_ENOUGH_MEMORY, ERROR_UNEXP_NET_ERR, ERROR_IO_DEVICE};
+#else
+	const unsigned long own[] = {ENAMETOOLONG, ELOOP};
+	const unsigned long passing[] = {EIO, EMFILE, ENFILE, ENOMEM, ETIMEDOUT, ESTALE, EINTR};
+#endif
+	for (size_t i = 0; i < sizeof(own) / sizeof(own[0]); i++)
+		assert(pl_folder_os_error_is_subfolders_own(own[i]));
+	for (size_t i = 0; i < sizeof(passing) / sizeof(passing[0]); i++)
+		assert(!pl_folder_os_error_is_subfolders_own(passing[i]));
+}
+
+/* R-UP-34: a drive letter mapped to a share counts as the share, so the UI never asks an offline one; a local drive,
+ * a relative path and anything on Linux and macOS do not */
+static void test_network_drive(void)
+{
+	assert(!pl_path_on_network_drive(NULL) && !pl_path_on_network_drive("") &&
+	       !pl_path_on_network_drive("clips/a.mp4") && !pl_path_on_network_drive("\\\\server\\share\\a.mp4"));
+#ifdef _WIN32
+	wchar_t windows[MAX_PATH];
+	assert(GetWindowsDirectoryW(windows, MAX_PATH));
+	char local[] = {(char)windows[0], ':', '/', 'a', '.', 'm', 'p', '4', '\0'};
+	char local_prefixed[] = {'\\', '\\', '?', '\\', (char)windows[0], ':', '\\', 'a', '.', 'm', 'p', '4', '\0'};
+	assert(!pl_path_on_network_drive(local) && !pl_path_on_network_drive(local_prefixed));
+	/* a letter no drive and no mapping has, connected or not, remembered or not (the letters from Q down to D,
+	 * so never U: or Z:), defined for this session only, without telling other programs, and taken away again:
+	 * the drive's kind comes from the definition, whether the share answers or not. No existing mapping is
+	 * touched; where no letter is free or the definition is refused, the case is skipped. */
+	const wchar_t *target = L"\\??\\UNC\\localhost\\C$";
+	wchar_t device[3] = {L'\0', L':', L'\0'};
+	DWORD drives = GetLogicalDrives();
+	for (wchar_t letter = L'Q'; letter >= L'D' && !device[0]; letter--) {
+		if (drives & (1u << (letter - L'A')))
+			continue;
+		wchar_t found[MAX_PATH];
+		wchar_t candidate[3] = {letter, L':', L'\0'};
+		if (QueryDosDeviceW(candidate, found, MAX_PATH) || GetLastError() != ERROR_FILE_NOT_FOUND)
+			continue;
+		wchar_t remembered[] = {L'N', L'e', L't', L'w', L'o', L'r', L'k', L'\\', letter, L'\0'};
+		HKEY key;
+		if (RegOpenKeyExW(HKEY_CURRENT_USER, remembered, 0, KEY_READ, &key) == ERROR_SUCCESS) {
+			RegCloseKey(key);
+			continue;
+		}
+		device[0] = letter;
+	}
+	if (!device[0]) {
+		printf("network drive: no free drive letter here, the mapped case is skipped\n");
+		return;
+	}
+	const DWORD define = DDD_RAW_TARGET_PATH | DDD_NO_BROADCAST_SYSTEM;
+	if (!DefineDosDeviceW(define, device, target)) {
+		printf("network drive: a drive letter cannot be defined here, the mapped case is skipped\n");
+		return;
+	}
+	/* without a loopback C$ share here Windows may not call the letter a network drive at all: nothing to test */
+	wchar_t root[] = {device[0], L':', L'\\', L'\0'};
+	if (GetDriveTypeW(root) != DRIVE_REMOTE) {
+		assert(DefineDosDeviceW(define | DDD_REMOVE_DEFINITION | DDD_EXACT_MATCH_ON_REMOVE, device, target));
+		printf("network drive: the defined letter is no network drive here, the mapped case is skipped\n");
+		return;
+	}
+	char mapped[] = {(char)device[0], ':', '\\', 'a', '.', 'm', 'p', '4', '\0'};
+	char bare[] = {(char)device[0], ':', '\0'};
+	char prefixed[] = {'\\', '\\', '?', '\\', (char)device[0], ':', '\\', 'a', '.', 'm', 'p', '4', '\0'};
+	bool remote = pl_path_on_network_drive(mapped) && pl_path_on_network_drive(bare) &&
+		      pl_path_on_network_drive(prefixed);
+	assert(DefineDosDeviceW(define | DDD_REMOVE_DEFINITION | DDD_EXACT_MATCH_ON_REMOVE, device, target));
+	assert(remote);
+#else
+	assert(!pl_path_on_network_drive("Z:/a.mp4"));
+#endif
+}
+
 static bool probed(const struct pl_snapshot *snapshot, const void *context)
 {
 	return snapshot->probe == *(const enum pl_probe *)context && snapshot->count == 0 && !snapshot->status_message;
@@ -1119,6 +1247,247 @@ static void test_create_arguments(void)
 }
 
 #ifdef _WIN32
+/* The watch's handle follows the folder it opened, not the path: a folder renamed or deleted to the Recycle Bin (a
+ * move) while a new one takes its name is found at the next listing, and the watch is opened again on the new one, so
+ * a file added there is heard at once and not only at the next folder check, an hour away here. On Linux the move
+ * ends the watch (IN_MOVE_SELF), and macOS watches the path. */
+static void test_replaced_folder(void)
+{
+	char *parent = make_folder("replaced");
+	char *folder = path_in(parent, "watched");
+	char *away = path_in(parent, "recycled");
+	make_subfolder(parent, "watched");
+	write_file(folder, "a.mp4", 10, OLD);
+
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_container_options options = notify_options();
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 45, &options, on_publish, &inbox);
+	assert(provider);
+	assert(wait_for(&inbox, 0, shows_exactly, K("a.mp4"), "the folder before it is replaced"));
+
+	move_path(folder, away);
+	make_subfolder(parent, "watched");
+	write_file(folder, "b.mp4", 10, OLD);
+	/* the next listing (the folder check, here asked for at once) lists the new folder by its path */
+	size_t mark = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	assert(wait_for(&inbox, mark, shows_exactly, K("b.mp4"), "the new folder listed"));
+
+	mark = inbox_count(&inbox);
+	write_file(folder, "c.mp4", 10, OLD);
+	assert(wait_for(&inbox, mark, lists, K("c.mp4"), "a file added to the new folder, heard by the watch"));
+	pthread_mutex_lock(&inbox.mutex);
+	for (size_t i = 0; i < inbox.snapshots.num; i++)
+		assert(inbox.snapshots.array[i]->level == PL_STATUS_OK && !inbox.snapshots.array[i]->stale);
+	pthread_mutex_unlock(&inbox.mutex);
+
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	remove_folder(parent);
+	bfree(away);
+	bfree(folder);
+	bfree(parent);
+}
+
+/* The \\?\ form of a path in a test folder, which Win32 path rules leave as it is */
+static wchar_t *exact_wide(const char *path)
+{
+	struct dstr prefixed = {0};
+	dstr_printf(&prefixed, "\\\\?\\%s", path);
+	dstr_replace(&prefixed, "/", "\\");
+	wchar_t *result = wide(prefixed.array);
+	dstr_free(&prefixed);
+	return result;
+}
+
+/* A row typed with the \\?\ prefix (R-THR-5): its files are "<row>/<relative>", whose '/' the probe and the sample
+ * turn into '\' as before, so they are listed and admitted, the old one at once and a new one through the gate */
+static void test_prefixed_row(void)
+{
+	char *folder = make_folder("prefixed");
+	write_file(folder, "a.mp4", 100, OLD);
+	struct dstr row = {0};
+	dstr_printf(&row, "\\\\?\\%s", folder);
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_container_options options = notify_options();
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, row.array, "row", 49, &options, on_publish, &inbox);
+	assert(provider);
+	assert(wait_for(&inbox, 0, shows_exactly, K("a.mp4"), "an old file in a row typed with \\\\?\\"));
+	size_t mark = inbox_count(&inbox);
+	write_file(folder, "b.mp4", 100, 0);
+	assert(wait_for(&inbox, mark, shows_exactly, K("a.mp4,b.mp4"), "a new file there admitted"));
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+	dstr_free(&row);
+	remove_folder(folder);
+	bfree(folder);
+}
+
+/* Writes 100 bytes at a \\?\ path; an age above 0 back-dates the last write */
+static void write_exact(const wchar_t *path, int64_t age_ms)
+{
+	HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+	assert(file != INVALID_HANDLE_VALUE);
+	char bytes[100] = {0};
+	DWORD written = 0;
+	assert(WriteFile(file, bytes, sizeof(bytes), &written, NULL) && written == sizeof(bytes));
+	if (age_ms > 0)
+		set_age(file, age_ms);
+	CloseHandle(file);
+}
+
+/* Names that end in a dot or a space, as a Mac or Linux leaves them on a share or a USB drive: Win32 path rules drop a
+ * single dot after a folder's name, and the dot or space a file's name ends with, so the plain path names another
+ * file. A file in such a folder is admitted once and stays (the probe found it gone, and every listing gated it
+ * again), and its location opens the file itself, as the player opens it. A file name that ends in a dot or a space
+ * goes the same way, but has no extension the filter takes. */
+static void test_names_ending_in_dot(void)
+{
+	char *folder = make_folder("dots");
+	char *season = path_in(folder, "Season 1.");
+	wchar_t *season_w = exact_wide(season);
+	assert(CreateDirectoryW(season_w, NULL));
+	const char *names[] = {"ep1.mp4", "ep2.mp4"};
+	wchar_t *files_w[2];
+	for (size_t i = 0; i < 2; i++) {
+		char *file = path_in(season, names[i]);
+		files_w[i] = exact_wide(file);
+		bfree(file);
+	}
+	write_exact(files_w[0], OLD);
+	/* and a folder whose name ends in a space */
+	char *album = path_in(folder, "Album ");
+	wchar_t *album_w = exact_wide(album);
+	assert(CreateDirectoryW(album_w, NULL));
+	char *track = path_in(album, "track.mp4");
+	wchar_t *track_w = exact_wide(track);
+	write_exact(track_w, OLD);
+
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_container_options options = notify_options();
+	options.include_subfolders = true;
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 46, &options, on_publish, &inbox);
+	assert(provider);
+	const struct pl_snapshot *first = wait_for(&inbox, 0, shows_exactly, K("Album /track.mp4,Season 1./ep1.mp4"),
+						   "files in folders whose names end in a space or a dot");
+	assert(first);
+	const char *location = entry(first, K("Season 1./ep1.mp4"))->location;
+	assert(strncmp(location, "\\\\?\\", 4) == 0);
+	wchar_t *location_w = wide(location);
+	HANDLE file = CreateFileW(location_w, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+				  NULL);
+	assert(file != INVALID_HANDLE_VALUE);
+	CloseHandle(file);
+	bfree(location_w);
+
+	/* a new file there waits in the gate once, then joins and stays */
+	size_t mark = inbox_count(&inbox);
+	write_exact(files_w[1], 0);
+	assert(wait_for(&inbox, mark, shows_exactly, K("Album /track.mp4,Season 1./ep1.mp4,Season 1./ep2.mp4"),
+			"a new file there admitted"));
+	/* listed again, nothing changes */
+	pl_provider_refresh_now(provider);
+	os_sleep_ms(1500);
+	pthread_mutex_lock(&inbox.mutex);
+	const struct pl_snapshot *last = inbox.snapshots.array[inbox.snapshots.num - 1];
+	char *keys = visible_keys(last);
+	assert(strcmp(keys, K("Album /track.mp4,Season 1./ep1.mp4,Season 1./ep2.mp4")) == 0 &&
+	       last->pending_count == 0);
+	bfree(keys);
+	pthread_mutex_unlock(&inbox.mutex);
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+
+	for (size_t i = 0; i < 2; i++) {
+		DeleteFileW(files_w[i]);
+		bfree(files_w[i]);
+	}
+	assert(RemoveDirectoryW(season_w));
+	DeleteFileW(track_w);
+	assert(RemoveDirectoryW(album_w));
+	bfree(track_w);
+	bfree(track);
+	bfree(album_w);
+	bfree(album);
+	bfree(season_w);
+	bfree(season);
+	remove_folder(folder);
+	bfree(folder);
+}
+
+static bool shows_ok(const struct pl_snapshot *snapshot, const void *context)
+{
+	return shows_exactly(snapshot, context) && snapshot->level == PL_STATUS_OK && !snapshot->stale;
+}
+
+/* A subfolder that fails with an error that may pass, here one another program holds open without sharing (a sharing
+ * violation, as a timeout, a share dropping or an I/O error would fail). While the row has a good list, the listing
+ * fails and that list stays, its files included, marked stale; once the subfolder has failed three listings in a
+ * row it is left out, so a lasting error does not keep the row stale, and it comes back by itself when it can be read
+ * (tried at every listing). With no good list yet, nothing can shrink: it is left out at once. A subfolder that is
+ * unreadable itself is left out at once too (test_subfolder_error_kinds). */
+static void test_subfolder_that_fails(void)
+{
+	char *folder = make_folder("locked");
+	write_file(folder, "top.mp4", 10, OLD);
+	make_subfolder(folder, "held");
+	write_file(folder, "held" SEP "inner.mp4", 10, OLD);
+	char *held = path_in(folder, "held");
+	wchar_t *held_w = wide(held);
+	struct pl_container_options options = default_options();
+	options.include_subfolders = true;
+
+	/* failing from the start: left out at once, and back when it can be read */
+	HANDLE holder = CreateFileW(held_w, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	assert(holder != INVALID_HANDLE_VALUE);
+	struct inbox inbox;
+	inbox_init(&inbox);
+	struct pl_provider *provider =
+		pl_provider_create(PL_ROW_FOLDER, folder, "row", 47, &options, on_publish, &inbox);
+	assert(provider);
+	assert(wait_for(&inbox, 0, shows_ok, K("top.mp4"), "the first listing without the failing subfolder"));
+	/* it stays left out at the next listings, now with a good list: the row never shows an error */
+	pl_provider_refresh_now(provider);
+	os_sleep_ms(4500); /* the refresh and two folder checks */
+	pthread_mutex_lock(&inbox.mutex);
+	for (size_t i = 0; i < inbox.snapshots.num; i++)
+		assert(inbox.snapshots.array[i]->level == PL_STATUS_OK && !inbox.snapshots.array[i]->stale);
+	pthread_mutex_unlock(&inbox.mutex);
+	CloseHandle(holder);
+	size_t mark = inbox_count(&inbox);
+	assert(wait_for(&inbox, mark, shows_ok, K("held/inner.mp4,top.mp4"), "the subfolder read when it can be"));
+
+	/* failing after a good list: the list stays, stale, for two failed listings, and the third leaves it out */
+	holder = CreateFileW(held_w, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	assert(holder != INVALID_HANDLE_VALUE);
+	mark = inbox_count(&inbox);
+	pl_provider_refresh_now(provider);
+	assert(wait_for(&inbox, mark, kept_stale, K("held/inner.mp4"), "the last good list kept, stale"));
+	const struct pl_snapshot *left_out = wait_for(&inbox, mark, shows_ok, K("top.mp4"), "the subfolder left out");
+	assert(left_out);
+	pthread_mutex_lock(&inbox.mutex);
+	for (size_t i = mark; inbox.snapshots.array[i] != left_out; i++)
+		assert(entry(inbox.snapshots.array[i], K("held/inner.mp4")));
+	pthread_mutex_unlock(&inbox.mutex);
+	/* let go, the subfolder is read again at the next check */
+	CloseHandle(holder);
+	mark = inbox_count(&inbox);
+	assert(wait_for(&inbox, mark, shows_ok, K("held/inner.mp4,top.mp4"), "the subfolder read again"));
+	pl_provider_destroy(provider);
+	inbox_free(&inbox);
+
+	bfree(held_w);
+	bfree(held);
+	remove_folder(folder);
+	bfree(folder);
+}
+
 /* A folder through this machine's admin share (\\localhost\C$\...), where it can be reached: the share reports more
  * changes than the buffer holds as ERROR_MORE_DATA with an empty buffer, which must rescan like an overflow and not
  * lose the folder (R-DIR-3; found by the Phase 2 acceptance, TESTING.md 2.11) */
@@ -1136,7 +1505,8 @@ static void test_admin_share(void)
 	if (reachable) {
 		struct inbox inbox;
 		inbox_init(&inbox);
-		struct pl_container_options options = default_options();
+		/* the added file is heard through the share, not found by the folder check */
+		struct pl_container_options options = notify_options();
 		struct pl_provider *provider =
 			pl_provider_create(PL_ROW_FOLDER, unc.array, "row", 7, &options, on_publish, &inbox);
 		assert(provider);
@@ -1172,6 +1542,10 @@ int main(void)
 	printf("create arguments: passed\n");
 	test_is_directory();
 	printf("directory test: passed\n");
+	test_network_drive();
+	printf("network drive: passed\n");
+	test_subfolder_error_kinds();
+	printf("subfolder error kinds: passed\n");
 	test_pending_keys_republished();
 	printf("pending keys republished: passed\n");
 	test_listing_and_changes();
@@ -1180,6 +1554,8 @@ int main(void)
 	printf("rename chain: passed\n");
 	test_subfolders();
 	printf("subfolders: passed\n");
+	test_new_subfolder_watched();
+	printf("a subfolder made after the start: passed\n");
 	test_missing_folder();
 	printf("missing folder: passed\n");
 	test_retire();
@@ -1187,6 +1563,14 @@ int main(void)
 	test_unknown_kind();
 	printf("a row of unknown kind: passed\n");
 #ifdef _WIN32
+	test_replaced_folder();
+	printf("a folder replaced under its name: passed\n");
+	test_prefixed_row();
+	printf("a row typed with the \\\\?\\ prefix: passed\n");
+	test_names_ending_in_dot();
+	printf("names ending in a dot: passed\n");
+	test_subfolder_that_fails();
+	printf("a subfolder that fails: passed\n");
 	test_admin_share();
 #endif
 	assert(bnum_allocs() == allocations);

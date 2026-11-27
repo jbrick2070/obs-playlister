@@ -143,3 +143,8 @@ void pl_provider_reaper_open(void);
 /* R-LIST-1 rule 5: whether path names an existing directory, from its attributes (no listing), so a folder the user
  * may not read is still a folder */
 bool pl_folder_is_directory(const char *path);
+
+/* Whether path starts with a drive letter that names a network share ("Z:" mapped to \\server\share), which Windows
+ * reports without asking the share: the UI and graphics threads ask such a path no more than a \\server\share one
+ * (R-UP-34), as an offline share holds the caller for its timeout. Always false on Linux and macOS. */
+bool pl_path_on_network_drive(const char *path);
