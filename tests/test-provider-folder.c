@@ -536,6 +536,16 @@ static struct pl_container_options default_options(void)
 	return options;
 }
 
+/* For the cases only a notification should pass: the folder check at its longest (an hour), far beyond any wait here,
+ * so a watch that hears nothing fails them instead of being covered by the interval rescan. The check off would not
+ * do: its safety rescan comes every 60 s, within a long test. */
+static struct pl_container_options notify_options(void)
+{
+	struct pl_container_options options = default_options();
+	options.folder_check_interval_s = 3600;
+	return options;
+}
+
 #define OLD (60 * 60 * 1000) /* an hour ago */
 
 /* ---- tests ---- */
@@ -557,7 +567,8 @@ static void test_listing_and_changes(void)
 
 	struct inbox inbox;
 	inbox_init(&inbox);
-	struct pl_container_options options = default_options();
+	/* every change below is heard by the watch; the folder check would come only after an hour */
+	struct pl_container_options options = notify_options();
 	struct pl_provider *provider =
 		pl_provider_create(PL_ROW_FOLDER, folder, "row", 42, &options, on_publish, &inbox);
 	assert(provider);
@@ -686,7 +697,7 @@ static void test_rename_chain(void)
 
 	struct inbox inbox;
 	inbox_init(&inbox);
-	struct pl_container_options options = default_options();
+	struct pl_container_options options = notify_options();
 	struct pl_provider *provider =
 		pl_provider_create(PL_ROW_FOLDER, folder, "row", 43, &options, on_publish, &inbox);
 	assert(provider);
@@ -842,6 +853,8 @@ static void test_missing_folder(void)
 
 	struct inbox inbox;
 	inbox_init(&inbox);
+	/* the 2 s folder check on purpose: a missing folder is opened again on the check (R-UX-4), and a folder moved
+	 * away is found gone by the next listing, as Windows tells its watch nothing of the move */
 	struct pl_container_options options = default_options();
 	/* with the lock on: the list taken at start is the first real listing, not the error before it (R-DIR-11) */
 	options.lock_list_at_start = true;
@@ -1136,7 +1149,8 @@ static void test_admin_share(void)
 	if (reachable) {
 		struct inbox inbox;
 		inbox_init(&inbox);
-		struct pl_container_options options = default_options();
+		/* the added file is heard through the share, not found by the folder check */
+		struct pl_container_options options = notify_options();
 		struct pl_provider *provider =
 			pl_provider_create(PL_ROW_FOLDER, unc.array, "row", 7, &options, on_publish, &inbox);
 		assert(provider);
