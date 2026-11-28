@@ -6,9 +6,20 @@ version numbers are the ones in `buildspec.json`.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-27
+
+The fixes from the full review of the code of 2026-11-27: web lists sent as a web page, Windows folders, mapped
+network drives, subfolders that cannot be read, and Linux folder watching. The README opens with a short quick start,
+now also in twelve more languages. None of it has been tested by hand on real hardware or in a live OBS yet
+(TESTING.md); the Windows-only automated tests were run on Windows before this release.
+
 ### Changed
 
 - Arch Linux: `packaging/arch/PKGBUILD` builds release 1.5.0, now that it is published (it built 0.5.2).
+- The README opens with a short three-step quick start, and the same quick start is in `docs/quickstart/` in the
+  twelve other languages of the plugin, with the button names the plugin and OBS show in each language. They are AI
+  translations, checked by a second model; no native speaker has checked them yet. The material for developers moved
+  from the README to `docs/BUILDING.md`, `docs/CONTROLLERS.md` and `docs/WEB-LISTS.md`.
 
 ### Fixed
 
@@ -40,7 +51,7 @@ version numbers are the ones in `buildspec.json`.
   playlist rows on a drive letter mapped to a share (`Z:\clips\a.mp4`), and an offline share held OBS for its
   timeout; it already left `\\server\share` paths alone. A mapped network drive is now left alone the same way, so,
   as on a `\\server\share` path, a file moved or deleted there is no longer offered in OBS's missing-files dialog;
-  it fails as an unplayable item instead. The one-time take-over of settings from the original Media Playlist
+  it fails as an unplayable item instead. The one-time carry-over of settings from the original Media Playlist
   Source, on the graphics thread, no longer asks a mapped network drive either; the row's own worker does.
 - Linux: with a folder tree larger than the inotify watch limit (`fs.inotify.max_user_watches`), each folder
   check walked the tree twice to try notifications again; it walks it once.
@@ -378,7 +389,8 @@ The manual checks in OBS (TESTING.md) are still pending.
 
 - The original Media Playlist Source, renamed and built for OBS 33.
 
-[Unreleased]: https://github.com/jbrick2070/obs-playlister/compare/1.5.0...HEAD
+[Unreleased]: https://github.com/jbrick2070/obs-playlister/compare/1.5.1...HEAD
+[1.5.1]: https://github.com/jbrick2070/obs-playlister/compare/1.5.0...1.5.1
 [1.5.0]: https://github.com/jbrick2070/obs-playlister/compare/0.5.2...1.5.0
 [0.5.2]: https://github.com/jbrick2070/obs-playlister/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/jbrick2070/obs-playlister/compare/0.5.0...0.5.1

@@ -25,6 +25,7 @@ with the command above, before every release:
 | Date | Machine | Build | Result |
 |------|---------|-------|--------|
 | 2026-11-27 | Windows 11 Home 26200, Visual Studio 2022 Build Tools | branch `review-fixes-2026-11-27`, RelWithDebInfo | 40 of 40 passed (with `test-subfolder-failures`, which CI runs too); the mapped case of `test_network_drive` and `test_admin_share` ran (not skipped). One earlier full run had `test-fetch` (not changed on the branch) fail once; it passed when run again and in the next full runs |
+| 2026-11-27 | Windows 11 Home 26200, Visual Studio 2022 Build Tools | branch `release/1.5.1` (version 1.5.1), RelWithDebInfo | 40 of 40 passed in one full run; the mapped case of `test_network_drive` and `test_admin_share` ran (not skipped) |
 
 ## Runtime harness (automated, needs OBS)
 
@@ -198,7 +199,7 @@ Setup: OBS Studio 33.0.0 installed (D-1). Plugin copied to
 `release/RelWithDebInfo/obs-playlister`, so the folder holds exactly
 `obs-playlister.dll`, `obs-playlister.pdb`, `data\manifest.json` and
 `data\locale\en-US.ini`. From Phase 2 on these run on the current build (the waiver in PLAN section 7), so the
-version expected in 1.1 and 1.2 is that build's (1.5.0 now).
+version expected in 1.1 and 1.2 is that build's (1.5.1 now).
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
@@ -318,7 +319,7 @@ folder of two or three short videos of different lengths.
 | L.8 | An http(s) .m3u on a real server, and a direct video URL | the list loads (HTTPS included); the video plays | Pending |
 | L.9 | A folder on a network share (NFS or SMB) | the row status (and the log line of the mode change) say it is a network file system; new files show up within the check interval | Pending |
 | L.10 | Hardware decoding on and off; the Properties dialog and the Browse dialog | both play; the dialogs look and work as on Windows | Pending |
-| L.11 | Open Properties of any Playlister (Linux and Windows) | the last line reads "Playlister 1.5.0" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
+| L.11 | Open Properties of any Playlister (Linux and Windows) | the last line reads "Playlister 1.5.1" as plain text, without a help icon; Esc closes Properties without asking to save (R-LIST-6; the harness checks the line exists and is no setting) | Pending |
 | L.12 | A folder row with subfolders on. Note `sysctl fs.inotify.max_queued_events`, then `sudo sysctl fs.inotify.max_queued_events=64`; in one burst create 500 files and a new subfolder in the folder, then add a video to that subfolder. Restore the sysctl afterwards | the log shows the overflow ("more changes than the buffer holds; listing it again"), and the new video joins within about 3 s, not only at the next check (R-LNX-3) | Pending |
 | L.13 | A folder row with subfolders on. Note `sysctl fs.inotify.max_user_watches`, then `sudo sysctl fs.inotify.max_user_watches=<just above the tree's folder count>`; create a new subfolder holding a video (made elsewhere and moved in). Restore the sysctl afterwards | the log says "notifications cannot be armed; rescanning instead", and the video still joins within about 3 s (the debounce plus the write-complete wait), not only at the next check (R-DIR-3) | Pending |
 
@@ -376,7 +377,7 @@ section was run inside OBS.
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
-| S.1 | Add a new Playlister source in a scene that is in Program; look at the window | Top to bottom: "Changes here go live at once.", Playlist, Status ("Nothing to play yet. Press + at the right of Playlist, ..."), Refresh, Loop playlist, Shuffle, Now playing, Next, Play item, Play now, Show advanced options, the hotkeys line, "Playlister 1.5.0". Nothing else | Pending |
+| S.1 | Add a new Playlister source in a scene that is in Program; look at the window | Top to bottom: "Changes here go live at once.", Playlist, Status ("Nothing to play yet. Press + at the right of Playlist, ..."), Refresh, Loop playlist, Shuffle, Now playing, Next, Play item, Play now, Show advanced options, the hotkeys line, "Playlister 1.5.1". Nothing else | Pending |
 | S.2 | Press + at the right of Playlist, Add Files, pick two videos | Status changes at once, without Refresh, to two lines "1: new; press Refresh for its status" and "2: new; ..."; the first video plays; after Refresh: "1: file", "2: file", Now playing "1: <path>", Next "2: <path>" | Pending |
 | S.3 | Tick Show advanced options; untick it | The advanced options appear under the box and go away again; with Freeze the list during playback off there is no Apply waiting changes button, with it on there is | Pending |
 | S.4 | Studio Mode on. Add a Playlister to the Preview scene, add a file, press OK. Open Properties again | Nothing plays in Preview. Status ends with "Waiting: plays when its scene is in Program." Fade the scene to Program: it plays, and after Refresh the line is gone | Pending |
@@ -439,7 +440,7 @@ source is created, and OBS quits with 0 memory leaks. The items below are still 
 Setup: a Mac with macOS 13 or later and OBS 33. Note whether it is Apple Silicon or Intel (ideally run M.1 to M.4 on
 both). Download the `.pkg` and the `.tar.xz` from the PR's macOS CI artifact or a release. A folder of two or three
 short videos of different lengths. OBS logs are in `~/Library/Application Support/obs-studio/logs/`. The heading
-names the version the Mac build came in; the items run on the current build (1.5.0 now).
+names the version the Mac build came in; the items run on the current build (1.5.1 now).
 
 | # | Check | Expected | Result |
 |---|-------|----------|--------|
@@ -486,6 +487,9 @@ names the version the Mac build came in; the items run on the current build (1.5
   pending. Until they are run, what only they cover is unverified, among it: the new Properties window as drawn, the
   new and changed texts in thirteen languages, an address with a user name and password against a real server, and
   the Mac installer's title and last page.
+- The version was set to 1.5.1 (2026-11-27, the fixes from the full review of that day) with the same hand tests
+  still pending. The Windows-only automated tests ran on Windows for it ("Windows-only tests" above); playing a file
+  from a `\\?\` path in OBS and anything else in a live OBS are still to be tested by hand.
 - Linux (R-LNX-7): a worker stuck in a call on a hung network share cannot be interrupted, so closing a source then
   waits for it; the plugin logs that it is waiting after 5 s.
 - macOS (R-MAC-3): as on Linux, a worker stuck in a call on an unreachable network volume cannot be interrupted, so

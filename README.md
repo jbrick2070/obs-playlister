@@ -79,7 +79,7 @@ Linux x86_64 (Ubuntu or Arch, below) needs OBS 32.2 or later: the OBS Project's 
   `obs-studio` package:
 
   ```
-  git clone --branch 1.5.0 https://github.com/jbrick2070/obs-playlister.git
+  git clone --branch 1.5.1 https://github.com/jbrick2070/obs-playlister.git
   cd obs-playlister/packaging/arch
   makepkg -si
   ```
