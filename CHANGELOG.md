@@ -15,7 +15,7 @@ now also in twelve more languages. None of it has been tested by hand on real ha
 
 ### Changed
 
-- Arch Linux: `packaging/arch/PKGBUILD` builds release 1.5.0, now that it is published (it built 0.5.2).
+- Arch Linux: `packaging/arch/PKGBUILD` builds release 1.5.0, now that it is published (it built 0.5.2). It moves to 1.5.1 in a commit of its own once 1.5.1 is published, so the tag 1.5.1 itself still carries the 1.5.0 package file; the README's steps clone `main` for that reason.
 - The README opens with a short three-step quick start, and the same quick start is in `docs/quickstart/` in the
   twelve other languages of the plugin, with the button names the plugin and OBS show in each language. They are AI
   translations, checked by a second model; no native speaker has checked them yet. The material for developers moved
