@@ -76,10 +76,10 @@ Linux x86_64 (Ubuntu or Arch, below) needs OBS 32.2 or later: the OBS Project's 
 - **Ubuntu 24.04:** install the `.deb` from the release page (built against the OBS Project's PPA,
   `ppa:obsproject/obs-studio`).
 - **Arch Linux:** build the package from [packaging/arch/PKGBUILD](packaging/arch/PKGBUILD) against Arch's own
-  `obs-studio` package:
+  `obs-studio` package (the PKGBUILD names the release it builds and downloads that release's source):
 
   ```
-  git clone --branch 1.5.1 https://github.com/jbrick2070/obs-playlister.git
+  git clone https://github.com/jbrick2070/obs-playlister.git
   cd obs-playlister/packaging/arch
   makepkg -si
   ```
