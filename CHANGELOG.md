@@ -6,6 +6,10 @@ version numbers are the ones in `buildspec.json`.
 
 ## [Unreleased]
 
+### Changed
+
+- Arch Linux: `packaging/arch/PKGBUILD` builds release 1.5.1, now that it is published.
+
 ## [1.5.1] - 2026-11-27
 
 The fixes from the full review of the code of 2026-11-27: web lists sent as a web page, Windows folders, mapped
